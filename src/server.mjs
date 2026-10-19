@@ -237,6 +237,9 @@ const routingRt = createRoutingRuntime({
   get usageProbeMonitor() {
     return usageProbeMonitor
   },
+  get grokRefreshMonitor() {
+    return grokRefreshMonitor
+  },
 
   get notifyMonitor() {
     return notifyMonitor
@@ -467,8 +470,7 @@ healthMonitor = createHealthProbeMonitor({
       unofficial: false,
       extraHeaders: { [HEALTH_REAL_HEADER]: '1' },
     }),
-  probeGrokModels: () =>
-    probeGrokModels({ projectRoot: cfg.paths.project, routing: routingConfig, cfg }),
+  probeGrokModels: () => probeGrokModels({ projectRoot: cfg.paths.project, routing: routingConfig, cfg }),
 })
 const vmTestSchedule = new VmTestScheduleRunner({
   projectRoot: cfg.paths.project,
@@ -561,6 +563,7 @@ grokRefreshMonitor = createGrokRefreshMonitor({
   projectRoot: cfg.paths.project,
   listTargets: () => listVms(cfg.paths.project).map((vm) => getVm(cfg.paths.project, vm.id) || vm),
   getRouting: () => routingConfig,
+  getUsageProbe: () => routingConfig.usage_probe,
   proxyUrlFor: (vm) => hostProxyUrlForVm(vm),
 })
 notifyMonitor = createNotifyMonitor({
@@ -619,6 +622,7 @@ backupService.onRestored((db) => {
   credentialRefreshMonitor?.setConfig(normalizeCredentialRefreshConfig(routingConfig.credential_refresh))
   kernelWatchdog?.setConfig(normalizeKernelWatchdogConfig(routingConfig.kernel_watchdog))
   usageProbeMonitor?.setConfig(routingConfig.usage_probe)
+  grokRefreshMonitor?.setUsageProbe?.(routingConfig.usage_probe)
   notifyMonitor?.setConfig(routingConfig.notify)
 
   initPoolRuntime()

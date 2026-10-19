@@ -15,12 +15,14 @@ import { hostProxyUrlForVm } from '../vm/slot-host.mjs'
 import { getVm } from '../vm/vm-registry.mjs'
 import { isGrokVm } from '../vm/vm-kind.mjs'
 import { makeProxyFetch, readFetchBody } from '../transport/proxy-fetch.mjs'
+import { DEFAULT_USAGE_PROBE } from './usage-probe-monitor.mjs'
 
 export const GROK_BUILD_CREDITS_URL = 'https://cli-chat-proxy.grok.com/v1/billing?format=credits'
 export const GROK_BUILD_LEDGER_URL = 'https://cli-chat-proxy.grok.com/v1/billing'
 /** Weekly credits document. Kept under the old name for callers and tests. */
 export const GROK_BUILD_BILLING_URL = GROK_BUILD_CREDITS_URL
-export const GROK_BUILD_USAGE_STALE_MS = 15 * 60 * 1000
+/** Same freshness as Claude usage windows: `usage_probe.stale_sec`, default 5 minutes. */
+export const GROK_BUILD_USAGE_STALE_MS = DEFAULT_USAGE_PROBE.stale_sec * 1000
 
 function fail(error, message, status = 400) {
   return { ok: false, error, message, status }
@@ -126,7 +128,7 @@ export function grokBuildUsageFresh(usage, now = Date.now(), staleMs = GROK_BUIL
   // A 404 with no numbers is not a usable sample. Retry on the next pass.
   if (usage.ok === false && grokCreditUsedPercent(usage.credit_usage_percent) == null) return false
   const probedAt = Date.parse(usage.probed_at || '')
-  // A failed hop is also a sample: retry on the same 15 minute cadence.
+  // A failed hop that still has a percent retries on the same cadence as Claude.
   return Number.isFinite(probedAt) && now - probedAt < staleMs
 }
 
@@ -183,6 +185,7 @@ export async function queryGrokBuildUsage({
   fetchImpl,
   proxyUrl,
   now = Date.now(),
+  staleMs = GROK_BUILD_USAGE_STALE_MS,
 } = {}) {
   const vm = getVm(projectRoot, vmId)
   if (!vm || !isGrokVm(vm)) return fail('not_grok_slot', '只有 Grok 槽同步 Grok Build 用量', 400)
@@ -190,7 +193,8 @@ export async function queryGrokBuildUsage({
   const exitUrl = proxyUrl === undefined ? String(hostProxyUrlForVm(vm) || '') : String(proxyUrl || '')
   if (!exitUrl && !local && !fetchImpl) return fail('proxy_required', 'Grok 槽未绑定出口', 400)
   const stored = vm.grok?.build_usage
-  if (!force && grokBuildUsageFresh(stored, now)) {
+  const freshFor = Number(staleMs) > 0 ? Number(staleMs) : GROK_BUILD_USAGE_STALE_MS
+  if (!force && grokBuildUsageFresh(stored, now, freshFor)) {
     return { ok: true, skipped: true, usage: stored, source: 'grok-build' }
   }
   const token = await ensureGrokAccessToken({

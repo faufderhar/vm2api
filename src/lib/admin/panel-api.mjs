@@ -1716,7 +1716,7 @@ function mergeVmProxy(v, poolSnap, { role = 'admin', nodes = [] } = {}) {
   }
 }
 
-function enrichVm(v, accountQuota, active, extras = {}) {
+export function enrichVm(v, accountQuota, active, extras = {}) {
   if (extras.projectRoot && isLeftoverQuotaScheduleOff(v)) {
     setVmSchedulable(extras.projectRoot, v.id, true, null, { preserveStatus: true, source: 'force' })
     v = { ...v, schedulable: true, schedule_disabled_reason: null }
@@ -1741,6 +1741,7 @@ function enrichVm(v, accountQuota, active, extras = {}) {
     unified: acc?.unified || {},
   })
   const isCodex = isCodexVm(v)
+  const grokSlot = isGrokVm(v)
   // OpenAI quota mirrors are observations; admission uses the current raw windows and policy.
   if (isCodex && isQuotaWindowReason(v.temp_unschedulable_reason)) {
     v = { ...v, temp_unschedulable_until: null, temp_unschedulable_reason: null }
@@ -1755,21 +1756,23 @@ function enrichVm(v, accountQuota, active, extras = {}) {
     nodes: extras.clusterNodes || [],
   })
   const expiresAt = normalizePanelExpiresAt(v.expires_at, workerCred?.expires_at)
-  const hasToken = isCodex ? !!(v.has_token || v.has_refresh) : !!(v.has_token || workerCred?.has_access)
+  const hasToken = isCodex || grokSlot ? !!(v.has_token || v.has_refresh) : !!(v.has_token || workerCred?.has_access)
   const tierKey = isCodex
     ? 'codex'
-    : inferClaudeTier(
-        {
-          has_token: hasToken,
-          account_tier: v.account_tier || q.account_tier,
-          fable: q.fable,
-          utilization_7d_oi: q.utilization_7d_oi,
-          reset_7d_oi: q.reset_7d_oi,
-          status_7d_oi: q.status_7d_oi,
-          usage_has_fable: q.usage_has_fable,
-        },
-        q,
-      ).key
+    : grokSlot
+      ? 'grok'
+      : inferClaudeTier(
+          {
+            has_token: hasToken,
+            account_tier: v.account_tier || q.account_tier,
+            fable: q.fable,
+            utilization_7d_oi: q.utilization_7d_oi,
+            reset_7d_oi: q.reset_7d_oi,
+            status_7d_oi: q.status_7d_oi,
+            usage_has_fable: q.usage_has_fable,
+          },
+          q,
+        ).key
   const inheritedPolicy = isCodex
     ? {
         max_concurrency: openAIGlobalPolicy.max_concurrency,
@@ -1903,8 +1906,8 @@ function enrichVm(v, accountQuota, active, extras = {}) {
     timezone: v.timezone || null,
     timezone_source: v.timezone_source || 'auto',
     locale: v.locale || null,
-    platform: isCodex ? 'openai' : v.platform || 'anthropic',
-    family: isCodex ? 'codex' : v.family || 'claude',
+    platform: isCodex ? 'openai' : grokSlot ? v.platform || 'xai' : v.platform || 'anthropic',
+    family: isCodex ? 'codex' : grokSlot ? v.family || 'grok' : v.family || 'claude',
     codex_kernel: !!isCodex,
     email: v.email || acc?.email || workerCred?.email || null,
     account_uuid: v.account_uuid || (acc?.account_id && acc.account_id !== v.id ? acc.account_id : null),
@@ -1970,7 +1973,11 @@ function enrichVm(v, accountQuota, active, extras = {}) {
     reset_credits: isCodex ? v.reset_credits || v.codex?.reset_credits || null : null,
     codex_credits: isCodex ? v.codex_credits || v.codex?.credits || null : null,
     claude_reset_credits: isCodex ? null : v.claude_reset_credits || null,
-    plan_type: isCodex ? v.plan_type || null : null,
+    plan_type: isCodex || grokSlot ? v.plan_type || null : null,
+    grok_auth_error: grokSlot ? v.grok_auth_error || null : null,
+    grok_limited_until: grokSlot ? v.grok_limited_until || null : null,
+    grok_limited_reason: grokSlot ? v.grok_limited_reason || null : null,
+    grok_build: grokSlot ? v.grok_build || null : null,
     ...(q.weekly_split ? { weekly_split: q.weekly_split } : {}),
     fable_inflight: fablePool.fable_inflight,
     fable_max: fablePool.fable_max,

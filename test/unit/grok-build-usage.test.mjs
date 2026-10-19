@@ -11,6 +11,8 @@ import {
 } from '../../src/lib/oauth/grok-build-usage.mjs'
 import { upsertGrokAccount } from '../../src/lib/vm/grok-slot.mjs'
 import { getVm } from '../../src/lib/vm/vm-registry.mjs'
+import { enrichVm } from '../../src/lib/admin/panel-api.mjs'
+import { grokUsageProbeTiming } from '../../src/lib/oauth/grok-refresh-monitor.mjs'
 
 test('Grok Build credit percent is percent points above 1 and a fraction at or below 1', () => {
   assert.equal(grokCreditUsedPercent(37), 37)
@@ -79,11 +81,11 @@ test('wrapped billing amounts and the ledger fill the monthly window', () => {
 test('a fresh Grok Build sample is not fetched again until it is stale', () => {
   const now = Date.parse('2026-10-19T03:00:00.000Z')
   assert.equal(
-    grokBuildUsageFresh({ ok: true, credit_usage_percent: 10, probed_at: '2026-10-19T02:50:00.000Z' }, now),
+    grokBuildUsageFresh({ ok: true, credit_usage_percent: 10, probed_at: '2026-10-19T02:56:00.000Z' }, now),
     true,
   )
   assert.equal(
-    grokBuildUsageFresh({ ok: true, credit_usage_percent: 10, probed_at: '2026-10-19T02:00:00.000Z' }, now),
+    grokBuildUsageFresh({ ok: true, credit_usage_percent: 10, probed_at: '2026-10-19T02:50:00.000Z' }, now),
     false,
   )
   assert.equal(
@@ -185,4 +187,37 @@ test('query stores Grok Build billing and keeps the last good sample after a fai
   assert.equal(kept.credit_usage_percent, 37)
   assert.equal(kept.error, 'upstream_error')
   assert.equal(kept.message, 'Grok Build 账单返回 500')
+})
+
+test('the panel row keeps Grok Build usage for the usage window', () => {
+  const row = enrichVm(
+    {
+      id: 'heavy',
+      status: 'running',
+      platform: 'xai',
+      family: 'grok',
+      has_token: true,
+      has_refresh: true,
+      grok_build: {
+        ok: true,
+        credit_usage_percent: 13,
+        period_end: '2026-10-23T14:03:01.773Z',
+        monthly_limit: 0,
+      },
+    },
+    null,
+    null,
+  )
+  assert.equal(row.platform, 'xai')
+  assert.equal(row.family, 'grok')
+  assert.equal(row.has_token, true)
+  assert.equal(row.grok_build.credit_usage_percent, 13)
+})
+
+test('Grok usage sync follows the Claude usage-window interval', () => {
+  assert.deepEqual(grokUsageProbeTiming({}), { intervalMs: 60_000, staleMs: 300_000 })
+  assert.deepEqual(grokUsageProbeTiming({ interval_sec: 90, stale_sec: 120 }), {
+    intervalMs: 90_000,
+    staleMs: 120_000,
+  })
 })

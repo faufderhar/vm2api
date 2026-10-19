@@ -33,7 +33,12 @@ import { generateAuthUrl, exchangeAuthCode, normalizeOauthFlavor } from '../oaut
 import { sessionKeyToOAuth, panelImportErrorPayload } from '../oauth/cookie-auth.mjs'
 import { enrichOauthIdentity } from '../oauth/oauth-identity.mjs'
 import { generateCodexAuthUrl, exchangeCodexAuthCode } from '../oauth/codex-oauth.mjs'
-import { exchangeGrokAuthCode, pollGrokDeviceLogin, refreshGrokAccessToken, startGrokDeviceLogin } from '../oauth/grok-oauth.mjs'
+import {
+  exchangeGrokAuthCode,
+  pollGrokDeviceLogin,
+  refreshGrokAccessToken,
+  startGrokDeviceLogin,
+} from '../oauth/grok-oauth.mjs'
 import { ensureGrokAccessToken } from '../oauth/grok-token.mjs'
 import {
   completeClaudeSetupToken,
@@ -1066,6 +1071,7 @@ export function createPanelHandler(ctx) {
     setManualScheduleWins(ctx.routingConfig.pool?.manual_schedule_wins)
     ctx.healthMonitor?.setConfig(ctx.routingConfig.health_probe)
     ctx.usageProbeMonitor?.setConfig(ctx.routingConfig.usage_probe)
+    ctx.grokRefreshMonitor?.setUsageProbe?.(ctx.routingConfig.usage_probe)
     ctx.notifyMonitor?.setConfig(ctx.routingConfig.notify)
     if (ctx.routingConfig.logging) {
       requestLog.setConfig({
@@ -4494,11 +4500,15 @@ export function createPanelHandler(ctx) {
           proxyUrl: slotProxy.proxyUrl,
         })
         if (polled.status === 'pending') {
-          return json(res, 200, panel.ok({
-            status: 'pending',
-            interval_sec: polled.interval_sec || 5,
-            session_id: body.session_id || body.sessionId || '',
-          }))
+          return json(
+            res,
+            200,
+            panel.ok({
+              status: 'pending',
+              interval_sec: polled.interval_sec || 5,
+              session_id: body.session_id || body.sessionId || '',
+            }),
+          )
         }
         if (!polled.ok) {
           const denied = polled.status === 'expired' || polled.status === 'denied'
