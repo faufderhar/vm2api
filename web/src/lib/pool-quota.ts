@@ -193,5 +193,5 @@ function grokBuildWindow(vms: Vm[]): PoolWindow | null {
       resetAt: expiresAtToMs(usage?.period_end),
     }
   })
-  return buildWindow('grok', 'Grok Build', segs)
+  return buildWindow('grok', 'Grok', segs)
 }

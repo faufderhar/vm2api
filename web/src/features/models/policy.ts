@@ -7,6 +7,7 @@ export type ModelCaps = {
   context_window?: number
   supports_1m?: boolean
   supports_adaptive?: boolean
+  supports_effort?: boolean
   thinking_mode?: string
 }
 

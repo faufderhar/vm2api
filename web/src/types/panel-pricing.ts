@@ -78,6 +78,7 @@ export type PricingPayload = {
   catalog_sync: {
     claude: SyncStatus | null
     codex: SyncStatus | null
+    xai?: SyncStatus | null
   }
 }
 

@@ -6,7 +6,8 @@
  */
 import { normalizeGrokQuotaPolicy, validateGrokQuotaPatch } from '../pool/openai-quota-policy.mjs'
 
-export const DEFAULT_GROK_BASE_URL = 'https://api.x.ai'
+/** Grok Build CLI chat proxy. Paths append `/v1/chat/completions` and `/v1/responses`. */
+export const DEFAULT_GROK_BASE_URL = 'https://cli-chat-proxy.grok.com'
 export const GROK_OAUTH_CLIENT_ID = 'b1a00492-073a-47ea-816f-4c329264a828'
 export const GROK_OAUTH_SCOPE = 'openid profile email offline_access grok-cli:access api:access'
 export const GROK_OAUTH_ISSUER = 'https://auth.x.ai'

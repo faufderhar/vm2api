@@ -27,6 +27,7 @@ import {
 type Props = {
   pol: ModelPolicy
   claudePool?: boolean
+  grokPool?: boolean
   onCatalogMode: (mode: CatalogMode) => void
   onDefaults: (patch: Partial<PolicyDefaults>) => void
 }
@@ -34,6 +35,7 @@ type Props = {
 export function ModelAdvanced({
   pol,
   claudePool = true,
+  grokPool = false,
   onCatalogMode,
   onDefaults,
 }: Props) {
@@ -51,25 +53,31 @@ export function ModelAdvanced({
       </CollapsibleTrigger>
       <CollapsibleContent className='space-y-3 border-t border-border/40 px-3 py-3 text-sm'>
         <Row label='目录模式'>
-          <Select
-            value={mode}
-            onValueChange={(v) => {
-              if (isCatalogMode(v)) onCatalogMode(v)
-            }}
-          >
-            <SelectTrigger className='h-8 w-[260px]'>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value='worker_intersect_policy'>
-                Worker ∩ 策略（推荐）
-              </SelectItem>
-              <SelectItem value='worker_only'>仅 Worker 目录</SelectItem>
-              <SelectItem value='policy_only'>仅策略矩阵</SelectItem>
-            </SelectContent>
-          </Select>
+          {grokPool ? (
+            <span className='text-xs text-muted-foreground'>
+              来自 xAI /v1/models，不使用 Claude Worker 目录。
+            </span>
+          ) : (
+            <Select
+              value={mode}
+              onValueChange={(v) => {
+                if (isCatalogMode(v)) onCatalogMode(v)
+              }}
+            >
+              <SelectTrigger className='h-8 w-[260px]'>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value='worker_intersect_policy'>
+                  Worker ∩ 策略（推荐）
+                </SelectItem>
+                <SelectItem value='worker_only'>仅 Worker 目录</SelectItem>
+                <SelectItem value='policy_only'>仅策略矩阵</SelectItem>
+              </SelectContent>
+            </Select>
+          )}
         </Row>
-        {claudePool ? (
+        {claudePool && !grokPool ? (
           <Row label='过滤 1M beta'>
             <div className='flex items-center gap-2'>
               <Switch
@@ -83,50 +91,61 @@ export function ModelAdvanced({
             </div>
           </Row>
         ) : null}
-        <div className='space-y-1'>
-          <Label>未入库通配</Label>
-          <Textarea
-            className='min-h-[72px] font-mono text-xs'
-            rows={3}
-            value={whitelistText}
-            placeholder='只兜底未设开关的新 id'
-            onChange={(e) =>
-              onDefaults({
-                context_1m_whitelist: e.target.value
-                  .split(/[\n,]+/)
-                  .map((s) => s.trim())
-                  .filter(Boolean),
-              })
-            }
-          />
-          <p className='text-xs text-muted-foreground'>
-            行内「透传 / 剥离」优先。通配只覆盖未设开关的 dated id，例如
-            claude-sonnet-5-日期。不要把 Fable / Opus 写进来。
+        {grokPool ? (
+          <p className='text-xs leading-5 text-muted-foreground'>
+            Grok 不使用 Claude 的 1M beta、thinking 归一化或 fallback
+            budget。上下文和输出上限在每个模型上单独配置。
           </p>
-        </div>
-        <Row label='规范化 thinking'>
-          <div className='flex items-center gap-2'>
-            <Switch
-              checked={defs.normalize_thinking !== false}
-              onCheckedChange={(on) => onDefaults({ normalize_thinking: on })}
+        ) : (
+          <div className='space-y-1'>
+            <Label>未入库通配</Label>
+            <Textarea
+              className='min-h-[72px] font-mono text-xs'
+              rows={3}
+              value={whitelistText}
+              placeholder='只兜底未设开关的新 id'
+              onChange={(e) =>
+                onDefaults({
+                  context_1m_whitelist: e.target.value
+                    .split(/[\n,]+/)
+                    .map((s) => s.trim())
+                    .filter(Boolean),
+                })
+              }
             />
-            <span className='text-xs text-muted-foreground'>
-              {defs.normalize_thinking !== false ? '已开启' : '已关闭'}
-            </span>
+            <p className='text-xs text-muted-foreground'>
+              行内「透传 / 剥离」优先。通配只覆盖未设开关的 dated id，例如
+              claude-sonnet-5-日期。不要把 Fable / Opus 写进来。
+            </p>
           </div>
-        </Row>
-        <Row label='fallback budget'>
-          <Input
-            className='h-8 w-[140px]'
-            type='number'
-            value={defs.thinking_fallback_budget ?? 4096}
-            onChange={(e) =>
-              onDefaults({
-                thinking_fallback_budget: Number(e.target.value) || 0,
-              })
-            }
-          />
-        </Row>
+        )}
+        {grokPool ? null : (
+          <Row label='规范化 thinking'>
+            <div className='flex items-center gap-2'>
+              <Switch
+                checked={defs.normalize_thinking !== false}
+                onCheckedChange={(on) => onDefaults({ normalize_thinking: on })}
+              />
+              <span className='text-xs text-muted-foreground'>
+                {defs.normalize_thinking !== false ? '已开启' : '已关闭'}
+              </span>
+            </div>
+          </Row>
+        )}
+        {grokPool ? null : (
+          <Row label='fallback budget'>
+            <Input
+              className='h-8 w-[140px]'
+              type='number'
+              value={defs.thinking_fallback_budget ?? 4096}
+              onChange={(e) =>
+                onDefaults({
+                  thinking_fallback_budget: Number(e.target.value) || 0,
+                })
+              }
+            />
+          </Row>
+        )}
         <Row label='默认 max_tokens'>
           <Input
             className='h-8 w-[140px]'

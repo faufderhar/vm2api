@@ -131,7 +131,7 @@
 
   "grok": {
     "enabled": false,
-    "base_url": "https://api.x.ai",
+    "base_url": "https://cli-chat-proxy.grok.com",
     "oauth": {
       "authorize_url": "",
       "token_url": "",

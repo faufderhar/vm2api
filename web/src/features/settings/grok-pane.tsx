@@ -102,7 +102,10 @@ export function GrokPane({
         }
       >
         <div className='divide-y'>
-          <SettingRow label='上游地址' desc='默认 https://api.x.ai，必须是 https。'>
+          <SettingRow
+            label='上游地址'
+            desc='默认 https://cli-chat-proxy.grok.com，这是 Grok Build 的对话上游。必须是 https。'
+          >
             <Input
               className='w-72'
               value={textOf(grok.base_url)}

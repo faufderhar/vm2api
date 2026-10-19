@@ -51,9 +51,8 @@ const BETA_FILTERS: [BetaFilter, string][] = [
 export function ModelsPage() {
   const qc = useQueryClient()
   const [pageTab, setPageTab] = useState<'models' | 'pricing'>('models')
-  const [catalogPlatform, setCatalogPlatform] = useState<
-    VmPlatform
-  >('anthropic')
+  const [catalogPlatform, setCatalogPlatform] =
+    useState<VmPlatform>('anthropic')
   const q = useQuery(modelPolicyQueryOptions(catalogPlatform))
   const pricingQ = useQuery(pricingQueryOptions())
   const [draft, setDraft] = useState<ModelPolicy>(() => hydratePolicy(null))
@@ -404,7 +403,10 @@ export function ModelsPage() {
                         >
                           OpenAI
                         </TabsTrigger>
-                        <TabsTrigger value='xai' className='cursor-pointer px-4'>
+                        <TabsTrigger
+                          value='xai'
+                          className='cursor-pointer px-4'
+                        >
                           Grok
                         </TabsTrigger>
                       </TabsList>
@@ -423,6 +425,8 @@ export function ModelsPage() {
                       <CatalogSyncBar
                         claude={pricingQ.data?.catalog_sync?.claude ?? null}
                         codex={pricingQ.data?.catalog_sync?.codex ?? null}
+                        xai={pricingQ.data?.catalog_sync?.xai ?? null}
+                        platform={catalogPlatform}
                       />
                     </div>
                   </div>
@@ -549,7 +553,9 @@ export function ModelsPage() {
                       ? '无匹配模型。改搜索或筛选条件。'
                       : claudePool
                         ? '暂无模型配置。可先同步 Worker 目录。'
-                        : '暂无 GPT 模型。可先同步 GPT 目录。'
+                        : grokPool
+                          ? '暂无 Grok 模型。可先同步 Grok 目录。'
+                          : '暂无 GPT 模型。可先同步 GPT 目录。'
                   }
                 />
               ) : (
@@ -563,6 +569,7 @@ export function ModelsPage() {
                       pricing={pricingQ.data?.policy?.[m.id]}
                       open={expanded === m.id}
                       showBeta={claudePool}
+                      grokPool={grokPool}
                       onToggleOpen={() => requestExpand(m.id)}
                       onToggleEnabled={(on) =>
                         patchModel(m.id, (rec) => {
@@ -580,6 +587,7 @@ export function ModelsPage() {
               <ModelAdvanced
                 pol={draft}
                 claudePool={claudePool}
+                grokPool={grokPool}
                 onCatalogMode={setCatalog}
                 onDefaults={patchDefaults}
               />
@@ -608,14 +616,23 @@ function PoolStat({ label, value }: { label: string; value: number }) {
 function CatalogSyncBar({
   claude,
   codex,
+  xai,
+  platform,
 }: {
   claude: SyncStatus | null
   codex: SyncStatus | null
+  xai: SyncStatus | null
+  platform: 'anthropic' | 'openai' | 'xai'
 }) {
+  const line =
+    platform === 'xai'
+      ? formatCatalogSync('Grok', xai)
+      : platform === 'openai'
+        ? formatCatalogSync('GPT', codex)
+        : formatCatalogSync('Claude', claude)
   return (
     <div className='space-y-0.5 text-xs leading-5 text-muted-foreground'>
-      <p>{formatCatalogSync('Claude', claude)}</p>
-      <p>{formatCatalogSync('GPT', codex)}</p>
+      <p>{line}</p>
     </div>
   )
 }

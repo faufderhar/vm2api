@@ -61,7 +61,7 @@ function tempProject(vm = {}) {
 test('routing defaults are disabled and fail closed without OAuth config', () => {
   const grok = normalizeGrokRouting({})
   assert.equal(grok.enabled, false)
-  assert.equal(grok.base_url, 'https://api.x.ai')
+  assert.equal(grok.base_url, 'https://cli-chat-proxy.grok.com')
   assert.equal(grok.protocols['openai.responses'].mode, 'native')
   assert.equal(grok.protocols['anthropic.messages'].mode, 'reject')
   const cfg = grokOauthConfig({})

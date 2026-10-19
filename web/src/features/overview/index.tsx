@@ -239,12 +239,14 @@ export function OverviewPage() {
                     </small>
                   </>
                 }
+                hint='Claude / GPT'
                 ringPct={peak5}
               />
-            ) : (
+            ) : null}
+            {grokSlots.length > 0 ? (
               <KpiCard
                 icon={Gauge}
-                label='Grok Build'
+                label='Grok'
                 value={
                   grokPeak == null ? (
                     '—'
@@ -260,12 +262,12 @@ export function OverviewPage() {
                 hint={
                   grokPeak == null
                     ? '尚未从 Grok Build 同步周额度'
-                    : `周额度已用峰值 · ${grokWithToken} 个账号`
+                    : `Grok Build 周额度已用峰值 · ${grokWithToken} 个账号`
                 }
                 ringPct={grokPeak ?? 0}
                 tone='good'
               />
-            )}
+            ) : null}
             <KpiCard
               icon={Activity}
               label={`请求 · 缓存 ${cachePct == null ? '—' : `${cachePct.toFixed(0)}%`}`}

@@ -1,13 +1,13 @@
 /**
- * Live xAI model list. The control-plane api-kernel calls GET /v1/models
- * through the slot SOCKS5. Node never dials api.x.ai itself.
+ * Live Grok model list. The control-plane api-kernel calls GET /v1/models
+ * through the slot SOCKS5. Node never dials the Grok Build upstream itself.
  */
 import { listVms, getVm } from '../vm/vm-registry.mjs'
 import { isGrokVm } from '../vm/vm-kind.mjs'
 import { hostProxyUrlForVm } from '../vm/slot-host.mjs'
 import { isLocalEgressProxy } from '../vm/egress.mjs'
 import { ensureGrokAccessToken } from '../oauth/grok-token.mjs'
-import { grokBaseUrl } from './grok-route.mjs'
+import { DEFAULT_GROK_BASE_URL, grokBaseUrl } from './grok-route.mjs'
 import { isGrokSeriesId } from './grok-ids.mjs'
 import { forwardApi, readApiJson } from '../transport/api-kernel-client.mjs'
 import { grokCliIdentityHeaders } from './grok-client.mjs'
@@ -27,7 +27,7 @@ export async function fetchGrokUpstreamModels({
   const px = String(proxyUrl || '').trim()
   if (!access) return { ok: false, error: 'no_token', ids: [] }
   if (!px && !allowDirect) return { ok: false, error: 'proxy_required', ids: [] }
-  const root = String(baseUrl || 'https://api.x.ai').replace(/\/+$/, '')
+  const root = String(baseUrl || DEFAULT_GROK_BASE_URL).replace(/\/+$/, '')
   let res
   try {
     res = await forward({

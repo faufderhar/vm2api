@@ -137,7 +137,7 @@ function WindowCell({
       ) : (
         <div className='mt-0.5 text-[11px] text-muted-foreground'>
           {win.key === 'grok'
-            ? '无 Grok Build 账号'
+            ? '无 Grok 账号'
             : win.key === 'fable'
               ? '无 Fable 凭证（仅 Max 档计入）'
               : '无可用凭证'}
@@ -154,7 +154,7 @@ function quotaMeta(
 ): string {
   const grokBit =
     grok.withToken > 0
-      ? `Grok Build ${grok.synced} 个已同步 / 共 ${grok.withToken}${
+      ? `Grok ${grok.synced} 个已同步 Grok Build / 共 ${grok.withToken}${
           grok.limited > 0 ? ` · ${grok.limited} 个限流` : ''
         }`
       : ''

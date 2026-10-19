@@ -10,7 +10,7 @@ describe('opsModelFamilyRows', () => {
       [{ model: 'grok-4.7', requests: 3, errors: 1 }],
       [grok]
     )
-    expect(rows.map((row) => row.model)).toEqual(['Grok Build'])
+    expect(rows.map((row) => row.model)).toEqual(['Grok'])
     expect(rows[0]?.requests).toBe(3)
     expect(rows[0]?.errors).toBe(1)
   })
@@ -22,7 +22,7 @@ describe('opsModelFamilyRows', () => {
       'Sonnet',
       'Haiku',
       'Fable',
-      'Grok Build',
+      'Grok',
     ])
   })
 })

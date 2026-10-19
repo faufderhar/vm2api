@@ -48,6 +48,7 @@ type Props = {
   pricing?: PolicyPrice | null
   open: boolean
   showBeta?: boolean
+  grokPool?: boolean
   onToggleOpen: () => void
   onToggleEnabled: (on: boolean) => void
   onModel: (fn: (rec: Omit<ModelEntry, 'id'>) => void) => void
@@ -62,6 +63,7 @@ export function ModelRow({
   pricing,
   open,
   showBeta = true,
+  grokPool = false,
   onToggleOpen,
   onToggleEnabled,
   onModel,
@@ -151,7 +153,16 @@ export function ModelRow({
                 label='输出上限'
                 value={`${formatK(params.max_tokens_cap ?? 64000)}`}
               />
-              <Metric label='Thinking' value={thinkingPolicyLabel(model)} />
+              <Metric
+                label={grokPool ? '推理' : 'Thinking'}
+                value={
+                  grokPool
+                    ? caps.supports_effort
+                      ? '支持 effort'
+                      : '标准'
+                    : thinkingPolicyLabel(model)
+                }
+              />
             </div>
 
             <div className='flex flex-wrap gap-1.5'>
@@ -249,7 +260,11 @@ export function ModelRow({
                 <Textarea
                   className='min-h-24 font-mono text-xs'
                   value={(model.aliases || []).join('\n')}
-                  placeholder='每行一个别名，例如 claude-haiku-5-5-private'
+                  placeholder={
+                    grokPool
+                      ? '每行一个别名，例如 grok-4.7'
+                      : '每行一个别名，例如 claude-haiku-5-5-private'
+                  }
                   onChange={(event) =>
                     onModel((rec) => {
                       rec.aliases = splitList(event.target.value)
@@ -272,45 +287,51 @@ export function ModelRow({
                   onChange={(value) => onParam('max_tokens_cap', value)}
                 />
               </EditorRow>
-              <EditorRow label='fallback budget'>
-                <NumberInput
-                  value={fallback}
-                  onChange={(value) =>
-                    onParam('thinking_fallback_budget', value)
-                  }
-                />
-              </EditorRow>
-              <EditorRow label='adaptive'>
-                <Select
-                  value={params.on_adaptive || 'passthrough'}
-                  onValueChange={(value) => onParam('on_adaptive', value)}
-                >
-                  <SelectTrigger className='h-8 w-full sm:w-[220px]'>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value='passthrough'>透传</SelectItem>
-                    <SelectItem value='convert_to_enabled'>
-                      转为 enabled + budget
-                    </SelectItem>
-                    <SelectItem value='strip'>剥离 thinking</SelectItem>
-                  </SelectContent>
-                </Select>
-              </EditorRow>
-              <EditorRow label='enabled'>
-                <Select
-                  value={onEnabled}
-                  onValueChange={(value) => onParam('on_enabled', value)}
-                >
-                  <SelectTrigger className='h-8 w-full sm:w-[220px]'>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value='passthrough'>透传</SelectItem>
-                    <SelectItem value='strip'>剥离 thinking</SelectItem>
-                  </SelectContent>
-                </Select>
-              </EditorRow>
+              {grokPool ? null : (
+                <EditorRow label='fallback budget'>
+                  <NumberInput
+                    value={fallback}
+                    onChange={(value) =>
+                      onParam('thinking_fallback_budget', value)
+                    }
+                  />
+                </EditorRow>
+              )}
+              {grokPool ? null : (
+                <EditorRow label='adaptive'>
+                  <Select
+                    value={params.on_adaptive || 'passthrough'}
+                    onValueChange={(value) => onParam('on_adaptive', value)}
+                  >
+                    <SelectTrigger className='h-8 w-full sm:w-[220px]'>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value='passthrough'>透传</SelectItem>
+                      <SelectItem value='convert_to_enabled'>
+                        转为 enabled + budget
+                      </SelectItem>
+                      <SelectItem value='strip'>剥离 thinking</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </EditorRow>
+              )}
+              {grokPool ? null : (
+                <EditorRow label='enabled'>
+                  <Select
+                    value={onEnabled}
+                    onValueChange={(value) => onParam('on_enabled', value)}
+                  >
+                    <SelectTrigger className='h-8 w-full sm:w-[220px]'>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value='passthrough'>透传</SelectItem>
+                      <SelectItem value='strip'>剥离 thinking</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </EditorRow>
+              )}
             </Panel>
           </section>
 
@@ -383,7 +404,16 @@ export function ModelRow({
 
             <Panel title='能力' icon={<Gauge className='size-4' />} compact>
               <Fact label='上下文' value={win.text} />
-              <Fact label='Thinking' value={thinkingPolicyLabel(model)} />
+              <Fact
+                label={grokPool ? '推理' : 'Thinking'}
+                value={
+                  grokPool
+                    ? caps.supports_effort
+                      ? '支持 effort'
+                      : '标准'
+                    : thinkingPolicyLabel(model)
+                }
+              />
               <Fact label='目录状态' value={live ? '对外可见' : '未进入目录'} />
             </Panel>
           </aside>

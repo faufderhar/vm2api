@@ -33,7 +33,7 @@ describe('poolQuota', () => {
       limited: 1,
       synced: 0,
     })
-    expect(quota.grokWindow?.label).toBe('Grok Build')
+    expect(quota.grokWindow?.label).toBe('Grok')
     expect(quota.grokWindow?.segs[0]).toMatchObject({
       id: 'heavy',
       probed: false,

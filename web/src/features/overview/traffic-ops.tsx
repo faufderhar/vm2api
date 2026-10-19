@@ -43,7 +43,7 @@ const MODEL_FAMILIES = [
   { id: 'haiku', label: 'Haiku', platform: 'claude' },
   { id: 'fable', label: 'Fable', platform: 'claude' },
   { id: 'gpt', label: 'GPT', platform: 'gpt' },
-  { id: 'grok', label: 'Grok Build', platform: 'grok' },
+  { id: 'grok', label: 'Grok', platform: 'grok' },
 ] as const
 
 function modelFamilyOf(id: string | undefined): string {

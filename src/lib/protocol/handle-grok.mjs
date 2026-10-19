@@ -232,7 +232,9 @@ export async function grokUpstreamCall({ cfg, url, token, body, stream, proxyUrl
           status: 502,
           headers,
           emitted,
-          body: { error: { type: 'api_error', code: 'upstream_protocol_error', message: 'upstream returned non-JSON' } },
+          body: {
+            error: { type: 'api_error', code: 'upstream_protocol_error', message: 'upstream returned non-JSON' },
+          },
         }
       }
       return { ok: true, status, headers, body: payload, emitted, ttftMs: Date.now() - startedAt }
@@ -477,7 +479,7 @@ function tokenFailure(code) {
         ? 'xAI OAuth 未配置，无法刷新 Grok 令牌'
         : code === 'grok_oauth_discovery_failed'
           ? '读不到 xAI 授权地址，无法刷新 Grok 令牌'
-        : 'Grok 槽位没有可用凭证'
+          : 'Grok 槽位没有可用凭证'
   return { ok: false, status, body: { error: { type: 'authentication_error', code, message } } }
 }
 
@@ -498,7 +500,7 @@ export async function runGrokSlotHop({
   headers = null,
 }) {
   const proxyUrl = String((ops.hostProxyUrlForVm || hostProxyUrlForVm)(vm) || '')
-  // '' is 本机出口: the kernel dials api.x.ai on the slot host's own route.
+  // '' is 本机出口: the kernel dials the Grok Build upstream on the slot host's own route.
   if (!proxyUrl && !isLocalEgressProxy(vm?.proxy)) {
     return {
       ok: false,
@@ -587,7 +589,11 @@ export async function handleGrokProtocol({
     stats.errors++
     logBag.error_code = 'protocol_not_allowed'
     return json(res, 400, {
-      error: { type: 'invalid_request_error', code: 'protocol_not_allowed', message: `protocol '${protocol}' unsupported` },
+      error: {
+        type: 'invalid_request_error',
+        code: 'protocol_not_allowed',
+        message: `protocol '${protocol}' unsupported`,
+      },
     })
   }
   applyOpenaiWashLog(logBag, {
@@ -721,32 +727,31 @@ export async function handleGrokProtocol({
           if (outbound.injectedUsage && isInjectedUsageChunk(line)) return
           res.write(`${line}\n`)
         }
-        const runHop = () =>
-          {
-            const headers = grokCliRequestHeaders({
-              model: outbound.body?.model,
-              sessionId: outboundSessionId,
-              requestId: grokRequestId(),
-            })
-            logBag.outbound_headers = redactHeaders({
-              authorization: 'Bearer ***',
-              'content-type': 'application/json',
-              accept: upstreamAccept(upstreamStream),
-              ...headers,
-            })
-            return runGrokSlotHop({
-              cfg,
-              projectRoot,
-              vm,
-              routing,
-              outbound,
-              stream: upstreamStream,
-              signal: gone.signal,
-              onLine,
-              ops,
-              headers,
-            })
-          }
+        const runHop = () => {
+          const headers = grokCliRequestHeaders({
+            model: outbound.body?.model,
+            sessionId: outboundSessionId,
+            requestId: grokRequestId(),
+          })
+          logBag.outbound_headers = redactHeaders({
+            authorization: 'Bearer ***',
+            'content-type': 'application/json',
+            accept: upstreamAccept(upstreamStream),
+            ...headers,
+          })
+          return runGrokSlotHop({
+            cfg,
+            projectRoot,
+            vm,
+            routing,
+            outbound,
+            stream: upstreamStream,
+            signal: gone.signal,
+            onLine,
+            ops,
+            headers,
+          })
+        }
         const recordAttempt = (startedAt, result) =>
           noteGrokAttempt(attemptsRepo, ops.requestId, hops, {
             vmId: vm.id,
@@ -840,7 +845,8 @@ export async function handleGrokProtocol({
 function rejectGrokAdmission({ res, json, stats, logBag, picked, model }) {
   stats.errors++
   logBag.error_code = picked.error || 'no_grok_vm'
-  const fail = (status, type, code, message, extra = {}) => json(res, status, { error: { type, code, message, ...extra } })
+  const fail = (status, type, code, message, extra = {}) =>
+    json(res, status, { error: { type, code, message, ...extra } })
   switch (picked.error) {
     case 'platform_mismatch':
       return fail(400, 'invalid_request_error', 'platform_mismatch', `vm '${picked.pin}' is not a Grok slot`)
@@ -849,9 +855,15 @@ function rejectGrokAdmission({ res, json, stats, logBag, picked, model }) {
     case 'vm_pool_unavailable':
       return fail(403, 'permission_error', 'vm_pool_unavailable', picked.message || '账号池不可用')
     case 'model_not_allowed':
-      return fail(400, 'invalid_request_error', 'model_not_allowed', `model '${model || ''}' is not allowed on any Grok slot`, {
-        param: 'model',
-      })
+      return fail(
+        400,
+        'invalid_request_error',
+        'model_not_allowed',
+        `model '${model || ''}' is not allowed on any Grok slot`,
+        {
+          param: 'model',
+        },
+      )
     case 'response_not_portable':
       return fail(
         409,
@@ -864,7 +876,9 @@ function rejectGrokAdmission({ res, json, stats, logBag, picked, model }) {
     case 'pool_wait_queue_full': {
       const waitMs = Number(picked.retryAt) - Date.now()
       res.setHeader?.('retry-after', String(Math.max(1, waitMs > 0 ? Math.ceil(waitMs / 1000) : 0)))
-      return fail(429, 'rate_limit_error', 'pool_overloaded', CLIENT_POOL_BUSY_MESSAGE, { details: { reason: picked.error } })
+      return fail(429, 'rate_limit_error', 'pool_overloaded', CLIENT_POOL_BUSY_MESSAGE, {
+        details: { reason: picked.error },
+      })
     }
     case 'pool_resting': {
       const waitMs = Number(picked.retryAt) - Date.now()
