@@ -33,7 +33,7 @@ const SHAPE: Record<string, { shape: ShapeName; color: string; bg: string }> = {
 }
 
 /** tier 标记不属于健康状态轴，走中性 pill，不参与形状编码 */
-const TIER = new Set(['max', 'pro'])
+const TIER = new Set(['max', 'pro', 'grok'])
 
 const STROKE = 1.5
 

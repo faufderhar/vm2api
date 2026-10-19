@@ -5,7 +5,7 @@
  * persisted refusal/device cache, then the model. A block never hops.
  * Device bans and refusal rows are written here so both entry points share them.
  */
-import { detectDistill, distillBlockError, isOpenaiPlatformModel } from '../core/distill-detect.mjs'
+import { detectDistill, distillBlockError, isNonClaudePlatformModel, isOpenaiPlatformModel } from '../core/distill-detect.mjs'
 import {
   inboundRefusalDeviceId,
   matchStoredRefusal,
@@ -48,10 +48,10 @@ function distillEvidenceMessage(message, evidence) {
 function hardRulesFor(inbound, body, jev, distillOn) {
   const hardOn = jev?.hard_regex_enabled !== false
   const base = Array.isArray(jev?.rules) ? jev.rules : HARD_POLICY_RULES
-  const openai = isOpenaiPlatformModel(inbound, body)
+  const foreign = isNonClaudePlatformModel(inbound, body)
   return base.filter((rule) => {
     if (!rule || rule.enabled === false) return false
-    if (rule.category === 'distill') return distillOn && !openai
+    if (rule.category === 'distill') return distillOn && !foreign
     return hardOn
   })
 }
@@ -137,10 +137,12 @@ export async function evaluateProtocolIntercept({
   // is set, the slot decides GPT: a scope with no GPT pair and no named
   // account is out of range. Claude stays in the gate until a Claude pair
   // or a named account is selected; a GPT-only scope does not turn it off.
-  if (isOpenaiPlatformModel(inbound, body)) {
+  const foreignPlatform = isOpenaiPlatformModel(inbound, body) ? 'gpt' : isNonClaudePlatformModel(inbound, body) ? 'grok' : ''
+  if (foreignPlatform) {
+    const enabled = foreignPlatform === 'gpt' ? jev?.openai_platform_enabled === true : jev?.grok_platform_enabled === true
     if (!jevScopeConfigured(jev)) {
-      if (jev?.openai_platform_enabled !== true) return pass('platform')
-    } else if (!jevScopeWaits(jev, 'gpt')) {
+      if (!enabled) return pass('platform')
+    } else if (!jevScopeWaits(jev, foreignPlatform)) {
       return pass('scope')
     } else if (!account) {
       return pass('scope-wait')

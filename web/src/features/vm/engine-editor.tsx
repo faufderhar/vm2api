@@ -4,7 +4,7 @@ import { Link } from '@tanstack/react-router'
 import type { Vm, VmKernelSnapshot } from '@/types/panel-vm'
 import { toast } from 'sonner'
 import { patchVm } from '@/lib/api'
-import { isCodexVm } from '@/lib/vm-kind'
+import { isClaudeVm } from '@/lib/vm-kind'
 import { Button } from '@/components/ui/button'
 import { dashboardQueryOptions } from '@/features/overview/queries'
 import {
@@ -79,7 +79,7 @@ export function VmEngineEditor({
       <div className='mt-3 grid gap-2 text-sm sm:grid-cols-2'>
         <EngineValue
           label='数据面'
-          value={isCodexVm(vm) ? '—' : dataplaneLabel(vm.resolved_dataplane)}
+          value={isClaudeVm(vm) ? dataplaneLabel(vm.resolved_dataplane) : '—'}
         />
       </div>
       <p className='mt-3 text-xs leading-relaxed text-muted-foreground'>

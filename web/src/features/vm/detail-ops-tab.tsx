@@ -1,6 +1,6 @@
 import type { Vm, VmProxySnap } from '@/types/panel-vm'
 import { type CredType, credTypeLabel } from '@/lib/cred-type'
-import { isCodexVm } from '@/lib/vm-kind'
+import { isClaudeVm, isCodexVm } from '@/lib/vm-kind'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
@@ -56,6 +56,7 @@ export function VmOpsTab(props: VmOpsTabProps) {
   } = props
 
   const gpt = isCodexVm(vm)
+  const notClaude = !isClaudeVm(vm)
   const remote = isRemoteVm(vm)
   return (
     <TabsContent value='ops' className='space-y-3 pt-4'>
@@ -125,7 +126,7 @@ export function VmOpsTab(props: VmOpsTabProps) {
           loading={busy('/reload')}
           onClick={() => onAction('/reload')}
         >
-          {gpt ? '重载 Codex kernel' : '重载 worker'}
+          {gpt ? '重载 Codex kernel' : notClaude ? '重载槽位' : '重载 worker'}
         </Button>
         <Button
           size='sm'
@@ -135,7 +136,7 @@ export function VmOpsTab(props: VmOpsTabProps) {
         >
           采集特征
         </Button>
-        {gpt ? null : (
+        {notClaude ? null : (
           <>
             <Tooltip>
               <TooltipTrigger asChild>
@@ -194,7 +195,7 @@ export function VmOpsTab(props: VmOpsTabProps) {
           ) : null}
         </Tooltip>
       </div>
-      {gpt ? null : (
+      {notClaude ? null : (
         <>
           <Separator />
           <div className='flex flex-wrap items-center gap-2'>
@@ -224,7 +225,7 @@ export function VmOpsTab(props: VmOpsTabProps) {
           </div>
         </>
       )}
-      {gpt ? null : <VmShellCard vm={vm} onChanged={onRefresh} />}
+      {notClaude ? null : <VmShellCard vm={vm} onChanged={onRefresh} />}
       <Separator />
       <div className='flex flex-wrap gap-2'>
         <Button size='sm' variant='outline' onClick={onReset}>

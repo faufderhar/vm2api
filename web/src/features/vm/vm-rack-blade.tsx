@@ -57,6 +57,10 @@ const TIER_VARS: Record<string, CSSProperties> = {
     '--tc': 'var(--tier-codex-solid)',
     '--tf': 'var(--tier-codex-fg)',
   } as CSSProperties,
+  grok: {
+    '--tc': 'var(--tier-grok-solid)',
+    '--tf': 'var(--tier-grok-fg)',
+  } as CSSProperties,
 }
 
 /** 等级只占左沿一截色标与徽标，不再整卡染色——机架是一块底，等级是标签。 */

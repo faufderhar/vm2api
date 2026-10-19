@@ -175,7 +175,13 @@ function maxTokensOf(body) {
   return n == null ? null : Number(n)
 }
 
-/** OpenAI platform models (gpt-*) never hit distill. Claude paths stay on the existing rules. */
+/** OpenAI and xAI models never hit distill. Claude paths stay on the existing rules. */
+export function isNonClaudePlatformModel(inbound, body) {
+  const model = body?.model ?? inbound?.model
+  const platform = detectInboundPlatform(model)
+  return platform.ok === true && (platform.platform === 'openai' || platform.platform === 'xai')
+}
+
 export function isOpenaiPlatformModel(inbound, body) {
   const model = body?.model ?? inbound?.model
   const platform = detectInboundPlatform(model)

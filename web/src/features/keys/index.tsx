@@ -449,5 +449,7 @@ function scopeText(item: ApiKeyItem): string {
     return `Anthropic · ${item.allowed_vms?.length || 0} 台`
   if (item.group_type === 'openai')
     return `OpenAI · ${item.allowed_vms?.length || 0} 台`
+  if (item.group_type === 'xai')
+    return `Grok · ${item.allowed_vms?.length || 0} 台`
   return '全局'
 }

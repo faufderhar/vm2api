@@ -17,7 +17,7 @@ import { maxRequestBytes, streamIdleTimeoutMs } from '../core/config.mjs'
 import { OFFICIAL_CLI_VERSION } from '../identity/vm-identity.mjs'
 import { cacheTtlFromRouting, normalizeCacheTtl } from '../protocol/cache-ttl.mjs'
 import { setVmSchedulable, listVms, getVm } from '../vm/vm-registry.mjs'
-import { isCodexVm } from '../vm/vm-kind.mjs'
+import { isClaudeVm } from '../vm/vm-kind.mjs'
 import { isKvmRuntime, runtimeKind } from '../vm/runtime-kind.mjs'
 import { slotExecArgv } from '../vm/slot-exec.mjs'
 import {
@@ -759,7 +759,7 @@ export function syncClaudeKernelConfigs(projectRoot, routing) {
   let skipped = 0
   for (const { id } of listVms(projectRoot)) {
     const vm = getVm(projectRoot, id)
-    if (!vm || isCodexVm(vm)) {
+    if (!vm || !isClaudeVm(vm)) {
       skipped += 1
       continue
     }

@@ -13,6 +13,8 @@ export type PanelErrorMetadata = {
   /** 放置预检失败（`placement_preflight_failed`）时的 `error.checks`。 */
   checks?: unknown
   data?: unknown
+  /** 配置缺项（如 `grok_oauth_not_configured` 的 `error.missing`）。 */
+  missing?: unknown
 }
 
 export type NormalizedPanelError = PanelErrorMetadata & {
@@ -27,6 +29,7 @@ export class ApiError extends Error {
   details?: unknown
   checks?: unknown
   data?: unknown
+  missing?: unknown
 
   constructor(
     message: string,
@@ -43,6 +46,7 @@ export class ApiError extends Error {
     this.details = normalized.details
     this.checks = normalized.checks
     this.data = normalized.data
+    this.missing = normalized.missing
   }
 }
 
@@ -90,6 +94,9 @@ export function normalizePanelError(
       : {}),
     ...(Object.prototype.hasOwnProperty.call(body || {}, 'data')
       ? { data: body?.data }
+      : {}),
+    ...(Object.prototype.hasOwnProperty.call(error || {}, 'missing')
+      ? { missing: error?.missing }
       : {}),
   }
 }

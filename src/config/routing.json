@@ -129,6 +129,52 @@
     }
   },
 
+  "grok": {
+    "enabled": false,
+    "base_url": "https://api.x.ai",
+    "oauth": {
+      "authorize_url": "",
+      "token_url": "",
+      "client_id": "",
+      "redirect_uri": "",
+      "scope": "",
+      "extra_authorize_params": {},
+      "refresh_skew_sec": 300
+    },
+    "websocket": {
+      "enabled": false
+    },
+    "protocols": {
+      "openai.responses": {
+        "mode": "native",
+        "enabled": true
+      },
+      "openai.chat": {
+        "mode": "native",
+        "enabled": true
+      },
+      "openai.completions": {
+        "mode": "reject",
+        "enabled": false
+      },
+      "anthropic.messages": {
+        "mode": "reject",
+        "enabled": false
+      }
+    },
+    "clients": {
+      "official_codex": "allow",
+      "openai_compatible": "allow",
+      "claude_code": "reject",
+      "unknown": "allow"
+    },
+    "quota": {
+      "max_concurrency": 2,
+      "max_rpm": 0,
+      "max_sessions": 0
+    }
+  },
+
   "compatibility": {
     "persona_preset": "official_full",
     "overlay_preset": "off",

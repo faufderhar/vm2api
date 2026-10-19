@@ -13,7 +13,7 @@ import { WebSocketServer } from 'ws'
 import { execDetached, inspectExec, openExecTty, resizeExec } from '../cluster/docker-remote.mjs'
 import { slotContainerName } from '../transport/rust-kernel-supervisor.mjs'
 import { slotHost } from './slot-host.mjs'
-import { isCodexVm } from './vm-kind.mjs'
+import { isClaudeVm, platformDescriptor } from './vm-kind.mjs'
 import { isKvmRuntime } from './runtime-kind.mjs'
 import { slotExecCmd } from './slot-exec.mjs'
 import { getVm } from './vm-registry.mjs'
@@ -245,7 +245,7 @@ export function createSlotShell({ projectRoot, logger = console }) {
   function issueTicket(vmId) {
     const vm = getVm(projectRoot, vmId)
     if (!vm) return refuse(404, 'vm_not_found', 'vm not found')
-    if (isCodexVm(vm)) return refuse(409, 'no_container', 'GPT 槽没有容器，无法打开终端')
+    if (!isClaudeVm(vm)) return refuse(409, 'no_container', `${platformDescriptor(vm).label} 槽没有容器，无法打开终端`)
     if (sessions >= MAX_SESSIONS) return refuse(429, 'shell_limit', `终端会话已达上限 ${MAX_SESSIONS}`)
     const now = Date.now()
     for (const [t, v] of tickets) if (v.exp <= now) tickets.delete(t)
@@ -278,7 +278,7 @@ export function createSlotShell({ projectRoot, logger = console }) {
       return true
     }
     const vm = getVm(projectRoot, vmId)
-    if (!vm || isCodexVm(vm)) {
+    if (!vm || !isClaudeVm(vm)) {
       rejectUpgrade(socket, 404, 'Not Found')
       return true
     }

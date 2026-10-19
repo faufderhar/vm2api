@@ -108,6 +108,7 @@ export type HealthProbePayload = {
   snapshots: {
     anthropic: HealthSnapshotView
     openai: HealthSnapshotView
+    xai?: HealthSnapshotView
   } | null
 }
 

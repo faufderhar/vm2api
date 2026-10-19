@@ -183,7 +183,7 @@ function FieldGrid({
 }: {
   value: FieldDraft
   onChange: (next: FieldDraft) => void
-  platform: 'anthropic' | 'openai'
+  platform: 'anthropic' | 'openai' | 'xai'
   idPrefix: string
 }) {
   function set(key: keyof FieldDraft, raw: string) {

@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import type { ApiKeyItem, VmPool } from '@/types/panel-keys'
 import type { Vm } from '@/types/panel-vm'
-import { isCodexVm } from '@/lib/vm-kind'
+import { isClaudeVm, isCodexVm, isGrokVm } from '@/lib/vm-kind'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -263,6 +263,7 @@ export function KeyLimitsDialog({
                 {pools ? <SelectItem value='pool'>账号池</SelectItem> : null}
                 <SelectItem value='anthropic'>anthropic</SelectItem>
                 <SelectItem value='openai'>openai</SelectItem>
+                <SelectItem value='xai'>xai · Grok</SelectItem>
               </SelectContent>
             </Select>
           </Field>
@@ -373,12 +374,13 @@ function blankDraft(): KeyLimitsDraft {
 }
 
 function groupOf(value: string | undefined): KeyGroupType {
-  if (value === 'anthropic' || value === 'openai') return value
+  if (value === 'anthropic' || value === 'openai' || value === 'xai') return value
   return 'all'
 }
 
 function vmsInGroup(vms: Vm[], group: KeyGroupType): Vm[] {
   if (group === 'openai') return vms.filter((vm) => isCodexVm(vm))
-  if (group === 'anthropic') return vms.filter((vm) => !isCodexVm(vm))
+  if (group === 'anthropic') return vms.filter((vm) => isClaudeVm(vm))
+  if (group === 'xai') return vms.filter((vm) => isGrokVm(vm))
   return []
 }

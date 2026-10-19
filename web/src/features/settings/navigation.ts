@@ -21,6 +21,7 @@ export const SETTINGS_TABS = [
   ['pool', '账号池'],
   ['quota', '配额'],
   ['openai', 'OpenAI'],
+  ['grok', 'Grok'],
   ['logs', '日志'],
   ['protocol', '协议'],
   ['whitelist', '白名单'],
@@ -50,6 +51,7 @@ export const SETTINGS_NAV_GROUPS: {
       { id: 'pool', icon: Layers },
       { id: 'quota', icon: Gauge },
       { id: 'openai', icon: Bot },
+      { id: 'grok', icon: Bot },
     ],
   },
   {
@@ -65,6 +67,7 @@ export const SETTINGS_NAV_GROUPS: {
       { id: 'init', icon: PackageCheck },
       { id: 'health', icon: Activity },
       { id: 'openai', icon: Bot },
+      { id: 'grok', icon: Bot },
       { id: 'telemetry', icon: RadioTower },
       { id: 'socks5', icon: Network },
     ],

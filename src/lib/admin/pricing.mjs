@@ -207,7 +207,7 @@ export function calculateCost(usage = {}, model = null) {
   const { platform, price, source, version, id } = resolved
   let mode = 'standard'
   let service_tier = null
-  if (platform === 'openai') {
+  if (platform === 'openai' || platform === 'xai') {
     const billed = openaiBillingMode(u)
     service_tier = billed.tier
     if (!billed.mode) {

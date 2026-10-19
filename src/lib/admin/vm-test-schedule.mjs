@@ -3,6 +3,7 @@ import { Cron } from 'croner'
 import { validTimezone } from '../core/timezone.mjs'
 import { isValidVmId } from '../vm/vm-file.mjs'
 import { isCodexVm } from '../vm/vm-kind.mjs'
+import { isGrokVm } from '../vm/vm-kind.mjs'
 import { getVm, listVms } from '../vm/vm-registry.mjs'
 import { listTestableModels } from './vm-test-chat.mjs'
 
@@ -167,7 +168,8 @@ function assertCron(cron, timezone) {
 }
 
 function defaultDialogParams(vm) {
-  const models = listTestableModels(isCodexVm(vm) ? 'openai' : 'anthropic')
+  const platform = isCodexVm(vm) ? 'openai' : isGrokVm(vm) ? 'xai' : 'anthropic'
+  const models = listTestableModels(platform)
   const model = models[0]?.id || ''
   if (!model) {
     throw new VmTestScheduleError('no test model available for this vm', 'test_model_missing', 400)

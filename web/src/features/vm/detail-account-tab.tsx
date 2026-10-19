@@ -10,7 +10,7 @@ import {
 import { extraUsageText } from '@/lib/fable-status'
 import { fmtExpiresAt, fmtNum, pct } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import { isCodexVm } from '@/lib/vm-kind'
+import { isClaudeVm, isCodexVm, isGrokVm } from '@/lib/vm-kind'
 import { claudeTier, credExpiry } from '@/lib/vm-status'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -86,6 +86,8 @@ export function VmAccountTab(props: VmAccountTabProps) {
   const perms = useVmPerms()
   const blocked = vm.can_import_credential === false
   const gpt = isCodexVm(vm)
+  const grok = isGrokVm(vm)
+  const notClaude = !isClaudeVm(vm)
   const remote = isRemoteVm(vm)
   const probe = latestProbe(
     acc.last_probe_check as ProbeCheck | undefined,
@@ -174,7 +176,7 @@ export function VmAccountTab(props: VmAccountTabProps) {
                   </Field>
                 </>
               )}
-              {gpt ? null : (
+              {notClaude ? null : (
                 <Field label='上游认证' compact>
                   <div className='flex items-center gap-1'>
                     <span>{authSchemeLabel(authSchemeOf(vm))}</span>
@@ -187,8 +189,15 @@ export function VmAccountTab(props: VmAccountTabProps) {
                   </div>
                 </Field>
               )}
-              <Field label={gpt ? 'ChatGPT 账号' : 'UUID'} compact>
-                {gpt ? (
+              <Field
+                label={gpt ? 'ChatGPT 账号' : grok ? 'xAI 账号' : 'UUID'}
+                compact
+              >
+                {grok ? (
+                  <span className='font-mono text-xs'>
+                    {String(vm.grok?.account_id || vm.org_uuid || '—')}
+                  </span>
+                ) : gpt ? (
                   <span className='text-sm'>
                     {String(
                       vm.email || vm.account_uuid || acc.account_id || '—'
@@ -205,19 +214,19 @@ export function VmAccountTab(props: VmAccountTabProps) {
                   {String(vm.org_uuid || '—')}
                 </span>
               </Field>
-              {gpt ? null : (
+              {notClaude ? null : (
                 <Field label='来源' compact>
                   {String(vm.oauth_source || '—')}
                 </Field>
               )}
               <div className='flex flex-wrap items-center gap-2 pt-2'>
-                {gpt ? null : (
+                {notClaude ? null : (
                   <ConvertOauthToSetupButton
                     vm={vm}
                     onCommitted={onCredentialCommitted}
                   />
                 )}
-                {gpt ? null : <CredentialEditorButton vmId={id} />}
+                {notClaude ? null : <CredentialEditorButton vmId={id} />}
                 <VmPackageButton vmId={id} />
                 {perms.credential ? (
                   <Tooltip>
@@ -270,7 +279,7 @@ export function VmAccountTab(props: VmAccountTabProps) {
                     {probe.data_at ? fmtExpiresAt(probe.data_at) : '未知'}
                   </Field>
                 ) : null}
-                {gpt ? null : (
+                {notClaude ? null : (
                   <Field label='超额' compact>
                     {extraUsageText(acc.extra_usage ?? vm.extra_usage)}
                   </Field>
@@ -310,7 +319,7 @@ export function VmAccountTab(props: VmAccountTabProps) {
                   kind='remain'
                   hint={`${fmtNum(todayReadCache)} 读 / ${fmtNum(todayWriteCache)} 写`}
                 />
-                {gpt ? null : (
+                {notClaude ? null : (
                   <Meter
                     label='7 天 Sonnet'
                     value={pct(
@@ -324,7 +333,7 @@ export function VmAccountTab(props: VmAccountTabProps) {
         </div>
       </div>
 
-      {gpt || !perms.admin ? null : officialCc ? (
+      {notClaude || !perms.admin ? null : officialCc ? (
         <OfficialCcCard
           vmId={id}
           blockedReason={remote ? REMOTE_UNSUPPORTED_TEXT : ''}

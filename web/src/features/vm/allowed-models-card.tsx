@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { Vm } from '@/types/panel-vm'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
-import { catalogForVm, isCodexVm } from '@/lib/vm-kind'
+import { catalogForVm, platformLabel, platformOf } from '@/lib/vm-kind'
 import { claudeTier } from '@/lib/vm-status'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -74,11 +74,12 @@ export function AllowedModelsCard({ vm }: { vm: Vm }) {
   const canEdit = me.data?.role === 'admin'
   const pro = claudeTier(vm).key === 'pro'
   const inherit = !allowedListOf(vm)
-  const gpt = isCodexVm(vm)
+  const platform = platformOf(vm)
+  const claude = platform === 'anthropic'
 
   // model-policy 只有管理员能读；其他角色只看本槽已存的白名单。
   const policy = useQuery({
-    ...modelPolicyQueryOptions(gpt ? 'openai' : 'anthropic'),
+    ...modelPolicyQueryOptions(platform),
     enabled: canEdit,
   })
   const items = catalogForVm(catalogFrom(policy.data), vm)
@@ -129,11 +130,11 @@ export function AllowedModelsCard({ vm }: { vm: Vm }) {
       <CardContent className='space-y-3'>
         <p className='text-xs text-muted-foreground'>
           {inherit
-            ? gpt
-              ? '未限制，继承 GPT 模型矩阵'
-              : '未限制，继承全局模型矩阵'
+            ? claude
+              ? '未限制，继承全局模型矩阵'
+              : `未限制，继承 ${platformLabel(vm)} 模型矩阵`
             : '仅下列模型可打入此凭证'}
-          {pro && !gpt ? ' · Pro 账号无 Fable' : ''}
+          {pro && claude ? ' · Pro 账号无 Fable' : ''}
         </p>
         {!canEdit ? (
           inherit ? null : (

@@ -5,8 +5,11 @@ import {
   indexVms,
   isCodexVm,
   isGptCatalogId,
+  isGrokCatalogId,
+  isGrokVm,
   kindFromModel,
   platformLabel,
+  platformOf,
   compactEmail,
   slotAccountLabel,
   slotCredentialLabel,
@@ -35,6 +38,16 @@ describe('vmKindOf', () => {
     expect(isCodexVm(vm)).toBe(false)
   })
 
+  it('reads explicit xai/grok', () => {
+    const vm = { id: 'vm-grok-01', platform: 'xai', family: 'grok' }
+    expect(vmKindOf(vm)).toBe('grok')
+    expect(isGrokVm(vm)).toBe(true)
+    expect(isCodexVm(vm)).toBe(false)
+    expect(platformLabel(vm)).toBe('Grok')
+    expect(platformOf(vm)).toBe('xai')
+    expect(platformOf({ id: 'vm-01' })).toBe('anthropic')
+  })
+
   it('keeps legacy unmarked Codex flags', () => {
     expect(isCodexVm({ id: 'a', codex_kernel: true })).toBe(true)
     expect(
@@ -49,6 +62,12 @@ describe('kindFromModel / slotAccountLabel', () => {
     expect(kindFromModel('gpt-5.4')).toBe('codex')
     expect(kindFromModel('claude-sonnet-5', 'openai')).toBe('codex')
     expect(kindFromModel('claude-sonnet-5')).toBe('claude')
+  })
+
+  it('classifies grok models and xai protocol as Grok', () => {
+    expect(kindFromModel('grok-4')).toBe('grok')
+    expect(kindFromModel('grok-4', 'openai.responses')).toBe('grok')
+    expect(kindFromModel('anything', 'xai')).toBe('grok')
   })
 
   it('prefers email over slot id', () => {
@@ -117,6 +136,14 @@ describe('catalogForVm', () => {
       'gpt-5.6',
     ])
     expect(isGptCatalogId('gpt-5.4', 'codex')).toBe(true)
+  })
+
+  it('keeps only grok ids on Grok slots', () => {
+    const vm = { id: 'vm-grok-01', platform: 'xai', family: 'grok' }
+    const mixed = [...items, { id: 'grok-4' }]
+    expect(catalogForVm(mixed, vm).map((m) => m.id)).toEqual(['grok-4'])
+    expect(isGrokCatalogId('grok-code-fast-1')).toBe(true)
+    expect(isGrokCatalogId('gpt-5.4')).toBe(false)
   })
 
   it('hides GPT ids on Claude slots', () => {

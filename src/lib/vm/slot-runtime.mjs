@@ -13,6 +13,7 @@ import {
 import { ensureCodexKernel, stopCodexKernel, writeCodexKernelConfig } from '../transport/codex-kernel-supervisor.mjs'
 import { runtimeKind, isKvmRuntime } from './runtime-kind.mjs'
 import { getVm, listVms, isCodexVm, persistVmRuntime } from './vm-registry.mjs'
+import { isClaudeVm, isGrokVm } from './vm-kind.mjs'
 import { resolveInferenceEngine } from './slot-engine.mjs'
 import {
   containerHasKernelMount,
@@ -54,6 +55,14 @@ export async function startSlotReady(vm, projectRoot, opts = {}) {
     const kernel = await ensureSlotInferenceRuntime(vm, projectRoot, opts)
     if (!kernel.ok) return kernel
     return { ok: true, engine: 'codex', docker: boot, kernel }
+  }
+  if (isGrokVm(vm)) {
+    if (!slotHost(vm).supports('grok')) return unsupportedOnHost('grok')
+    const boot = await (opts.ops?.startSlot || startSlot)(vm, projectRoot, opts)
+    if (!boot?.ok) return boot
+    persistNodeRuntime(vm, projectRoot, boot)
+    const kernel = await ensureSlotInferenceRuntime(vm, projectRoot, opts)
+    return { ok: true, engine: kernel.engine, docker: boot, kernel }
   }
   const boot = await startSlot(vm, projectRoot, opts)
   if (!boot?.ok) return boot
@@ -107,6 +116,8 @@ function wrapUsesSlotKernel(wrap) {
 export async function ensureSlotInferenceRuntime(vm, projectRoot, opts = {}) {
   const routing = opts.routing || {}
   const eager = routing?.inference?.eager_start !== false
+  // Grok inference runs in the shared host api-kernel; the slot has no kernel of its own.
+  if (isGrokVm(vm)) return { ok: true, engine: 'api-kernel' }
   if (isCodexVm(vm)) {
     if (!eager) return { ok: true, skipped: true, reason: 'eager_start_off', engine: 'codex' }
     const write = opts.ops?.writeCodexKernelConfig || writeCodexKernelConfig
@@ -232,6 +243,9 @@ export async function switchSlotInferenceEngine(vm, projectRoot, engine, { timeo
   if (isCodexVm(vm)) {
     return { ok: false, code: 'gpt_engine_forbidden', error: 'GPT slots do not use rust inference engines' }
   }
+  if (isGrokVm(vm)) {
+    return { ok: false, code: 'grok_engine_forbidden', error: 'Grok slots do not use rust inference engines' }
+  }
   if (engine === 'go') {
     return { ok: false, code: 'go_engine_disabled', error: 'Go HTTP forwarding is disabled' }
   }
@@ -328,7 +342,7 @@ export async function switchInheritedInferenceEngines({
     .filter(
       (vm) =>
         vm &&
-        !isCodexVm(vm) &&
+        isClaudeVm(vm) &&
         slotHost(vm).supports('engine_switch') &&
         !Object.prototype.hasOwnProperty.call(vm, 'inference_engine'),
     )

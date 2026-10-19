@@ -13,6 +13,7 @@ import { createHash } from 'node:crypto'
 import { shouldProbeFable, usageProbeBackoffRemainingMs } from './crs-usage-probe.mjs'
 import { hasRefreshPresence } from './oauth-credentials.mjs'
 import { vmHasProxyPath } from './credential-refresh-monitor.mjs'
+import { isClaudeVm, isCodexVm } from '../vm/vm-kind.mjs'
 import { hasLiveExtraSample, hasOfficialUsageSample, parseResetMs } from '../pool/quota-window.mjs'
 export const DEFAULT_USAGE_PROBE = Object.freeze({
   enabled: false,
@@ -59,6 +60,7 @@ export function normalizeUsageProbeConfig(raw = {}) {
 
 export function isUsageProbeTarget(vm) {
   if (!vm?.id) return false
+  if (!isClaudeVm(vm) && !isCodexVm(vm)) return false
   if (!hasRefreshPresence(vm.claude) && !vm.has_refresh && !vm.has_token) return false
   const grantErr = String(vm.claude?.refresh_error || vm.refresh_error || '')
   if (/invalid_grant|refresh token not found/i.test(grantErr)) return false

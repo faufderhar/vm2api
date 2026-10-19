@@ -34,6 +34,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { dashboardQueryOptions } from '@/features/overview/queries'
 import { CodexCredentialPanel } from '@/features/vm/codex-credential-panel'
 import { ConvertOauthToSetupButton } from '@/features/vm/convert-oauth-button'
+import { GrokCredentialPanel } from '@/features/vm/grok-credential-panel'
 import { vmQueryOptions } from '@/features/vm/queries'
 
 export type CommitResult = {
@@ -127,7 +128,11 @@ export function CredentialPanel({
   onCommitted?: (data: CommitResult, vmId: string, what: string) => void
   showConvert?: boolean
 }) {
-  if (importSurfaceFor(vm) === 'codex') {
+  const surface = importSurfaceFor(vm)
+  if (surface === 'grok') {
+    return <GrokCredentialPanel vm={vm} onCommitted={onCommitted} />
+  }
+  if (surface === 'codex') {
     return <CodexCredentialPanel vm={vm} onCommitted={onCommitted} />
   }
   return (

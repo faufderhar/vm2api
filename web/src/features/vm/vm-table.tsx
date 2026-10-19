@@ -2,7 +2,7 @@ import type { UsageAccountRow } from '@/types/panel-usage'
 import type { Vm } from '@/types/panel-vm'
 import { credTypeLabel, credTypeOf } from '@/lib/cred-type'
 import { usedPctOf } from '@/lib/format'
-import { isCodexVm, platformLabel } from '@/lib/vm-kind'
+import { platformLabel, vmKindOf } from '@/lib/vm-kind'
 import { claudeTier, fleetGroup, vmCredDead, vmFailedAt } from '@/lib/vm-status'
 import { vmCacheHitPct, vmTotalCost, vmWindowCosts } from '@/lib/vm-usage'
 import { Button } from '@/components/ui/button'
@@ -101,13 +101,15 @@ export function sortVms(
 /**
  * 按状态分区筛选 + 全文搜索。
  * 等级与凭证类型仍参与全文搜索（可以直接搜 "Max" / "OAuth"）。
- * `kind` 切 Claude / GPT 凭证面，默认全部。
+ * `kind` 切 Claude / GPT / Grok 凭证面，默认全部。
  */
-export type VmKindFilter = 'all' | 'claude' | 'gpt'
+export type VmKindFilter = 'all' | 'claude' | 'gpt' | 'grok'
 
 export function matchesKind(vm: Vm, kind: VmKindFilter): boolean {
   if (kind === 'all') return true
-  return isCodexVm(vm) ? kind === 'gpt' : kind === 'claude'
+  const vmKind = vmKindOf(vm)
+  if (vmKind === 'codex') return kind === 'gpt'
+  return vmKind === kind
 }
 
 export function KindFilterChips({
@@ -121,14 +123,20 @@ export function KindFilterChips({
 }) {
   let claude = 0
   let openai = 0
+  let grok = 0
   for (const vm of vms) {
-    if (isCodexVm(vm)) openai += 1
+    const vmKind = vmKindOf(vm)
+    if (vmKind === 'codex') openai += 1
+    else if (vmKind === 'grok') grok += 1
     else claude += 1
   }
-  const chips = [
-    ['claude', 'claude', claude, '筛选 Claude'],
-    ['gpt', 'codex', openai, '筛选 OpenAI'],
-  ] as const
+  const chips = (
+    [
+      ['claude', 'claude', claude, '筛选 Claude'],
+      ['gpt', 'codex', openai, '筛选 OpenAI'],
+      ['grok', 'grok', grok, '筛选 Grok'],
+    ] as const
+  ).filter(([key, , n]) => key !== 'grok' || n > 0)
   return (
     <>
       {chips.map(([key, chipKind, n, label]) => (

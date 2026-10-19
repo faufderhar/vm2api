@@ -10,6 +10,7 @@ import http from 'node:http'
 import { Readable } from 'node:stream'
 import { WebSocket, WebSocketServer } from 'ws'
 import { computedUpstreamTransport, inferenceWebsocketEnabled } from './codex-route.mjs'
+import { detectInboundPlatform } from './platform-detect.mjs'
 import { DEFAULT_MAX_REQUEST_BYTES, inboundBodyLimit } from '../core/config.mjs'
 
 export const RESPONSES_WS_QUEUE_LIMIT = 32
@@ -452,6 +453,22 @@ export function createResponsesWsHandler({
           if (!decoded.ok) {
             sendFrame(ws, decoded.error)
             continue
+          }
+          if (detectInboundPlatform(decoded.body?.model).platform === 'xai') {
+            sendFrame(
+              ws,
+              responsesWsErrorFrame({
+                status: 400,
+                type: 'invalid_request_error',
+                code: 'websocket_not_supported_for_platform',
+                message: 'Grok does not support the Responses WebSocket. Retry over HTTP.',
+              }),
+            )
+            try {
+              ws.close(1008, 'websocket_not_supported_for_platform')
+            } catch {}
+            closed = true
+            break
           }
           const routing = typeof getRouting === 'function' ? getRouting() || {} : {}
           if (!inferenceWebsocketEnabled(routing)) {

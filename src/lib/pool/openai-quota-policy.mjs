@@ -35,17 +35,17 @@ function integer(value) {
   return n != null && Number.isInteger(n) ? n : null
 }
 
-function normalizedValue(key, value, { strict = false } = {}) {
+function normalizedValue(key, value, { strict = false, section = 'codex', defaults = OPENAI_QUOTA_DEFAULTS } = {}) {
   const limits = OPENAI_QUOTA_LIMITS[key]
   const n = key === 'limit_5h' || key === 'limit_7d' ? finite(value) : integer(value)
   if (n == null) {
     if (strict)
-      throw new TypeError(`codex.quota.${key} must be ${key.startsWith('limit_') ? 'a number' : 'an integer'}`)
-    return OPENAI_QUOTA_DEFAULTS[key]
+      throw new TypeError(`${section}.quota.${key} must be ${key.startsWith('limit_') ? 'a number' : 'an integer'}`)
+    return defaults[key]
   }
   if (n < limits.min || n > limits.max) {
     if (strict) {
-      throw new RangeError(`codex.quota.${key} must be between ${limits.min} and ${limits.max}`)
+      throw new RangeError(`${section}.quota.${key} must be between ${limits.min} and ${limits.max}`)
     }
     return Math.min(limits.max, Math.max(limits.min, n))
   }
@@ -80,6 +80,39 @@ export function mergeOpenAIQuotaPolicy(current, patch) {
     ...normalizeOpenAIQuotaPolicy(current),
     ...validateOpenAIQuotaPatch(patch),
   })
+}
+
+export const GROK_QUOTA_DEFAULTS = Object.freeze({
+  max_concurrency: 2,
+  max_rpm: 0,
+  max_sessions: 0,
+})
+
+const GROK_FIELDS = Object.keys(GROK_QUOTA_DEFAULTS)
+const GROK_OPTS = Object.freeze({ section: 'grok', defaults: GROK_QUOTA_DEFAULTS })
+
+/** Grok has no upstream 5h/7d windows to gate on; only local seat limits apply. */
+export function normalizeGrokQuotaPolicy(raw = {}) {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
+  const out = {}
+  for (const key of GROK_FIELDS) out[key] = normalizedValue(key, source[key] ?? GROK_QUOTA_DEFAULTS[key], GROK_OPTS)
+  return out
+}
+
+export function validateGrokQuotaPatch(raw = {}) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new TypeError('grok.quota must be an object')
+  }
+  const out = {}
+  for (const key of Object.keys(raw)) {
+    if (!GROK_FIELDS.includes(key)) throw new TypeError(`grok.quota.${key} is not supported`)
+    out[key] = normalizedValue(key, raw[key], { ...GROK_OPTS, strict: true })
+  }
+  return out
+}
+
+export function mergeGrokQuotaPolicy(current, patch) {
+  return normalizeGrokQuotaPolicy({ ...normalizeGrokQuotaPolicy(current), ...validateGrokQuotaPatch(patch) })
 }
 
 export function openAIConcurrencyOf(vm, policy = OPENAI_QUOTA_DEFAULTS) {

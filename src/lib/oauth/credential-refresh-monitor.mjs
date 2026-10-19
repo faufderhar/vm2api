@@ -7,6 +7,7 @@
 import { isLocalEgressProxy } from '../vm/egress.mjs'
 import { proxyBlockedReason } from '../vm/proxy-policy.mjs'
 import { hasRefreshPresence, needsRefresh } from './oauth-credentials.mjs'
+import { isClaudeVm } from '../vm/vm-kind.mjs'
 
 export const DEFAULT_CREDENTIAL_REFRESH = Object.freeze({
   enabled: true,
@@ -54,6 +55,7 @@ export function vmHasProxyPath(vm) {
 
 export function isCredentialRefreshTarget(vm) {
   if (!vm?.id) return false
+  if (!isClaudeVm(vm)) return false
   if (!hasRefreshPresence(vm.claude) && !vm.has_refresh) return false
   const status = String(vm.status || '').toLowerCase()
   if (HARD_DOWN.has(status)) return false

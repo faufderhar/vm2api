@@ -7,6 +7,7 @@ import { AlertTriangle } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { fmtAgo } from '@/lib/format'
+import type { VmPlatform } from '@/lib/vm-kind'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -51,7 +52,7 @@ export function ModelsPage() {
   const qc = useQueryClient()
   const [pageTab, setPageTab] = useState<'models' | 'pricing'>('models')
   const [catalogPlatform, setCatalogPlatform] = useState<
-    'anthropic' | 'openai'
+    VmPlatform
   >('anthropic')
   const q = useQuery(modelPolicyQueryOptions(catalogPlatform))
   const pricingQ = useQuery(pricingQueryOptions())
@@ -162,6 +163,20 @@ export function ModelsPage() {
     },
     onError: (error: Error) => toast.error(error.message),
   })
+  const syncGrok = useMutation({
+    mutationFn: () =>
+      api<PolicyPayload>('/api/panel/model-policy/sync-grok', {
+        method: 'POST',
+        body: '{}',
+      }),
+    onSuccess: async (data) => {
+      toast.success(`已同步 Grok 目录 (${data.synced || 0})`)
+      await qc.invalidateQueries({
+        queryKey: modelPolicyQueryOptions('xai').queryKey,
+      })
+    },
+    onError: (error: Error) => toast.error(error.message),
+  })
 
   function patchModel(id: string, fn: (rec: Omit<ModelEntry, 'id'>) => void) {
     setDraft((prev) => {
@@ -235,7 +250,7 @@ export function ModelsPage() {
     })
   }
 
-  function switchPlatform(next: 'anthropic' | 'openai') {
+  function switchPlatform(next: VmPlatform) {
     if (next === catalogPlatform) return
     if (
       dirty &&
@@ -251,9 +266,12 @@ export function ModelsPage() {
   }
 
   const claudePool = catalogPlatform === 'anthropic'
+  const grokPool = catalogPlatform === 'xai'
   const poolHint = claudePool
-    ? 'Claude 号池。同一会话只占一个 VM session 窗口，不和 GPT 混调度。'
-    : 'GPT 号池。粘性独立，不占用 Claude 原生 session 槽。'
+    ? 'Claude 号池。同一会话只占一个 VM session 窗口，不和 GPT、Grok 混调度。'
+    : grokPool
+      ? 'Grok 号池。粘性前缀是 p:xai:，不占用 Claude 或 GPT 的会话。'
+      : 'GPT 号池。粘性独立，不占用 Claude 原生 session 槽。'
 
   return (
     <PageHeader
@@ -275,6 +293,19 @@ export function ModelsPage() {
                 disabled={sync.isPending}
               >
                 {sync.isPending ? '同步中…' : '同步 Worker'}
+              </Button>
+            ) : grokPool ? (
+              <Button
+                variant='outline'
+                className='cursor-pointer'
+                onClick={() => {
+                  const ask = syncConfirmText(dirty, ' Grok ')
+                  if (ask && !window.confirm(ask)) return
+                  syncGrok.mutate()
+                }}
+                disabled={syncGrok.isPending}
+              >
+                {syncGrok.isPending ? '同步中…' : '同步 Grok'}
               </Button>
             ) : (
               <Button
@@ -351,7 +382,11 @@ export function ModelsPage() {
                     <Tabs
                       value={catalogPlatform}
                       onValueChange={(value) => {
-                        if (value === 'anthropic' || value === 'openai') {
+                        if (
+                          value === 'anthropic' ||
+                          value === 'openai' ||
+                          value === 'xai'
+                        ) {
                           switchPlatform(value)
                         }
                       }}
@@ -369,13 +404,18 @@ export function ModelsPage() {
                         >
                           OpenAI
                         </TabsTrigger>
+                        <TabsTrigger value='xai' className='cursor-pointer px-4'>
+                          Grok
+                        </TabsTrigger>
                       </TabsList>
                     </Tabs>
                     <div className='max-w-3xl space-y-1'>
                       <h3 className='text-xl font-semibold tracking-tight'>
                         {claudePool
                           ? 'Claude 官方模型矩阵'
-                          : 'GPT / Codex 官方模型矩阵'}
+                          : grokPool
+                            ? 'Grok 模型目录'
+                            : 'GPT / Codex 官方模型矩阵'}
                       </h3>
                       <p className='text-sm leading-6 text-muted-foreground'>
                         {poolHint}

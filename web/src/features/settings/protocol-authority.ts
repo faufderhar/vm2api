@@ -5,7 +5,7 @@ import {
 } from '@/types/panel-routing'
 import type { Vm } from '@/types/panel-vm'
 import { patchVm, type VmPatch } from '@/lib/api'
-import { isCodexVm } from '@/lib/vm-kind'
+import { isClaudeVm } from '@/lib/vm-kind'
 
 export type ProtocolSlot = {
   id: string
@@ -43,7 +43,7 @@ export function sessionIdleTtlFromInference(
  * 不在每次协议保存时清 inference_engine：那会触发 rust 重建，wrap 未同步就 config_missing。
  */
 export function protocolInheritPatch(vm: ProtocolSlot): VmPatch | null {
-  if (isCodexVm(vm as Vm)) return null
+  if (!isClaudeVm(vm as Vm)) return null
   if (!String(vm.persona_preset ?? '').trim()) return null
   return { persona_preset: '' }
 }

@@ -45,9 +45,11 @@ import {
   mergeOpenAIQuotaPolicy,
   normalizeOpenAIQuotaPolicy,
 } from '../pool/openai-quota-policy.mjs'
+import { mergeGrokQuotaPolicy, normalizeGrokQuotaPolicy } from '../pool/openai-quota-policy.mjs'
+import { normalizeGrokRouting, validateGrokRoutingPatch } from '../protocol/grok-route.mjs'
 import { rustKernelHealth } from '../transport/rust-kernel-client.mjs'
 import { requestKernelReloadWhenIdle, syncClaudeKernelConfigs } from '../transport/rust-kernel-supervisor.mjs'
-import { isCodexVm } from '../vm/vm-kind.mjs'
+import { isClaudeVm, isCodexVm, isGrokVm } from '../vm/vm-kind.mjs'
 import { syncCodexQuotaSchedule } from '../vm/vm-registry.mjs'
 import { wakeOpenAIWaiter } from '../pool/openai-account-runtime.mjs'
 import { normalizeVmConfig } from '../vm/machine-spec.mjs'
@@ -87,7 +89,7 @@ export function createRoutingRuntime(ctx) {
     vm.policy = { ...(vm.policy || {}), maxConcurrency: value, concurrencyOverride: override }
     vm.updated_at = new Date().toISOString()
     atomicWriteJson(vmPath, vm, { mode: 0o600 })
-    if (!isCodexVm(vm)) ctx.accountQuota.setMaxConcurrency(vm.claude?.account_uuid || vm.id, value, { override })
+    if (isClaudeVm(vm)) ctx.accountQuota.setMaxConcurrency(vm.claude?.account_uuid || vm.id, value, { override })
     return vm
   }
 
@@ -99,7 +101,7 @@ export function createRoutingRuntime(ctx) {
     vm.policy = { ...(vm.policy || {}), maxRpm: value, rpmOverride: override }
     vm.updated_at = new Date().toISOString()
     atomicWriteJson(vmPath, vm, { mode: 0o600 })
-    if (!isCodexVm(vm) && vm.claude) ctx.accountQuota.setMaxRpm(vm.claude.account_uuid || vm.id, value, { override })
+    if (isClaudeVm(vm) && vm.claude) ctx.accountQuota.setMaxRpm(vm.claude.account_uuid || vm.id, value, { override })
     return vm
   }
 
@@ -123,7 +125,7 @@ export function createRoutingRuntime(ctx) {
     const value = normalizeSessionSlots(n)
     const applied = { updated: 0, skipped: 0 }
     for (const vm of listVms(ctx.cfg.paths.project)) {
-      if (vm.codex_kernel || vm.platform === 'openai' || vm.family === 'codex') continue
+      if (isCodexVm(vm) || isGrokVm(vm)) continue
       if (vm.session_slots_override === true) {
         applied.skipped += 1
         continue
@@ -142,6 +144,10 @@ export function createRoutingRuntime(ctx) {
       if (isCodexVm(vm)) {
         skip.push(vm.id)
         if (vm.account_uuid) skip.push(vm.account_uuid)
+        continue
+      }
+      if (isGrokVm(vm)) {
+        skip.push(vm.id)
         continue
       }
       // listVms returns flattened summaries; override flags live in the raw record.
@@ -175,6 +181,10 @@ export function createRoutingRuntime(ctx) {
       if (isCodexVm(vm)) {
         skip.push(vm.id)
         if (vm.account_uuid) skip.push(vm.account_uuid)
+        continue
+      }
+      if (isGrokVm(vm)) {
+        skip.push(vm.id)
         continue
       }
       // listVms returns flattened summaries; override flags live in the raw record.
@@ -218,6 +228,11 @@ export function createRoutingRuntime(ctx) {
           if (rpm) applyVmRpm(id, policy.max_rpm, { override: false })
           vm = getVm(ctx.cfg.paths.project, id) || vm
         }
+      } else if (isGrokVm(listed)) {
+        const policy = normalizeGrokQuotaPolicy(routingConfig.grok?.quota)
+        if (concurrency) applyVmConcurrency(id, policy.max_concurrency, { override: false })
+        if (rpm) applyVmRpm(id, policy.max_rpm, { override: false })
+        vm = getVm(ctx.cfg.paths.project, id) || vm
       } else {
         const policy = normalizeTiers(routingConfig.tiers, routingConfig.quota, routingConfig.concurrency)[
           vmTierKey(listed)
@@ -229,6 +244,12 @@ export function createRoutingRuntime(ctx) {
     if (listed.codex_kernel && maxSessions) {
       vm =
         applyVmMaxSessions(id, normalizeOpenAIQuotaPolicy(routingConfig.codex?.quota).max_sessions, {
+          override: false,
+        }) || vm
+    }
+    if (isGrokVm(listed) && maxSessions) {
+      vm =
+        applyVmMaxSessions(id, normalizeGrokQuotaPolicy(routingConfig.grok?.quota).max_sessions, {
           override: false,
         }) || vm
     }
@@ -247,6 +268,10 @@ export function createRoutingRuntime(ctx) {
       if (isCodexVm(vm)) {
         skip.push(vm.id)
         if (vm.account_uuid) skip.push(vm.account_uuid)
+        continue
+      }
+      if (isGrokVm(vm)) {
+        skip.push(vm.id)
         continue
       }
       // listVms returns flattened summaries; override flags live in the raw record.
@@ -312,6 +337,43 @@ export function createRoutingRuntime(ctx) {
     }
     for (let i = 0; i < Math.max(1, applied.concurrency + applied.rpm + applied.sessions); i += 1) {
       wakeOpenAIWaiter()
+    }
+    return applied
+  }
+
+  function applyRoutingGrokQuota(policy = null) {
+    const next = normalizeGrokQuotaPolicy(policy || getRouting().grok?.quota)
+    const applied = { concurrency: 0, rpm: 0, sessions: 0, skipped: 0 }
+    for (const listed of listVms(ctx.cfg.paths.project, getRouting())) {
+      if (!isGrokVm(listed)) continue
+      const stored = getVm(ctx.cfg.paths.project, listed.id)
+      if (!stored) continue
+      const current = stored.policy || {}
+      const patch = {}
+      if (current.concurrencyOverride !== true && Number(current.maxConcurrency) !== next.max_concurrency) {
+        patch.maxConcurrency = next.max_concurrency
+        patch.concurrencyOverride = false
+        applied.concurrency += 1
+      }
+      if (current.rpmOverride !== true && Number(current.maxRpm) !== next.max_rpm) {
+        patch.maxRpm = next.max_rpm
+        patch.rpmOverride = false
+        applied.rpm += 1
+      }
+      if (current.sessionsOverride !== true && Number(current.maxSessions) !== next.max_sessions) {
+        patch.maxSessions = next.max_sessions
+        patch.sessionsOverride = false
+        applied.sessions += 1
+      }
+      if (!Object.keys(patch).length) {
+        applied.skipped += 1
+        continue
+      }
+      atomicWriteJson(
+        path.join(ctx.cfg.paths.project, 'vms', `${listed.id}.json`),
+        { ...stored, policy: { ...current, ...patch } },
+        { mode: 0o600 },
+      )
     }
     return applied
   }
@@ -406,7 +468,9 @@ export function createRoutingRuntime(ctx) {
 
   function persistRoutingPatch(body = {}) {
     const hasCodexQuota = body?.codex && Object.prototype.hasOwnProperty.call(body.codex, 'quota')
+    const hasGrokQuota = body?.grok && Object.prototype.hasOwnProperty.call(body.grok, 'quota')
     if (hasCodexQuota) validateOpenAIQuotaPatch(body.codex.quota)
+    validateGrokRoutingPatch(body)
     validateInferenceWebsocketPatch(body)
     let routingConfig = getRouting()
     const prevOfficialCc = routingConfig.official_cc
@@ -453,6 +517,20 @@ export function createRoutingRuntime(ctx) {
         nextCodex.quota = mergeOpenAIQuotaPolicy(routingConfig.codex?.quota, body.codex.quota)
       }
       routingConfig.codex = normalizeCodexRouting(nextCodex)
+    }
+    if (body.grok) {
+      const nextGrok = { ...(routingConfig.grok || {}), ...body.grok }
+      if (hasGrokQuota) nextGrok.quota = mergeGrokQuotaPolicy(routingConfig.grok?.quota, body.grok.quota)
+      if (body.grok.oauth && typeof body.grok.oauth === 'object') {
+        nextGrok.oauth = { ...(routingConfig.grok?.oauth || {}), ...body.grok.oauth }
+      }
+      if (body.grok.protocols && typeof body.grok.protocols === 'object') {
+        nextGrok.protocols = { ...(routingConfig.grok?.protocols || {}), ...body.grok.protocols }
+      }
+      if (body.grok.clients && typeof body.grok.clients === 'object') {
+        nextGrok.clients = { ...(routingConfig.grok?.clients || {}), ...body.grok.clients }
+      }
+      routingConfig.grok = normalizeGrokRouting(nextGrok)
     }
     if (body.vm) {
       const prev = routingConfig.vm && typeof routingConfig.vm === 'object' ? routingConfig.vm : {}
@@ -515,6 +593,9 @@ export function createRoutingRuntime(ctx) {
         openai_quota: hasCodexQuota
           ? applyRoutingOpenAIQuota(routingConfig.codex.quota)
           : { concurrency: 0, rpm: 0, sessions: 0, skipped: 0 },
+        grok_quota: hasGrokQuota
+          ? applyRoutingGrokQuota(routingConfig.grok.quota)
+          : { concurrency: 0, rpm: 0, sessions: 0, skipped: 0 },
         kernel_persona: kernelPersona,
         kernel_reload: kernelReload,
       }
@@ -550,6 +631,7 @@ export function createRoutingRuntime(ctx) {
       const hasOpenAIQuota = Object.prototype.hasOwnProperty.call(doc.codex || {}, 'quota')
       doc.websocket = normalizeInferenceWebsocket(doc.websocket)
       doc.codex = normalizeCodexRouting(doc.codex)
+      doc.grok = normalizeGrokRouting(doc.grok)
       doc.pool = normalizePoolRouting(doc.pool)
       doc.vm = normalizeVmConfig(doc.vm)
       if (!hasOpenAIQuota) migrateLegacyOpenAIPolicies(doc)

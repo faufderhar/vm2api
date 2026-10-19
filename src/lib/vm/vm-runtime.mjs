@@ -11,7 +11,7 @@ import path from 'node:path'
 import { maxRequestBytes, readRoutingConfigFile, streamIdleTimeoutMs } from '../core/config.mjs'
 import { US_TIMEZONES, validTimezone } from '../core/timezone.mjs'
 import { runtimeKind, isKvmRuntime, RUNTIME_KVM } from './runtime-kind.mjs'
-import { isCodexVm } from './vm-kind.mjs'
+import { isHeadlessSlotVm, platformDescriptor } from './vm-kind.mjs'
 import { buildWorkerTelemetry } from './worker-telemetry.mjs'
 import { kernelBinPath, writeKernelConfig } from '../transport/rust-kernel-supervisor.mjs'
 import { assertCliHopAllowed, resolveOfficialCcInference } from './slot-engine.mjs'
@@ -185,7 +185,7 @@ export const CODEX_SLOT_ROLE = 'codex'
  * few minutes under `--restart unless-stopped`.
  */
 export function slotContainerCommand(vm, { wrapKernel = false } = {}) {
-  if (isCodexVm(vm)) return ['sleep', 'infinity']
+  if (isHeadlessSlotVm(vm)) return ['sleep', 'infinity']
   return [
     wrapKernel ? '/home/kincli/.kin/kin-kernel' : '/usr/local/bin/kin-kernel',
     '--gateway-worker',
@@ -194,9 +194,9 @@ export function slotContainerCommand(vm, { wrapKernel = false } = {}) {
   ]
 }
 
-/** A GPT slot container created before CODEX_SLOT_ROLE still runs kin-kernel as PID 1. */
-function codexContainerStale(existing, vm) {
-  return !!existing && isCodexVm(vm) && existing.role !== CODEX_SLOT_ROLE
+/** A headless slot container created before its role label (or for another platform) still runs kin-kernel as PID 1. */
+function headlessContainerStale(existing, vm) {
+  return !!existing && isHeadlessSlotVm(vm) && existing.role !== platformDescriptor(vm).role
 }
 
 export function containerHasKernelMount(name) {
@@ -382,7 +382,7 @@ export function slotContainerNetworkMismatch(existing, vm) {
 export function slotWorkerNeedsRecreate(existing, vm, paths) {
   if (!existing) return false
   if (existing.restarting) return true
-  if (codexContainerStale(existing, vm)) return true
+  if (headlessContainerStale(existing, vm)) return true
   if (!slotKernelAlive(existing, paths, vm)) return true
   return slotContainerNetworkMismatch(existing, vm)
 }
@@ -469,8 +469,8 @@ export async function reloadSlotWorker(vm, projectRoot, { routing } = {}) {
 export function slotKernelAlive(existing, paths, vm) {
   if (!existing?.running) return true
   if (isKvmRuntime(vm) || existing.runtime === 'kvm') return true
-  // No kernel in a GPT slot container: running is alive.
-  if (isCodexVm(vm) && existing.role === CODEX_SLOT_ROLE) return true
+  // No kernel in a headless slot container: running is alive.
+  if (isHeadlessSlotVm(vm) && existing.role === platformDescriptor(vm).role) return true
   return fs.existsSync(paths.kernelSocket)
 }
 
@@ -927,7 +927,7 @@ export async function startVmRuntime(vm, projectRoot, { recreate = false, routin
 
   let existing = inspectContainer(name)
   const paths = workerPaths(projectRoot, vm.id)
-  const replace = recreate || !slotKernelAlive(existing, paths, vm) || codexContainerStale(existing, vm)
+  const replace = recreate || !slotKernelAlive(existing, paths, vm) || headlessContainerStale(existing, vm)
   // Node restart / 开机 must not bounce a live slot with a healthy worker.
   if (existing?.running && !replace) {
     runtimePatch(vm, existing, {
@@ -940,16 +940,16 @@ export async function startVmRuntime(vm, projectRoot, { recreate = false, routin
     })
     return { ok: true, action: 'already-running', runtime: vm.runtime }
   }
-  const codex = isCodexVm(vm)
-  if (!codex) {
+  const headless = isHeadlessSlotVm(vm)
+  if (!headless) {
     try {
       materializeWrapCli(projectRoot, vm, { uid: runtimeUidNum(vm), gid: Number(GID) })
     } catch {}
   }
   const wrapKernel = path.join(home, '.kin', 'kin-kernel')
   const kernelBin = kernelBinPath()
-  const mountKernel = !codex && !!kernelBin && fs.existsSync(kernelBin)
-  if (!codex && !fs.existsSync(wrapKernel) && !mountKernel) {
+  const mountKernel = !headless && !!kernelBin && fs.existsSync(kernelBin)
+  if (!headless && !fs.existsSync(wrapKernel) && !mountKernel) {
     return { ok: false, error: 'kin-kernel missing; wrap CLI sample not materialized' }
   }
 
@@ -1091,7 +1091,7 @@ export async function startVmRuntime(vm, projectRoot, { recreate = false, routin
       `kin.vm.os=${kernel}`,
       '--label',
       'kin.vm.runtime=docker',
-      ...(codex ? ['--label', `kin.vm.role=${CODEX_SLOT_ROLE}`] : []),
+      ...(headless ? ['--label', `kin.vm.role=${platformDescriptor(vm).role}`] : []),
       '-v',
       `${hostOf(home)}:/home/kincli`,
       '-v',

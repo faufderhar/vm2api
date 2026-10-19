@@ -23,13 +23,14 @@ import {
 import { assignComputerFingerprint } from '../identity/slot-computer.mjs'
 import { VM_ORIGIN, canBindProxyToVm, normalizeOwnerId } from '../admin/resource-owner.mjs'
 import { readCodexAccounts, writeCodexAccounts } from './codex-slot.mjs'
+import { grokBagFromAccount, readGrokAccounts, writeGrokAccounts } from './grok-slot.mjs'
 import { hasBoundExit, isLocalEgressProxy } from './egress.mjs'
 import { OS_CATALOG, STANDARD_LOCALE, nextNumericIndex, padVm, parseVmIndex } from './vm-runtime.mjs'
 import { parseSocks5Fields } from './proxy-pool.mjs'
 import { seedFreshCliHome } from './vm-recreate.mjs'
 import { atomicWriteJson, isValidVmId } from './vm-file.mjs'
 import { bindVmProxy, getVm, listVms } from './vm-registry.mjs'
-import { isCodexVm, stampVmKind } from './vm-kind.mjs'
+import { PLATFORMS, normalizePlatformLabel, normalizeVmKind, stampVmKind } from './vm-kind.mjs'
 import { normalizeVmConfig, resolveMachineSpec } from './machine-spec.mjs'
 import {
   SESSION_SLOT_MAX,
@@ -82,7 +83,8 @@ function personaOf(value) {
   return parsed || null
 }
 
-function policyFromVm(vm, codex) {
+function policyFromVm(vm, kind) {
+  const codex = kind === 'codex'
   const policy = vm?.policy && typeof vm.policy === 'object' ? vm.policy : {}
   const out = {
     weight: integer(policy.weight, 1, 100) ? policy.weight : 1,
@@ -99,7 +101,7 @@ function policyFromVm(vm, codex) {
     out.maxSessions = policy.maxSessions
     out.sessionsOverride = policy.sessionsOverride === true
   }
-  if (!codex && integer(policy.sessionSlots, SESSION_SLOT_MIN, SESSION_SLOT_MAX)) {
+  if (kind === 'claude' && integer(policy.sessionSlots, SESSION_SLOT_MIN, SESSION_SLOT_MAX)) {
     out.sessionSlots = policy.sessionSlots
     out.sessionSlotsOverride = policy.sessionSlotsOverride === true
   }
@@ -145,15 +147,31 @@ function codexAccount(row) {
   }
 }
 
+function grokAccount(row) {
+  if (!row || typeof row !== 'object') return null
+  const access = String(row.access_token || '').trim()
+  const refresh = String(row.refresh_token || '').trim()
+  if (!access && !refresh) return null
+  return {
+    id: cleanText(row.id || row.email || row.account_id || 'grok', 120) || 'grok',
+    access_token: access,
+    refresh_token: refresh,
+    id_token: String(row.id_token || ''),
+    expires_at: Number(row.expires_at) || 0,
+    account_id: cleanText(row.account_id, 80),
+    email: cleanText(row.email, 120) || null,
+  }
+}
+
 export function buildVmPackage({
   vm,
   proxy = null,
   proxyLabel = null,
   claudeCred = null,
   codexAccounts = [],
+  grokAccounts = [],
   now = new Date(),
 } = {}) {
-  const codex = isCodexVm(vm)
   const kind = stampVmKind({}, vm)
   const doc = {
     type: VM_PACKAGE_TYPE,
@@ -173,19 +191,22 @@ export function buildVmPackage({
       persona_preset: personaOf(vm.persona_preset) || '',
       inference_engine: engineOf(vm.inference_engine) || '',
       dataplane: normalizeKernelDataplane(vm.dataplane, { inherit: true }) || '',
-      auth_scheme: codex ? '' : normalizeAuthScheme(vm.claude?.auth_scheme || vm.auth_scheme),
+      auth_scheme: kind.kind === 'claude' ? normalizeAuthScheme(vm.claude?.auth_scheme || vm.auth_scheme) : '',
       proxy_cli_enabled: hasBoundExit(proxy || vm.proxy),
       schedulable: operatorSchedulable(vm),
       schedule_manual: vm.schedule_manual === true,
-      policy: policyFromVm(vm, codex),
+      policy: policyFromVm(vm, kind.kind),
       seed_policy: defaultSeedPolicy(vm.seed_policy || {}),
     },
     proxy: proxyDocument(proxy, proxyLabel),
     credential: null,
   }
-  if (codex) {
+  if (kind.kind === 'codex') {
     const accounts = (Array.isArray(codexAccounts) ? codexAccounts : []).map(codexAccount).filter(Boolean)
     if (accounts.length) doc.credential = { platform: 'openai', accounts }
+  } else if (kind.kind === 'grok') {
+    const accounts = (Array.isArray(grokAccounts) ? grokAccounts : []).map(grokAccount).filter(Boolean)
+    if (accounts.length) doc.credential = { platform: 'xai', accounts }
   } else if (claudeCred && (claudeCred.access_token || claudeCred.refresh_token || claudeCred.api_key)) {
     doc.credential = {
       platform: 'anthropic',
@@ -195,7 +216,8 @@ export function buildVmPackage({
   return doc
 }
 
-function parsePolicy(raw, codex) {
+function parsePolicy(raw, kind) {
+  const codex = kind === 'codex'
   if (raw == null) return { ok: true, value: {} }
   if (typeof raw !== 'object' || Array.isArray(raw)) return fail('invalid_package', 'vm.policy 必须是对象')
   const value = {}
@@ -222,7 +244,7 @@ function parsePolicy(raw, codex) {
     value.maxSessions = raw.maxSessions
     value.sessionsOverride = raw.sessionsOverride !== false
   }
-  if (!codex && has(raw, 'sessionSlots')) {
+  if (kind === 'claude' && has(raw, 'sessionSlots')) {
     if (raw.sessionSlots == null) {
       value.sessionSlots = null
       value.sessionSlotsOverride = false
@@ -248,7 +270,7 @@ function parsePolicy(raw, codex) {
     value.quota = parsed.value
   }
   if (has(raw, 'allowed_models')) {
-    const parsed = parseAllowedModelsPatch(raw.allowed_models, { platform: codex ? 'openai' : 'anthropic' })
+    const parsed = parseAllowedModelsPatch(raw.allowed_models, { platform: PLATFORMS[kind].platform })
     if (!parsed.ok) return fail('invalid_package', parsed.error || '允许模型无效')
     value.allowed_models = parsed.value
   }
@@ -288,10 +310,19 @@ function parseProxy(raw) {
   }
 }
 
-function parseCredential(raw, codex) {
+function parseCredential(raw, kind) {
   if (raw == null) return { ok: true, value: null }
   if (typeof raw !== 'object' || Array.isArray(raw)) return fail('invalid_package', 'credential 必须是对象或 null')
-  const platform = cleanText(raw.platform, 16).toLowerCase()
+  const codex = kind === 'codex'
+  const platform = normalizePlatformLabel(cleanText(raw.platform, 16))
+  if (kind === 'grok' || platform === 'xai') {
+    if (kind !== 'grok') return fail('credential_kind_mismatch', `${PLATFORMS[kind].label} 槽的包不能带 Grok 凭证`)
+    if (platform && platform !== 'xai') return fail('credential_kind_mismatch', 'Grok 槽的包不能带其他平台凭证')
+    const rows = Array.isArray(raw.accounts) ? raw.accounts : []
+    const accounts = rows.map(grokAccount).filter(Boolean)
+    if (!accounts.length) return fail('credential_required', 'Grok 包需要 access_token 或 refresh_token')
+    return { ok: true, value: { platform: 'xai', accounts } }
+  }
   if (codex || platform === 'openai') {
     if (!codex) return fail('credential_kind_mismatch', 'Claude 槽的包不能带 Codex 凭证')
     const rows = Array.isArray(raw.accounts) ? raw.accounts : []
@@ -322,8 +353,8 @@ export function parseVmPackage(doc) {
   if (!vm) return fail('invalid_package', '缺少 vm')
   const id = String(vm.id || '').replace(/[^a-zA-Z0-9_-]/g, '')
   if (!isValidVmId(id)) return fail('invalid_id', 'vm.id 无效')
-  const probe = { platform: vm.platform, family: vm.family }
-  const codex = isCodexVm(probe)
+  const kind = normalizeVmKind({ platform: vm.platform, family: vm.family }).kind
+  const descriptor = PLATFORMS[kind]
   if (vm.kernel != null && vm.kernel !== '' && !OS_CATALOG[vm.kernel]) {
     return fail('invalid_kernel', '未知系统')
   }
@@ -342,11 +373,11 @@ export function parseVmPackage(doc) {
   if (persona == null) return fail('invalid_package', 'persona_preset 无效')
   const dataplane = parseKernelDataplanePatch(vm.dataplane)
   if (!dataplane.ok) return fail('invalid_package', dataplane.error || 'dataplane 无效')
-  const policy = parsePolicy(vm.policy, codex)
+  const policy = parsePolicy(vm.policy, kind)
   if (!policy.ok) return policy
   const proxy = parseProxy(doc.proxy)
   if (!proxy.ok) return proxy
-  const credential = parseCredential(has(doc, 'credential') ? doc.credential : null, codex)
+  const credential = parseCredential(has(doc, 'credential') ? doc.credential : null, kind)
   if (!credential.ok) return credential
   const auth = normalizeAuthScheme(vm.auth_scheme)
   if (vm.auth_scheme && !auth) return fail('invalid_package', 'auth_scheme 无效')
@@ -354,11 +385,12 @@ export function parseVmPackage(doc) {
     ok: true,
     value: {
       id,
-      codex,
+      kind,
+      codex: kind === 'codex',
       vm: {
         name: cleanText(vm.name, 80),
-        platform: codex ? 'openai' : 'anthropic',
-        family: codex ? 'codex' : 'claude',
+        platform: descriptor.platform,
+        family: descriptor.family,
         kernel: OS_CATALOG[vm.kernel] ? vm.kernel : DEFAULT_KERNEL,
         timezone,
         timezone_source: source || (timezone ? 'manual' : 'auto'),
@@ -381,7 +413,8 @@ export function parseVmPackage(doc) {
   }
 }
 
-function applyPolicy(vm, policy, codex) {
+function applyPolicy(vm, policy, kind) {
+  const codex = kind === 'codex'
   vm.policy = { ...(vm.policy || {}), inflight: vm.policy?.inflight || 0 }
   if (has(policy, 'maxConcurrency')) {
     vm.policy.maxConcurrency = policy.maxConcurrency
@@ -399,7 +432,7 @@ function applyPolicy(vm, policy, codex) {
     vm.policy.maxSessions = policy.maxSessions
     vm.policy.sessionsOverride = policy.sessionsOverride === true
   }
-  if (!codex && has(policy, 'sessionSlots')) {
+  if (kind === 'claude' && has(policy, 'sessionSlots')) {
     vm.policy.sessionSlots = policy.sessionSlots
     vm.policy.sessionSlotsOverride = policy.sessionSlotsOverride === true
   }
@@ -444,12 +477,12 @@ function applyTraits(vm, spec) {
   else delete vm.inference_engine
   if (traits.dataplane) vm.dataplane = traits.dataplane
   else delete vm.dataplane
-  if (!spec.codex) {
+  if (spec.kind === 'claude') {
     vm.claude = vm.claude && typeof vm.claude === 'object' ? vm.claude : {}
     if (traits.auth_scheme) vm.claude.auth_scheme = traits.auth_scheme
   }
   // proxy_cli_enabled follows bindVmProxy, not the package trait.
-  applyPolicy(vm, traits.policy, spec.codex)
+  applyPolicy(vm, traits.policy, spec.kind)
   if (traits.seed_policy) vm.seed_policy = traits.seed_policy
   vm.updated_at = new Date().toISOString()
 }
@@ -479,15 +512,21 @@ function applySchedule(vm, spec, hasCredential) {
 
 function credentialPresent(spec, vm) {
   if (spec.credential) return true
-  if (spec.codex) return !!(vm.codex?.has_access || vm.codex?.has_refresh)
+  if (spec.kind === 'codex') return !!(vm.codex?.has_access || vm.codex?.has_refresh)
+  if (spec.kind === 'grok') return !!(vm.grok?.has_access || vm.grok?.has_refresh)
   return !!(vm.claude?.has_access || vm.claude?.has_refresh || vm.claude?.has_api_key)
 }
 
 function writeCredential(projectRoot, id, spec) {
   if (!spec.credential) return { ok: true }
-  if (spec.codex) {
+  if (spec.kind === 'codex') {
     const saved = spec.credential.accounts
     writeCodexAccounts(projectRoot, id, saved)
+    return { ok: true, account: saved[0] }
+  }
+  if (spec.kind === 'grok') {
+    const saved = spec.credential.accounts
+    writeGrokAccounts(projectRoot, id, saved)
     return { ok: true, account: saved[0] }
   }
   const home = path.join(projectRoot, 'vms', id, 'cli-home')
@@ -498,8 +537,12 @@ function writeCredential(projectRoot, id, spec) {
   return { ok: true }
 }
 
-function mirrorCodex(vm, account) {
+function mirrorCredential(vm, kind, account) {
   if (!account) return
+  if (kind === 'grok') {
+    vm.grok = grokBagFromAccount(account, vm.grok && typeof vm.grok === 'object' ? vm.grok : {})
+    return
+  }
   vm.codex = {
     ...(vm.codex && typeof vm.codex === 'object' ? vm.codex : {}),
     has_access: !!account.access_token,
@@ -573,14 +616,16 @@ export function exportVmPackage(projectRoot, id, proxyPool, now = new Date()) {
   const proxy = proxyId && proxyPool?.getProxyByIdWithAuth ? proxyPool.getProxyByIdWithAuth(proxyId) : null
   const label = proxyId && proxyPool?.labelOf ? proxyPool.labelOf(proxyId) : null
   const home = path.join(projectRoot, 'vms', id, 'cli-home')
+  const kind = normalizeVmKind(vm).kind
   return {
     ok: true,
     package: buildVmPackage({
       vm,
       proxy: proxy || vm.proxy,
       proxyLabel: label,
-      claudeCred: isCodexVm(vm) ? null : readWorkerCredentialFile(home),
-      codexAccounts: isCodexVm(vm) ? readCodexAccounts(projectRoot, id) : [],
+      claudeCred: kind === 'claude' ? readWorkerCredentialFile(home) : null,
+      codexAccounts: kind === 'codex' ? readCodexAccounts(projectRoot, id) : [],
+      grokAccounts: kind === 'grok' ? readGrokAccounts(projectRoot, id) : [],
       now,
     }),
   }
@@ -660,7 +705,7 @@ export async function commitVmPackage({
         error: { code: 'remote_unsupported', message: '集群节点上的虚拟机不能用包写回' },
       }
     }
-    if (isCodexVm(vm) !== spec.codex) {
+    if (normalizeVmKind(vm).kind !== spec.kind) {
       return {
         ok: false,
         status: 409,
@@ -688,14 +733,14 @@ export async function commitVmPackage({
   if (!written.ok) return { ok: false, status: 400, error: written.error }
   let saved = finishControl(projectRoot, id, spec, status)
   if (written.account) {
-    mirrorCodex(saved, written.account)
+    mirrorCredential(saved, spec.kind, written.account)
     saved.updated_at = new Date().toISOString()
     atomicWriteJson(file, saved, { mode: 0o600 })
   }
   const attached = await attachProxy(projectRoot, id, spec, proxyPool, saved.owner_user_id || null)
   if (!attached.ok) return { ok: false, status: 400, error: attached.error }
   saved = finishControl(projectRoot, id, spec, status)
-  if (written.account) mirrorCodex(saved, written.account)
+  if (written.account) mirrorCredential(saved, spec.kind, written.account)
   // Flag already follows the bound exit from attachProxy.
   saved.updated_at = new Date().toISOString()
   atomicWriteJson(file, saved, { mode: 0o600 })

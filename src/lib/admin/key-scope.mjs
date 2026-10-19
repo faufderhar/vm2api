@@ -6,7 +6,7 @@
  */
 import { isDbOpen, getDb } from '../db/database.mjs'
 import { VmPoolsRepo } from '../db/repos/vm-pools-repo.mjs'
-import { isCodexVm } from '../vm/vm-kind.mjs'
+import { platformOf } from '../vm/vm-kind.mjs'
 
 const POOL_DENIAL = {
   missing: '账号池不存在',
@@ -15,7 +15,7 @@ const POOL_DENIAL = {
 }
 
 export function vmGroupType(vm) {
-  return isCodexVm(vm) ? 'openai' : 'anthropic'
+  return platformOf(vm)
 }
 
 export function parseAllowedVms(value) {
@@ -51,6 +51,7 @@ export function normalizeGroupType(value, { fallback = 'all' } = {}) {
   if (v === 'all') return 'all'
   if (v === 'anthropic' || v === 'claude') return 'anthropic'
   if (v === 'openai' || v === 'gpt' || v === 'codex') return 'openai'
+  if (v === 'xai' || v === 'grok') return 'xai'
   return null
 }
 
@@ -140,7 +141,7 @@ export function normalizeKeyScope(input = {}, { partial = false, current = null 
   if (hasType) {
     const parsed = normalizeGroupType(input.group_type, { fallback: null })
     if (!parsed) {
-      throw Object.assign(new Error('group_type 只能是 all、anthropic 或 openai'), { code: 'invalid_group_type' })
+      throw Object.assign(new Error('group_type 只能是 all、anthropic、openai 或 xai'), { code: 'invalid_group_type' })
     }
     group_type = parsed
   }
@@ -153,7 +154,7 @@ export function normalizeKeyScope(input = {}, { partial = false, current = null 
   }
   if (group_type === 'all') allowed_vms = []
   if (group_type !== 'all' && allowed_vms.length === 0) {
-    throw Object.assign(new Error('选择 anthropic 或 openai 时至少勾选一台 VM'), { code: 'key_vms_required' })
+    throw Object.assign(new Error('选择 anthropic、openai 或 xai 时至少勾选一台 VM'), { code: 'key_vms_required' })
   }
   return { group_type, allowed_vms, vm_pool_id: null }
 }

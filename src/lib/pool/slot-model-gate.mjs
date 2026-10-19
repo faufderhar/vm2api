@@ -3,7 +3,8 @@ import { isFableModel } from './upstream-error-policy.mjs'
 import { getModelEntry, getPolicyCatalogIds, resolvePolicyModelId } from '../protocol/model-policy.mjs'
 import { getGptPolicyCatalogIds } from '../protocol/gpt-model-policy.mjs'
 import { isCodexCatalogModel } from '../protocol/models.mjs'
-import { isCodexVm } from '../vm/vm-kind.mjs'
+import { GROK_ID_PREFIX, isGrokSeriesId } from '../protocol/grok-ids.mjs'
+import { isCodexVm, isGrokVm, normalizePlatformLabel } from '../vm/vm-kind.mjs'
 
 export function normalizeAllowedModels(raw) {
   if (raw == null) return null
@@ -59,7 +60,19 @@ export function modelMatchesAllowlist(model, allowed) {
 export function parseAllowedModelsPatch(raw, opts = {}) {
   if (raw == null) return { ok: true, value: null }
   if (!Array.isArray(raw)) return { ok: false, error: 'allowed_models must be an array' }
-  const gpt = opts.platform === 'openai' || opts.platform === 'gpt' || opts.platform === 'codex' || isCodexVm(opts.vm)
+  const platform = normalizePlatformLabel(opts.platform)
+  const gpt = platform === 'openai' || isCodexVm(opts.vm)
+  const grok = !gpt && (platform === 'xai' || isGrokVm(opts.vm))
+  if (grok) {
+    const ids = []
+    for (const item of raw) {
+      const value = String(item || '').trim()
+      if (!value) continue
+      if (!isGrokSeriesId(value)) return { ok: false, error: `unknown model: ${value}` }
+      ids.push(value)
+    }
+    return { ok: true, value: normalizeAllowedModels(ids) }
+  }
   const catalog = new Set(
     (gpt ? getGptPolicyCatalogIds({ enabledOnly: false }) : getPolicyCatalogIds({ enabledOnly: false })).map((id) =>
       id.toLowerCase(),
@@ -131,7 +144,9 @@ export function slotAllowsModel({ vm, account = null, model } = {}) {
   if (!modelKey) return { ok: true }
   if (isCodexVm(vm)) {
     if (!isCodexCatalogModel(modelKey)) return { ok: false, reason: 'codex_model_required' }
-  } else if (isCodexCatalogModel(modelKey)) {
+  } else if (isGrokVm(vm)) {
+    if (!isGrokSeriesId(modelKey)) return { ok: false, reason: 'grok_model_required' }
+  } else if (isCodexCatalogModel(modelKey) || GROK_ID_PREFIX.test(modelKey)) {
     return { ok: false, reason: 'claude_model_required' }
   }
   const canonical = resolvePolicyModelId(modelKey) || modelKey

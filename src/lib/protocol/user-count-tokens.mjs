@@ -264,6 +264,15 @@ export async function handleUserCountTokens(req, res, deps) {
   }
   const parsed = parseCountTokensBody(inbound)
   if (!parsed.ok) return json(res, parsed.error.status, parsed.error.body)
+  if (detectInboundPlatform(parsed.body.model).platform === 'xai') {
+    const err = makeError({
+      type: ErrorType.INVALID_REQUEST,
+      code: 'count_tokens_not_supported',
+      message: 'Grok 不支持 count_tokens',
+      status: 400,
+    })
+    return json(res, err.status, err.body)
+  }
   const routing = typeof deps.getRoutingConfig === 'function' ? deps.getRoutingConfig() : null
   if (
     claudeCodeOnlyFromRouting(routing) &&

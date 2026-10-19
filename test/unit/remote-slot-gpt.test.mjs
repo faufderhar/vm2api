@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { SLOT_CAPS_NODE } from '../../src/lib/cluster/placement.mjs'
-import { codexRoleMatches, slotContainerBody } from '../../src/lib/cluster/remote-slot.mjs'
+import { slotRoleMatches, slotContainerBody } from '../../src/lib/cluster/remote-slot.mjs'
 import { REMOTE_KERNEL_ENTRY } from '../../src/lib/vm/slot-engine.mjs'
 import { CODEX_SLOT_ROLE, slotContainerCommand } from '../../src/lib/vm/vm-runtime.mjs'
 import { slotHost } from '../../src/lib/vm/slot-host.mjs'
@@ -70,10 +70,10 @@ test('remote KVM slots retain the runner image command for both platforms', () =
 test('a remote GPT container still running kin-kernel is recreated', () => {
   const idle = { Config: { Labels: { 'kin.vm.role': CODEX_SLOT_ROLE } } }
   const crashLoop = { Config: { Labels: { 'kin.vm.runtime': 'docker' } } }
-  assert.equal(codexRoleMatches(idle, gpt), true)
-  assert.equal(codexRoleMatches(crashLoop, gpt), false)
-  assert.equal(codexRoleMatches(crashLoop, claude), true)
-  assert.equal(codexRoleMatches(idle, claude), false)
+  assert.equal(slotRoleMatches(idle, gpt), true)
+  assert.equal(slotRoleMatches(crashLoop, gpt), false)
+  assert.equal(slotRoleMatches(crashLoop, claude), true)
+  assert.equal(slotRoleMatches(idle, claude), false)
 })
 test('a freshly built GPT KVM container matches on the next start', () => {
   const kvm = { ...gpt, runtime: { type: 'kvm' } }
@@ -81,8 +81,8 @@ test('a freshly built GPT KVM container matches on the next start', () => {
   assert.equal(spec.Labels['kin.vm.runtime'], 'kvm')
   assert.equal(spec.Labels['kin.vm.role'], undefined)
   const built = { Config: { Labels: spec.Labels } }
-  assert.equal(codexRoleMatches(built, kvm), true)
-  assert.equal(codexRoleMatches(built, { ...claude, runtime: { type: 'kvm' } }), true)
+  assert.equal(slotRoleMatches(built, kvm), true)
+  assert.equal(slotRoleMatches(built, { ...claude, runtime: { type: 'kvm' } }), true)
 })
 
 test('a failed remote GPT boot is returned and does not start the Codex kernel', async () => {

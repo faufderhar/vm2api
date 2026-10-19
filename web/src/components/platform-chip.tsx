@@ -14,6 +14,14 @@ import {
   vmKindOf,
 } from '@/lib/vm-kind'
 
+const KIND_CHIP_CLASS: Record<VmKind, string> = {
+  claude:
+    'border-[color:var(--tier-pro-border)] text-[color:var(--tier-pro-fg)]',
+  codex:
+    'border-[color:var(--tier-codex-border)] text-[color:var(--tier-codex-fg)]',
+  grok: 'border-[color:var(--tier-grok-border)] text-[color:var(--tier-grok-fg)]',
+}
+
 export function PlatformChip({
   vm,
   kind,
@@ -24,14 +32,11 @@ export function PlatformChip({
   className?: string
 }) {
   const resolved = kind ?? (vm ? vmKindOf(vm) : 'claude')
-  const gpt = resolved === 'codex'
   return (
     <span
       className={cn(
         'inline-flex shrink-0 items-center rounded-[5px] border px-1.5 py-0.5 text-[10px] leading-none font-semibold tracking-[0.03em]',
-        gpt
-          ? 'border-[color:var(--tier-codex-border)] text-[color:var(--tier-codex-fg)]'
-          : 'border-[color:var(--tier-pro-border)] text-[color:var(--tier-pro-fg)]',
+        KIND_CHIP_CLASS[resolved],
         className
       )}
     >
@@ -40,7 +45,7 @@ export function PlatformChip({
   )
 }
 
-/** `[Claude|GPT] 邮箱`。`compact` 给卡片 / 表格：字号下调并缩短本地段。 */
+/** `[Claude|GPT|Grok] 邮箱`。`compact` 给卡片 / 表格：字号下调并缩短本地段。 */
 export function SlotIdentity({
   vm,
   vmId,

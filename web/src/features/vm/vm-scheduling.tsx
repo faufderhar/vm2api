@@ -5,7 +5,7 @@ import { SlidersHorizontal } from 'lucide-react'
 import { toast } from 'sonner'
 import { patchVm, type VmPatch } from '@/lib/api'
 import { cn } from '@/lib/utils'
-import { isCodexVm } from '@/lib/vm-kind'
+import { isClaudeVm, isGrokVm } from '@/lib/vm-kind'
 import { seatTitle } from '@/lib/vm-status'
 import { Button } from '@/components/ui/button'
 import {
@@ -174,10 +174,10 @@ function patchOf(vm: Vm, draft: Draft): VmPatch {
       body[key] = null
     }
   }
-  if (!isCodexVm(vm)) knob('session_slots', draft.seats, before.seats)
+  if (isClaudeVm(vm)) knob('session_slots', draft.seats, before.seats)
   knob('max_concurrency', draft.conc, before.conc)
   knob('max_rpm', draft.rpm, before.rpm)
-  if (isCodexVm(vm)) knob('max_sessions', draft.sessions, before.sessions)
+  if (!isClaudeVm(vm)) knob('max_sessions', draft.sessions, before.sessions)
   if (draft.level !== before.level) {
     body.schedule_level = draft.level === 'auto' ? null : draft.level
   }
@@ -193,7 +193,7 @@ function patchOf(vm: Vm, draft: Draft): VmPatch {
         }
       : null
   }
-  if (!isCodexVm(vm)) {
+  if (isClaudeVm(vm)) {
     const next: VmQuotaOverride = {}
     for (const { key } of QUOTA_FIELDS) {
       const k = draft.quota[key]
@@ -272,7 +272,8 @@ export function VmSchedulingBlock({
   conc?: { inf: number; max: number }
   rpm?: { n: number; max: number } | null
 }) {
-  const codex = isCodexVm(vm)
+  const codex = !isClaudeVm(vm)
+  const platformName = isGrokVm(vm) ? 'Grok' : 'OpenAI'
   const inherited = vm.scheduling_inherited
   const inf = conc?.inf ?? (Number(vm.inflight) || 0)
   const concMax = conc?.max ?? Number(vm.max_concurrency ?? 0)
@@ -336,9 +337,9 @@ export function VmSchedulingBlock({
           own={vm.concurrency_override}
           title={
             vm.concurrency_override
-              ? `本槽钉住；${codex ? 'OpenAI 全局' : '分档'}值 ${inherited?.max_concurrency ?? '—'}`
+              ? `本槽钉住；${codex ? `${platformName} 全局` : '分档'}值 ${inherited?.max_concurrency ?? '—'}`
               : codex
-                ? '跟随 OpenAI 全局默认'
+                ? `跟随 ${platformName} 全局默认`
                 : '跟随分档'
           }
         />
@@ -348,9 +349,9 @@ export function VmSchedulingBlock({
           own={vm.rpm_override}
           title={
             vm.rpm_override
-              ? `本槽钉住；${codex ? 'OpenAI 全局' : '分档'}值 ${inherited?.max_rpm || '不限'}`
+              ? `本槽钉住；${codex ? `${platformName} 全局` : '分档'}值 ${inherited?.max_rpm || '不限'}`
               : codex
-                ? '跟随 OpenAI 全局默认'
+                ? `跟随 ${platformName} 全局默认`
                 : '跟随分档'
           }
         />
@@ -374,7 +375,7 @@ export function VmSchedulingBlock({
             title={
               vm.max_sessions_override
                 ? `本槽钉住；全局 ${inherited?.max_sessions ?? '不限'}`
-                : '跟随 OpenAI 全局默认'
+                : `跟随 ${platformName} 全局默认`
             }
           />
         ) : null}
@@ -485,7 +486,8 @@ export function VmSchedulingEditor({ vm }: { vm: Vm }) {
   const qc = useQueryClient()
   const [open, setOpen] = useState(false)
   const [draft, setDraft] = useState(() => draftOf(vm))
-  const codex = isCodexVm(vm)
+  const codex = !isClaudeVm(vm)
+  const platformName = isGrokVm(vm) ? 'Grok' : 'OpenAI'
   const inherited = vm.scheduling_inherited
   const quotaBase = vm.quota_inherited
 
@@ -618,7 +620,7 @@ export function VmSchedulingEditor({ vm }: { vm: Vm }) {
                 label='并发上限'
                 desc={
                   codex
-                    ? '同时在飞的 OpenAI 请求数；执行满时按账号池等待或借执行，保留会话绑定。'
+                    ? `同时在飞的 ${platformName} 请求数；执行满时按账号池等待或借执行，保留会话绑定。`
                     : '同一时刻在飞的请求数；满了在本 VM 排队，不切号。'
                 }
                 inheritedText={
@@ -643,7 +645,7 @@ export function VmSchedulingEditor({ vm }: { vm: Vm }) {
               {codex ? (
                 <KnobRow
                   label='会话容量'
-                  desc='每个 OpenAI 账号同时保留的活跃对话窗口；0 表示不限。'
+                  desc={`每个 ${platformName} 账号同时保留的活跃对话窗口；0 表示不限。`}
                   inheritedText={
                     inherited ? String(inherited.max_sessions || '不限') : '—'
                   }

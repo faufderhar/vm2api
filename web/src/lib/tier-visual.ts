@@ -1,15 +1,15 @@
 import type { Vm } from '@/types/panel-vm'
-import { isCodexVm } from '@/lib/vm-kind'
+import { isCodexVm, isGrokVm } from '@/lib/vm-kind'
 import { claudeTier } from '@/lib/vm-status'
 
-export type TierKey = 'pro' | 'max' | 'codex' | 'none' | 'unknown'
+export type TierKey = 'pro' | 'max' | 'codex' | 'grok' | 'none' | 'unknown'
 
 /**
  * 账号等级的视觉皮肤。等级轴与健康状态轴正交：
  * 状态用形状 + 状态色（`StatusMark`），等级用色相——实心徽标、表格行首 2px、
  * 机架刀片左沿色标。等级是分类，状态才是运营信号，所以不再整卡染色。
  *
- * `none`（无凭证）不着色。Codex / GPT 槽用绿相，不走 Claude Pro/Max。
+ * `none`（无凭证）不着色。Codex / GPT 槽用绿相，Grok 槽用石墨灰，不走 Claude Pro/Max。
  */
 export type TierVisual = {
   key: TierKey
@@ -29,7 +29,7 @@ const NEUTRAL: TierVisual = {
 
 const UNCONFIRMED: TierVisual = { ...NEUTRAL, label: '待探测' }
 
-const SKIN: Record<'pro' | 'max' | 'codex', TierVisual> = {
+const SKIN: Record<'pro' | 'max' | 'codex' | 'grok', TierVisual> = {
   pro: {
     key: 'pro',
     label: 'Pro',
@@ -51,9 +51,17 @@ const SKIN: Record<'pro' | 'max' | 'codex', TierVisual> = {
     badge:
       'bg-[color:var(--tier-codex-solid)] text-[color:var(--tier-codex-solid-fg)]',
   },
+  grok: {
+    key: 'grok',
+    label: 'Grok',
+    row: 'border-l-2 border-l-[color:var(--tier-grok-border)] hover:bg-[color:var(--tier-grok-surface-hover)]',
+    badge:
+      'bg-[color:var(--tier-grok-solid)] text-[color:var(--tier-grok-solid-fg)]',
+  },
 }
 
 export function tierVisual(vm: Vm | undefined): TierVisual {
+  if (isGrokVm(vm)) return vm?.has_token ? SKIN.grok : NEUTRAL
   if (isCodexVm(vm)) return SKIN.codex
   const key = claudeTier(vm).key
   if (key === 'pro' || key === 'max') return SKIN[key]

@@ -41,3 +41,12 @@ test('GPT VM does not inherit rust engine or cli-hop', () => {
   assert.equal(resolveOfficialCcInference(gpt, routing), null)
   assert.equal(resolveInferenceEngine({}, routing), 'rust')
 })
+
+test('detectInboundPlatform maps grok prefix to xai and rejects generation models', () => {
+  assert.deepEqual(detectInboundPlatform('grok-4'), { ok: true, platform: 'xai', model: 'grok-4' })
+  assert.equal(detectInboundPlatform('xai/grok-3-mini').platform, 'xai')
+  assert.equal(detectInboundPlatform('Grok-Code-Fast-1').platform, 'xai')
+  assert.equal(detectInboundPlatform('grok-2-image').ok, false)
+  assert.equal(detectInboundPlatform('grok-imagine-video').ok, false)
+  assert.equal(detectInboundPlatform('grokky').ok, false)
+})

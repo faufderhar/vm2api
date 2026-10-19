@@ -10,7 +10,7 @@
  * empty inherits routing.compatibility.persona_preset.
  */
 import { normalizePersonaPreset, personaPresetFromLegacyMode } from '../identity/persona-template.mjs'
-import { isCodexVm } from './vm-kind.mjs'
+import { isClaudeVm } from './vm-kind.mjs'
 
 export const INFERENCE_ENGINES = Object.freeze(['rust'])
 export const SLOT_PERSONA_PRESETS = Object.freeze(['official', 'official_full', 'zero'])
@@ -127,7 +127,7 @@ export function normalizeInferenceConfig(raw = {}) {
 }
 
 export function resolveInferenceEngine(vm, routing = {}) {
-  if (isCodexVm(vm)) return null
+  if (!isClaudeVm(vm)) return null
   const fromVm = normalizeInferenceEngine(vm?.inference_engine, { inherit: true })
   if (fromVm) return fromVm
   return normalizeInferenceEngine(routing?.inference?.engine)
@@ -152,7 +152,7 @@ export function normalizeKernelDataplane(value, { inherit = false } = {}) {
 }
 
 export function resolveKernelDataplane(vm, routing = {}) {
-  if (isCodexVm(vm)) return null
+  if (!isClaudeVm(vm)) return null
   const fromVm = normalizeKernelDataplane(vm?.dataplane, { inherit: true })
   if (fromVm) return fromVm
   return normalizeKernelDataplane(routing?.inference?.dataplane)
@@ -182,7 +182,7 @@ export function normalizeOfficialCcInference(value, { inherit = false } = {}) {
 }
 
 export function resolveOfficialCcInference(vm, routing = {}) {
-  if (isCodexVm(vm)) return null
+  if (!isClaudeVm(vm)) return null
   if (resolveInferenceEngine(vm, routing) === 'rust') return 'cli-hop'
   const fromVm = normalizeOfficialCcInference(vm?.official_cc_inference, { inherit: true })
   if (fromVm) return fromVm

@@ -45,6 +45,8 @@ export function BillingPage() {
     groupBy === 'vm' && platform !== 'all'
       ? platform === 'codex'
         ? split.gpt
+        : platform === 'grok'
+          ? split.grok
         : split.claude
       : q.data?.totals || emptyTotals()
 
@@ -93,6 +95,13 @@ export function BillingPage() {
               >
                 GPT
               </Button>
+              <Button
+                size='sm'
+                variant={platform === 'grok' ? 'default' : 'outline'}
+                onClick={() => setPlatform('grok')}
+              >
+                Grok
+              </Button>
             </>
           ) : null}
         </div>
@@ -110,7 +119,7 @@ export function BillingPage() {
           <StatCard label='费用' value={fmtUsd(totals.cost_usd || 0)} />
         </div>
         {groupBy === 'vm' ? (
-          <div className='mb-4 grid gap-3 sm:grid-cols-2'>
+          <div className='mb-4 grid gap-3 sm:grid-cols-3'>
             <StatCard
               label='Claude 费用'
               value={fmtUsd(split.claude.cost_usd)}
@@ -120,6 +129,11 @@ export function BillingPage() {
               label='GPT 费用'
               value={fmtUsd(split.gpt.cost_usd)}
               hint={`${fmtNum(split.gpt.requests)} 请求`}
+            />
+            <StatCard
+              label='Grok 费用'
+              value={fmtUsd(split.grok.cost_usd)}
+              hint={`${fmtNum(split.grok.requests)} 请求`}
             />
           </div>
         ) : null}

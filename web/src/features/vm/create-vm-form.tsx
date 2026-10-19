@@ -13,6 +13,7 @@ import { toast } from 'sonner'
 import { api, isApiError } from '@/lib/api'
 import { importErrorMessage } from '@/lib/import-errors'
 import { cn } from '@/lib/utils'
+import type { VmKind, VmPlatform } from '@/lib/vm-kind'
 import { vmIdOf } from '@/lib/vm-name'
 import { Button } from '@/components/ui/button'
 import {
@@ -30,6 +31,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { ChoiceTiles, Segmented } from '@/components/choice-tiles'
+import { ModelVendorIcon } from '@/components/model-vendor-icon'
 import { PlatformChip } from '@/components/platform-chip'
 import { meQueryOptions } from '@/features/auth/queries'
 import { dashboardQueryOptions } from '@/features/overview/queries'
@@ -76,7 +78,19 @@ import {
 /** 「之后」的 5 档，对齐 index.html `createVmFromPage()` 的派生逻辑。 */
 export type CreateVmAfter = 'idle' | 'start' | 'proxy' | 'active' | 'full'
 
-type Platform = 'anthropic' | 'openai'
+type Platform = VmPlatform
+
+const PLATFORM_KIND: Record<Platform, VmKind> = {
+  anthropic: 'claude',
+  openai: 'codex',
+  xai: 'grok',
+}
+
+const PLATFORM_FAMILY: Record<Platform, string> = {
+  anthropic: 'claude',
+  openai: 'codex',
+  xai: 'grok',
+}
 
 type CreateVmResponse = {
   id?: string
@@ -226,7 +240,7 @@ export function useCreateVmDraft({
           // 并发、权重不在创建时定：后端按设置里的全局默认（Claude / OpenAI 各自）填。
           ...deriveAfter(after),
           platform,
-          family: platform === 'openai' ? 'codex' : 'claude',
+          family: PLATFORM_FAMILY[platform],
           ...(nodeId ? { node_id: nodeId } : {}),
           ...(wantsExit && exit.proxyId ? { proxy_id: exit.proxyId } : {}),
           ...createMachinePayload({ runtimeType, memory, vcpus, diskGb }),
@@ -357,9 +371,7 @@ export function draftSpecRows(d: CreateVmDraft): SpecRow[] {
   return [
     {
       label: '平台',
-      value: (
-        <PlatformChip kind={d.platform === 'openai' ? 'codex' : 'claude'} />
-      ),
+      value: <PlatformChip kind={PLATFORM_KIND[d.platform]} />,
     },
     {
       label: '形态',
@@ -501,6 +513,7 @@ export function CreateVmForm({
       <Section title='平台' hint='决定槽里跑哪种账号，创建后不能改。'>
         <ChoiceTiles
           label='槽位平台'
+          className='sm:grid-cols-3'
           value={d.platform}
           onChange={d.setPlatform}
           choices={[
@@ -513,6 +526,16 @@ export function CreateVmForm({
               value: 'openai',
               title: <PlatformChip kind='codex' />,
               detail: 'Codex OAuth 或 auth.json。只能放在本机。',
+            },
+            {
+              value: 'xai',
+              title: (
+                <span className='inline-flex items-center gap-1.5'>
+                  <ModelVendorIcon modelId='grok' />
+                  <PlatformChip kind='grok' />
+                </span>
+              ),
+              detail: 'xAI OAuth 或账号文件。需绑定槽代理，可放在任意节点。',
             },
           ]}
         />

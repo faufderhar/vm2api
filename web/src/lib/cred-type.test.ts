@@ -50,6 +50,12 @@ describe('setup-token import defaults', () => {
       importSurfaceFor({ id: 'vm-01', platform: 'anthropic', family: 'claude' })
     ).toBe('claude')
   })
+
+  it('routes xAI slots to Grok import', () => {
+    expect(
+      importSurfaceFor({ id: 'vm-grok-01', platform: 'xai', family: 'grok' })
+    ).toBe('grok')
+  })
 })
 
 describe('credEndpointOf', () => {

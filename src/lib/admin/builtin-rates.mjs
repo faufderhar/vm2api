@@ -319,7 +319,7 @@ export const BUILTIN_ALIASES = {
   'o4-mini-2025-04-16': 'o4-mini',
 }
 
-export const BUILTIN_RATES = { anthropic: ANTHROPIC, openai: OPENAI }
+export const BUILTIN_RATES = { anthropic: ANTHROPIC, openai: OPENAI, xai: {} }
 
 export function builtinOf(id) {
   if (ANTHROPIC[id]) return { platform: 'anthropic', id, price: ANTHROPIC[id] }

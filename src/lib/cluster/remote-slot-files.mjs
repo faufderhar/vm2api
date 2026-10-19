@@ -33,6 +33,7 @@ export const SLOT_FILE_SETS = Object.freeze({
   run: ['run/kernel.json', 'run/worker.json', 'run/internal.token'],
   seed: ['cli-home/.claude/settings.json', 'cli-home/.claude/kin-seed.json', 'machine-id'],
   touch: ['run/telemetry.touch'],
+  grok: ['grok-credentials.json'],
 })
 const CREDENTIALS = 'cli-home/.claude/credentials.json'
 const TOUCH_PUSH_MS = 30_000
@@ -99,17 +100,21 @@ export async function pushSlotFiles(vm, slotDir, sets = ['run', 'seed'], session
 export async function pushSlotCredentials(vm, slotDir, session = null) {
   const s = session || (await nodeSession(vmNodeId(vm)))
   await prepareRemoteDir(s, vm)
-  const local = path.join(slotDir, CREDENTIALS)
-  if (!fs.existsSync(local)) return { pushed: false }
+  const files = [CREDENTIALS, 'grok-credentials.json'].filter((rel) => fs.existsSync(path.join(slotDir, rel)))
+  if (!files.length) return { pushed: false }
   const sftp = await openSftp(s.client)
   const remote = remoteSlotDir(s.host, vm.id)
-  await writeRemoteFile(sftp, `${remote}/${remoteSlotPath(CREDENTIALS)}`, fs.readFileSync(local), {
-    mode: REMOTE_FILE_MODE,
-    owner: ownerFor(s, vm),
-  })
-  // Official CLI reads ~/.claude/.credentials.json; one store, same as local slots.
-  await remoteSymlink(sftp, 'credentials.json', `${remote}/claude/.credentials.json`)
-  return { pushed: true }
+  const owner = ownerFor(s, vm)
+  for (const rel of files) {
+    await writeRemoteFile(sftp, `${remote}/${remoteSlotPath(rel)}`, fs.readFileSync(path.join(slotDir, rel)), {
+      mode: REMOTE_FILE_MODE,
+      owner,
+    })
+  }
+  if (files.includes(CREDENTIALS)) {
+    await remoteSymlink(sftp, 'credentials.json', `${remote}/claude/.credentials.json`)
+  }
+  return { pushed: true, files }
 }
 
 /** Copy the remote credential over the local mirror when they differ. */

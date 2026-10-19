@@ -18,7 +18,7 @@ import {
   personaPresetFromCompat,
 } from '@/lib/persona-template'
 import { cn } from '@/lib/utils'
-import { isCodexVm } from '@/lib/vm-kind'
+import { isClaudeVm } from '@/lib/vm-kind'
 import { PageHeader } from '@/components/page-header'
 import { QueryGate } from '@/components/query-gate'
 import { dashboardQueryOptions } from '@/features/overview/queries'
@@ -34,6 +34,7 @@ import {
 import { NotifyPane } from '@/features/settings/notify-pane'
 import { OfficialCcSettingsPane } from '@/features/settings/official-cc-pane'
 import { OpenaiPane } from '@/features/settings/openai-pane'
+import { GrokPane } from '@/features/settings/grok-pane'
 import { PersonaRulesPane } from '@/features/settings/persona-rules-pane'
 import { PoolPane } from '@/features/settings/pool-pane'
 import {
@@ -142,7 +143,7 @@ export function SettingsPage() {
         try {
           const dash = await api<Dashboard>('/api/panel/dashboard')
           const follow = await inheritProtocolOnSlots(
-            (dash.vms || []).filter((vm) => !isCodexVm(vm)),
+            (dash.vms || []).filter((vm) => isClaudeVm(vm)),
             patchVm
           )
           inherited = follow.changed
@@ -223,9 +224,11 @@ export function SettingsPage() {
       description={
         tab === 'quota'
           ? 'Claude 配额闸线、并发和 RPM。GPT 配额在 OpenAI 页。个人自用引导会把闸关掉并拉到上限；这里仍可再改。'
-          : tab === 'openai'
-            ? 'GPT 传输、准入、配额与客户端画像。全局 WebSocket 只作用于推理，不影响终端或集群。'
-            : undefined
+            : tab === 'openai'
+              ? 'GPT 传输、准入、配额与客户端画像。全局 WebSocket 只作用于推理，不影响终端或集群。'
+              : tab === 'grok'
+                ? 'Grok 的 OAuth、上游地址、协议和配额。端点没填齐时，导入会提示去这里补。'
+              : undefined
       }
     >
       <div className='md:grid md:grid-cols-[10.5rem_1fr] md:gap-8'>
@@ -370,6 +373,15 @@ export function SettingsPage() {
                   pending={dirty}
                 />
               ) : null}
+              {tab === 'grok' ? (
+                <GrokPane
+                  grok={(draft.grok as Record<string, unknown> | undefined) || {}}
+                  onChange={(next) =>
+                    setDraft((current) => ({ ...current, grok: next }))
+                  }
+                  saving={save.isPending}
+                />
+              ) : null}
               {tab === 'logs' ? (
                 <LogsPane
                   value={logging}
@@ -486,6 +498,7 @@ function settingsSaveToast(
     return `已保存 · ${count} 条规则`
   }
   if (tab === 'openai') return '已保存 · GPT 配置'
+  if (tab === 'grok') return '已保存 · Grok 配置'
   return '已保存'
 }
 

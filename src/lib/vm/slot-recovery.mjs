@@ -29,7 +29,7 @@ import { resolveInferenceEngine } from './slot-engine.mjs'
 import { slotExecContainer } from './slot-exec.mjs'
 import { slotHost } from './slot-host.mjs'
 import { slotExec, startSlotReady, stopSlot } from './slot-runtime.mjs'
-import { isCodexVm } from './vm-kind.mjs'
+import { isCodexVm, isGrokVm, isHeadlessSlotVm } from './vm-kind.mjs'
 import { isKvmRuntime } from './runtime-kind.mjs'
 import { slotDockerCpus } from './machine-spec.mjs'
 import { bindVmProxy, getVm, patchVmRecord, vmHasSchedulableCredential } from './vm-registry.mjs'
@@ -57,7 +57,9 @@ function check(id, label, status, code, message, detail) {
 }
 
 function slotEngine(vm, routing) {
-  return isCodexVm(vm) ? 'codex' : resolveInferenceEngine(vm, routing || {})
+  if (isCodexVm(vm)) return 'codex'
+  if (isGrokVm(vm)) return 'api-kernel'
+  return resolveInferenceEngine(vm, routing || {})
 }
 
 const LOG_TAIL_LINES = 5
@@ -197,6 +199,7 @@ async function egressCheck(vm, projectRoot, probes) {
     return check('egress', label, 'error', 'egress_network_missing', '本机出口网络 kin-eg-px-local 不存在')
   }
   if (isCodexVm(vm)) return check('egress', label, 'ok', null, `Codex 内核直接走代理 ${proxy.id}`)
+  if (isGrokVm(vm)) return check('egress', label, 'ok', null, `Grok 推理由主机 api-kernel 直接走代理 ${proxy.id}`)
   const st = probes.socksEgress(projectRoot, proxy.id)
   if (st?.ok) return check('egress', label, 'ok', null, `出口桥 kin-egress 运行中（${proxy.id}）`)
   const why = st?.reason === 'not_listening' ? '进程在但未监听' : '进程不在'
@@ -252,6 +255,7 @@ async function kernelCheck(vm, projectRoot, engine, hasCredential, probes, inter
       status: Number(health?.status) || null,
     })
   }
+  if (engine === 'api-kernel') return check('kernel', label, 'skip', null, '推理走主机共享 api-kernel，槽内无内核')
   if (engine !== 'rust') return check('kernel', label, 'skip', null, `推理引擎 ${engine}，不检查内核`)
   const pub = toPublicKernelHealth(await probes.rustHealth(exec), 'rust')
   const detail = {
@@ -641,7 +645,7 @@ export function createSlotBridgeHealer({
       }
       // Watchdog targets are panel summaries; kin-egress needs the record's credentialed proxy.
       const proxy = (ops.getVm || getVm)(projectRoot, vm.id)?.proxy
-      if (isCodexVm(vm) || !hasBoundExit(proxy) || isLocalEgressProxy(proxy) || proxyBlockedReason(proxy)) continue
+      if (isHeadlessSlotVm(vm) || !hasBoundExit(proxy) || isLocalEgressProxy(proxy) || proxyBlockedReason(proxy)) continue
       if (seenProxies.has(proxy.id)) continue
       seenProxies.add(proxy.id)
       if (egressAlive(proxy.id) || !due(`egress:${proxy.id}`)) continue

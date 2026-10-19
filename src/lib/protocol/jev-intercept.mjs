@@ -344,6 +344,7 @@ export function defaultJevConfig() {
     enabled: false,
     hard_regex_enabled: true,
     openai_platform_enabled: false,
+    grok_platform_enabled: false,
     account_types: [],
     account_plan_types: [],
     account_platform_plans: [],
@@ -437,7 +438,7 @@ function scopeText(value) {
 }
 
 function isScopePair(value) {
-  return /^(claude|gpt):[a-z0-9_-]{1,64}$/.test(value)
+  return /^(claude|gpt|grok):[a-z0-9_-]{1,64}$/.test(value)
 }
 
 function gptPlanBucket(raw) {
@@ -448,11 +449,12 @@ function gptPlanBucket(raw) {
   return plan.replace(/[^a-z0-9_-]/g, '').slice(0, 64) || PLAN_TYPE_NONE
 }
 
-/** `claude` or `gpt`. A summary's `platform: openai` and a raw Codex file both count as GPT. */
+/** `claude`, `gpt`, or `grok`. Grok plan buckets stay `none`. */
 export function scopePlatformOf(account = {}) {
   const platform = scopeText(account.platform)
   const family = scopeText(account.family)
   const tier = scopeText(account.account_tier)
+  if (platform === 'xai' || platform === 'grok' || family === 'grok' || tier === 'grok') return 'grok'
   if (
     account.codex_kernel === true ||
     tier === 'codex' ||
@@ -467,7 +469,9 @@ export function scopePlatformOf(account = {}) {
 }
 
 export function scopePlanOf(account = {}) {
-  if (scopePlatformOf(account) === 'gpt') return gptPlanBucket(account.plan_type)
+  const platform = scopePlatformOf(account)
+  if (platform === 'grok') return PLAN_TYPE_NONE
+  if (platform === 'gpt') return gptPlanBucket(account.plan_type)
   const hasUsage =
     account.usage_has_fable != null ||
     account.utilization_7d_oi != null ||
@@ -500,6 +504,7 @@ export function scopeKeyLabel(key) {
   const platform = split < 0 ? text : text.slice(0, split)
   const plan = split < 0 ? '' : text.slice(split + 1)
   const platformLabel = platform === 'gpt' ? 'GPT' : 'Claude'
+  if (platform === 'grok') return 'Grok · 未标注'
   if (!plan || plan === PLAN_TYPE_NONE) return `${platformLabel} · 未标注`
   if (platform === 'claude') {
     if (plan === 'max') return 'Claude · Max'
@@ -513,7 +518,8 @@ export function scopeKeyLabel(key) {
 function compareScopeKeys(left, right) {
   const [lp, lplan] = left.split(':')
   const [rp, rplan] = right.split(':')
-  const platform = (lp === 'gpt' ? 1 : 0) - (rp === 'gpt' ? 1 : 0)
+  const rank = (name) => (name === 'grok' ? 2 : name === 'gpt' ? 1 : 0)
+  const platform = rank(lp) - rank(rp)
   if (platform) return platform
   const li = SCOPE_PLAN_RANK.indexOf(lplan)
   const ri = SCOPE_PLAN_RANK.indexOf(rplan)
@@ -546,7 +552,7 @@ export function scopeAccountFromVm(vm = {}, quota = null) {
   const tier = platform === 'claude' ? scopePlanOf({ ...view, platform: 'claude' }) : null
   return {
     id: vm.id || null,
-    email: vm.email || vm.codex?.email || vm.claude?.email || null,
+    email: vm.email || vm.grok?.email || vm.codex?.email || vm.claude?.email || null,
     name: vm.name || null,
     platform,
     plan_type: platform === 'gpt' ? vm.plan_type || vm.codex?.plan_type || null : null,
@@ -622,7 +628,12 @@ export function jevScopeConfigured(jev) {
 export function jevScopeWaits(jev, platform) {
   if (!jevScopeConfigured(jev)) return false
   if ((jev.account_ids || []).length > 0) return true
-  const prefix = platform === 'gpt' || platform === 'openai' ? 'gpt:' : 'claude:'
+  const prefix =
+    platform === 'gpt' || platform === 'openai'
+      ? 'gpt:'
+      : platform === 'grok' || platform === 'xai'
+        ? 'grok:'
+        : 'claude:'
   return (jev.account_platform_plans || []).some((key) => String(key).startsWith(prefix))
 }
 
@@ -694,6 +705,7 @@ export function normalizeJevConfig(raw) {
     enabled: raw.enabled === true,
     hard_regex_enabled: raw.hard_regex_enabled !== false,
     openai_platform_enabled: raw.openai_platform_enabled === true,
+    grok_platform_enabled: raw.grok_platform_enabled === true,
     account_types: accountTypes,
     account_plan_types: accountPlanTypes,
     account_platform_plans: accountPlatformPlans,
@@ -732,6 +744,7 @@ export function publicJevConfig(cfg) {
     enabled: c.enabled,
     hard_regex_enabled: c.hard_regex_enabled,
     openai_platform_enabled: c.openai_platform_enabled,
+    grok_platform_enabled: c.grok_platform_enabled,
     account_types: [...c.account_types],
     account_plan_types: [...c.account_plan_types],
     account_platform_plans: [...c.account_platform_plans],
@@ -772,6 +785,7 @@ export function publicJevConfig(cfg) {
       expand_base64: true,
       strip_reminders: true,
       openai_platform_enabled: false,
+      grok_platform_enabled: false,
       account_types: [],
       account_plan_types: [],
       account_platform_plans: [],
@@ -866,7 +880,14 @@ export function validateJevPatch(body = {}) {
     const n = Number(body.max_state_chars)
     if (!Number.isInteger(n) || n < 256 || n > 64000) problems.push('max_state_chars 必须是 256–64000 的整数')
   }
-  for (const key of ['block_if_below', 'fail_open', 'expand_base64', 'strip_reminders', 'openai_platform_enabled']) {
+  for (const key of [
+    'block_if_below',
+    'fail_open',
+    'expand_base64',
+    'strip_reminders',
+    'openai_platform_enabled',
+    'grok_platform_enabled',
+  ]) {
     if (Object.hasOwn(body, key) && typeof body[key] !== 'boolean') problems.push(`${key} 必须是布尔`)
   }
   for (const key of ['account_types', 'account_plan_types', 'account_platform_plans', 'account_ids']) {

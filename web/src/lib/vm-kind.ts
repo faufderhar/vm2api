@@ -1,6 +1,10 @@
-import type { Vm } from '@/types/panel-vm'
+import type { Vm, VmGrokState } from '@/types/panel-vm'
 
-export type VmKind = 'claude' | 'codex'
+export type VmKind = 'claude' | 'codex' | 'grok'
+
+export type VmPlatform = 'anthropic' | 'openai' | 'xai'
+
+export type PlatformLabel = 'Claude' | 'GPT' | 'Grok'
 
 function labelOf(vm: Vm | undefined, key: 'platform' | 'family' | 'kind') {
   return String(vm?.[key] || '')
@@ -13,6 +17,14 @@ export function vmKindOf(vm: Vm | undefined): VmKind {
   const platform = labelOf(vm, 'platform')
   const family = labelOf(vm, 'family')
   const kind = labelOf(vm, 'kind')
+  if (
+    platform === 'xai' ||
+    platform === 'grok' ||
+    family === 'grok' ||
+    kind === 'grok'
+  ) {
+    return 'grok'
+  }
   if (
     platform === 'openai' ||
     family === 'codex' ||
@@ -34,12 +46,55 @@ export function isCodexVm(vm: Vm | undefined): boolean {
   return vmKindOf(vm) === 'codex'
 }
 
-export function platformLabel(vm: Vm | undefined): 'Claude' | 'GPT' {
-  return isCodexVm(vm) ? 'GPT' : 'Claude'
+export function isGrokVm(vm: Vm | undefined): boolean {
+  return vmKindOf(vm) === 'grok'
 }
 
-export function platformLabelOf(kind: VmKind): 'Claude' | 'GPT' {
-  return kind === 'codex' ? 'GPT' : 'Claude'
+export function isClaudeVm(vm: Vm | undefined): boolean {
+  return vmKindOf(vm) === 'claude'
+}
+
+/** 列表视图只带顶层 `grok_*`，详情带完整 `grok` 对象；两处都认。 */
+export function grokStateOf(vm: Vm | undefined): VmGrokState {
+  const grok: VmGrokState = vm?.grok || {}
+  return {
+    ...grok,
+    auth_error: grok.auth_error ?? vm?.grok_auth_error ?? null,
+    limited_until: grok.limited_until ?? vm?.grok_limited_until ?? null,
+    limited_reason: grok.limited_reason ?? vm?.grok_limited_reason ?? null,
+  }
+}
+
+export function grokAuthErrorText(vm: Vm | undefined): string {
+  const err = grokStateOf(vm).auth_error
+  if (!err) return ''
+  const code = String(err.code || '').trim()
+  const message = String(err.message || '').trim()
+  return [code, message].filter(Boolean).join(' · ') || '授权异常'
+}
+
+const KIND_PLATFORM: Record<VmKind, VmPlatform> = {
+  claude: 'anthropic',
+  codex: 'openai',
+  grok: 'xai',
+}
+
+export function platformOfKind(kind: VmKind): VmPlatform {
+  return KIND_PLATFORM[kind]
+}
+
+export function platformOf(vm: Vm | undefined): VmPlatform {
+  return KIND_PLATFORM[vmKindOf(vm)]
+}
+
+export function platformLabel(vm: Vm | undefined): PlatformLabel {
+  return platformLabelOf(vmKindOf(vm))
+}
+
+export function platformLabelOf(kind: VmKind): PlatformLabel {
+  if (kind === 'codex') return 'GPT'
+  if (kind === 'grok') return 'Grok'
+  return 'Claude'
 }
 
 export function indexVms(vms: Vm[] | undefined | null): Map<string, Vm> {
@@ -58,6 +113,8 @@ export function kindFromModel(
   const proto = String(protocol || '')
     .trim()
     .toLowerCase()
+  if (proto === 'xai' || proto === 'grok') return 'grok'
+  if (isGrokCatalogId(String(model || ''))) return 'grok'
   if (
     proto === 'openai' ||
     proto === 'codex' ||
@@ -141,12 +198,24 @@ export function isGptCatalogId(id: string, family?: string) {
   return /^gpt/i.test(String(id || '')) && !/^gpt-image/i.test(String(id || ''))
 }
 
+export function isGrokCatalogId(id: string, family?: string) {
+  const fam = String(family || '')
+    .trim()
+    .toLowerCase()
+  if (fam === 'grok' || fam === 'xai') return true
+  return /^grok/i.test(String(id || ''))
+}
+
+function catalogKindOf(id: string, family?: string): VmKind {
+  if (isGrokCatalogId(id, family)) return 'grok'
+  if (isGptCatalogId(id, family)) return 'codex'
+  return 'claude'
+}
+
 export function catalogForVm<T extends { id: string; family?: string }>(
   items: T[],
   vm: Vm | undefined
 ): T[] {
-  const gpt = isCodexVm(vm)
-  return items.filter((item) =>
-    isGptCatalogId(item.id, item.family) ? gpt : !gpt
-  )
+  const kind = vmKindOf(vm)
+  return items.filter((item) => catalogKindOf(item.id, item.family) === kind)
 }

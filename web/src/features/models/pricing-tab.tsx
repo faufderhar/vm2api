@@ -233,6 +233,7 @@ export function PricingTab() {
     return {
       anthropic: models.filter((m) => m.platform === 'anthropic'),
       openai: models.filter((m) => m.platform === 'openai'),
+      xai: models.filter((m) => m.platform === 'xai'),
     }
   }, [q.data?.models])
 
@@ -309,6 +310,7 @@ export function PricingTab() {
           onEdit={setEdit}
         />
         <CatalogTable title='OpenAI' rows={grouped.openai} onEdit={setEdit} />
+        <CatalogTable title='Grok' rows={grouped.xai} onEdit={setEdit} />
       </div>
 
       <PriceOverrideDialog

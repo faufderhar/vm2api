@@ -52,7 +52,7 @@ function fixture({
     slotDockerCpus: () => 0,
     runtimeLabelOf: () => kind,
     runtimeKind: () => kind,
-    codexRoleMatches: () => true,
+    slotRoleMatches: () => true,
     SLOT_LAYOUT: '2',
     applyRuntime: () => calls.push('runtime'),
     removeContainer: async () => {

@@ -16,6 +16,10 @@ import path from 'node:path'
 import { readRoutingConfigFile } from '../core/config.mjs'
 import { getVm, vmHasClaudeCredential } from '../vm/vm-registry.mjs'
 import { isCodexVm } from '../vm/vm-kind.mjs'
+import { isGrokVm } from '../vm/vm-kind.mjs'
+import { summarizeGrokSlot } from '../vm/grok-slot.mjs'
+import { isGrokSeriesId } from '../protocol/grok-ids.mjs'
+import { isGrokCatalogModel, listGrokPolicyModels } from '../protocol/grok-model-policy.mjs'
 import { summarizeCodexSlot, readCodexAccounts, writeCodexAccounts } from '../vm/codex-slot.mjs'
 import { isLocalEgressProxy } from '../vm/egress.mjs'
 import { hostProxyUrlForVm } from '../vm/slot-host.mjs'
@@ -57,6 +61,7 @@ export function normalizeTestPlatform(platform) {
     .trim()
     .toLowerCase()
   if (s === 'openai' || s === 'gpt' || s === 'codex' || s === 'chatgpt') return 'openai'
+  if (s === 'xai' || s === 'grok') return 'xai'
   if (s === 'anthropic' || s === 'claude') return 'anthropic'
   return 'all'
 }
@@ -97,6 +102,11 @@ export function listTestableModels(platform) {
       .map((m) => map(m, 'gpt-policy'))
       .sort((a, b) => rank(a.id) - rank(b.id) || String(a.id).localeCompare(String(b.id)))
   }
+  if (kind === 'xai') {
+    return listGrokPolicyModels()
+      .map((m) => map(m, 'grok-policy'))
+      .sort((a, b) => String(a.id).localeCompare(String(b.id)))
+  }
   const effective = listOfficialModels().map((m) => map(m, 'effective'))
   const list = effective.length
     ? effective
@@ -112,8 +122,16 @@ export function testModelsView(platform) {
   return {
     items: listTestableModels(kind),
     platform: kind,
-    protocol: kind === 'openai' ? 'openai.responses' : kind === 'anthropic' ? 'anthropic.messages' : null,
-    inbound_path: kind === 'openai' ? '/v1/responses' : kind === 'anthropic' ? '/v1/messages' : null,
+    protocol:
+      kind === 'openai' ? 'openai.responses' : kind === 'xai' ? 'openai.chat' : kind === 'anthropic' ? 'anthropic.messages' : null,
+    inbound_path:
+      kind === 'openai'
+        ? '/v1/responses'
+        : kind === 'xai'
+          ? '/v1/chat/completions'
+          : kind === 'anthropic'
+            ? '/v1/messages'
+            : null,
   }
 }
 
@@ -310,7 +328,7 @@ export async function resolveTestModels({
   catalogClientVersion = 'auto',
 } = {}) {
   const vm = vmId && projectRoot ? getVm(projectRoot, vmId) : null
-  const kind = vm ? (isCodexVm(vm) ? 'openai' : 'anthropic') : normalizeTestPlatform(platform)
+  const kind = vm ? (isCodexVm(vm) ? 'openai' : isGrokVm(vm) ? 'xai' : 'anthropic') : normalizeTestPlatform(platform)
   let source = 'policy'
   if (refresh && kind === 'openai' && projectRoot) {
     const live = await refreshCodexCatalogFromSlot({
@@ -857,6 +875,9 @@ async function postV1Messages(opts) {
 async function postV1Responses(opts) {
   return postV1Loopback({ ...opts, path: '/v1/responses' })
 }
+async function postV1Chat(opts) {
+  return postV1Loopback({ ...opts, path: '/v1/chat/completions' })
+}
 
 /**
  * @param {{ projectRoot: string, vmId: string, model?: string, prompt?: string, max_tokens?: number, timeoutMs?: number, baseUrl?: string, apiKey?: string, accountQuota?: object }} opts
@@ -895,12 +916,15 @@ export async function runVmTestChat(opts = {}) {
   push('info', `状态 running=${vm.status === 'running'} schedulable=${vm.schedulable !== false}`)
   const routing = loadRouting(projectRoot)
   const codex = isCodexVm(vm)
-  const inferenceEngine = codex ? null : resolveInferenceEngine(vm, routing)
-  const cliHop = !codex && resolveOfficialCcInference(vm, routing) === 'cli-hop'
-  const dataplane = codex ? null : resolveKernelDataplane(vm, routing) || 'wrap'
+  const grok = isGrokVm(vm)
+  const inferenceEngine = codex || grok ? null : resolveInferenceEngine(vm, routing)
+  const cliHop = !codex && !grok && resolveOfficialCcInference(vm, routing) === 'cli-hop'
+  const dataplane = codex || grok ? null : resolveKernelDataplane(vm, routing) || 'wrap'
   push(
     'info',
-    codex
+    grok
+      ? '推理 api-kernel / xAI'
+      : codex
       ? '推理 codex-kernel / ChatGPT'
       : cliHop
         ? `推理 ${inferenceEngine} / cli-hop ${dataplane}`
@@ -920,6 +944,18 @@ export async function runVmTestChat(opts = {}) {
         duration_ms: Date.now() - started,
       })
     }
+  } else if (grok) {
+    const slot = summarizeGrokSlot(projectRoot, vm)
+    if (!slot.has_token) {
+      push('error', '无 Grok OAuth')
+      return done({
+        ok: false,
+        vm_id: vmId,
+        error: { code: 'no_credential', message: 'VM has no Grok credential' },
+        log,
+        duration_ms: Date.now() - started,
+      })
+    }
   } else if (!vmHasClaudeCredential(vm)) {
     push('error', '无 OAuth / Setup Token / Console Key')
     return done({
@@ -932,6 +968,7 @@ export async function runVmTestChat(opts = {}) {
   }
   const unofficial =
     !codex &&
+    !grok &&
     (cliHop ||
       opts.unofficial === true ||
       credMode === 'setup-token' ||
@@ -941,7 +978,9 @@ export async function runVmTestChat(opts = {}) {
   const cliLayout = !codex && cliHop ? resolveCliSystemLayout(vm, routing) : null
   push(
     'info',
-    codex
+    grok
+      ? '凭证 Grok OAuth · OpenAI Chat 入站'
+      : codex
       ? '凭证 Codex OAuth · OpenAI Responses 入站'
       : `凭证 ${credMode}${
           cliHop
@@ -968,12 +1007,24 @@ export async function runVmTestChat(opts = {}) {
 
   let model = String(opts.model || '').trim()
   if (!model) {
-    const models = listTestableModels(codex ? 'openai' : 'anthropic')
-    model = models[0]?.id || (codex ? 'gpt-5.4' : 'claude-haiku-4-5-20251001')
+    const models = listTestableModels(grok ? 'xai' : codex ? 'openai' : 'anthropic')
+    model = models[0]?.id || (grok ? 'grok-3' : codex ? 'gpt-5.4' : 'claude-haiku-4-5-20251001')
   }
   push('info', `模型 ${model}`)
 
-  if (codex) {
+  if (grok) {
+    if (!isGrokSeriesId(model) || !isGrokCatalogModel(model)) {
+      push('error', `模型不可用: ${model}`)
+      return done({
+        ok: false,
+        vm_id: vmId,
+        model,
+        error: { code: 'model_not_allowed', message: 'Grok slot only accepts Grok models' },
+        log,
+        duration_ms: Date.now() - started,
+      })
+    }
+  } else if (codex) {
     if (!isGptSeriesId(model) || !isGptModelEnabled(model)) {
       push('error', `模型不可用: ${model}`)
       return done({
@@ -1010,7 +1061,7 @@ export async function runVmTestChat(opts = {}) {
       })
     }
   }
-  if (codex !== isGptTestModel(model)) {
+  if (!grok && codex !== isGptTestModel(model)) {
     const message = codex ? 'Codex slot only accepts GPT models' : 'Claude slot only accepts Claude models'
     push('error', message)
     return done({
@@ -1061,6 +1112,18 @@ export async function runVmTestChat(opts = {}) {
       accept: 'text/event-stream',
     }
     identitySource = 'codex'
+  } else if (grok) {
+    inbound = {
+      model,
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: maxTokens,
+      stream: true,
+    }
+    headers = {
+      'user-agent': 'kin-console-test/1.0',
+      accept: 'text/event-stream',
+    }
+    identitySource = 'grok'
   } else {
     const slot = slotTestIdentity(projectRoot, vm)
     identitySource = slot.identity_source || 'slot'
@@ -1092,7 +1155,7 @@ export async function runVmTestChat(opts = {}) {
     }
   }
 
-  const v1Path = codex ? '/v1/responses' : '/v1/messages'
+  const v1Path = grok ? '/v1/chat/completions' : codex ? '/v1/responses' : '/v1/messages'
   push(
     'info',
     `入站 ua=${headers['user-agent'] || '—'} beta=${headers['anthropic-beta'] || '(none)'} identity=${identitySource}`,
@@ -1102,7 +1165,7 @@ export async function runVmTestChat(opts = {}) {
   const timeoutMs = Math.min(Math.max(Number(opts.timeoutMs) || 90000, 10000), 180000)
   let result
   try {
-    result = await (codex ? postV1Responses : postV1Messages)({
+    result = await (grok ? postV1Chat : codex ? postV1Responses : postV1Messages)({
       baseUrl,
       apiKey,
       inbound,

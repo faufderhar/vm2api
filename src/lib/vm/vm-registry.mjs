@@ -20,7 +20,7 @@ import { manualScheduleLevelOf, parseScheduleLevelInput } from '../pool/credenti
 import { vmQuotaOverrideOf } from '../pool/vm-quota-override.mjs'
 import { activeHoursOf, parseActiveHoursInput } from '../pool/active-hours.mjs'
 import { normalizeOwnerId, vmOriginOf, vmOwnerId, VM_ORIGIN } from '../admin/resource-owner.mjs'
-import { isCodexVm, normalizeVmKind } from './vm-kind.mjs'
+import { isClaudeVm, isGrokVm, normalizeVmKind } from './vm-kind.mjs'
 import { canClaudeResetCredits } from '../oauth/credential-mode.mjs'
 import { validTimezone } from '../core/timezone.mjs'
 import {
@@ -33,6 +33,7 @@ import {
 } from '../protocol/codex-usage.mjs'
 
 import { summarizeCodexSlot } from './codex-slot.mjs'
+import { summarizeGrokSlot } from './grok-slot.mjs'
 import { evaluateCodexQuotaSchedule } from '../pool/codex-slot-pool.mjs'
 import { effectiveOpenAIPolicy, normalizeOpenAIQuotaPolicy } from '../pool/openai-quota-policy.mjs'
 import { runtimeKind } from './runtime-kind.mjs'
@@ -62,13 +63,103 @@ export function getVm(projectRoot, id) {
   return readJsonCached(path.join(projectRoot, 'vms', `${id}.json`))
 }
 
+function credentialSummary(kind, vm, codex, grok) {
+  if (kind === 'codex') {
+    return {
+      email: codex?.email || null,
+      account_uuid: null,
+      org_uuid: vm.codex?.chatgpt_account_id || null,
+      has_token: !!codex?.has_token,
+      expires_at: codex?.expires_at || null,
+      refreshed_at: vm.codex?.usage?.snapshot?.updated_at || null,
+      oauth_source: 'codex-credentials',
+      credential_mode: 'oauth',
+      auth_scheme: null,
+      has_refresh: !!codex?.has_refresh,
+      refresh_error: null,
+      account_tier: 'codex',
+    }
+  }
+  if (kind === 'grok') {
+    return {
+      email: grok.email,
+      account_uuid: null,
+      org_uuid: grok.account_id,
+      has_token: grok.has_token,
+      expires_at: grok.expires_at,
+      refreshed_at: grok.last_refresh_at,
+      oauth_source: 'grok-credentials',
+      credential_mode: 'oauth',
+      auth_scheme: null,
+      has_refresh: grok.has_refresh,
+      refresh_error: null,
+      account_tier: 'grok',
+    }
+  }
+  const hasToken = hasAccessPresence(vm.claude)
+  return {
+    email: vm.claude?.email || null,
+    account_uuid: vm.claude?.account_uuid || null,
+    org_uuid: vm.claude?.org_uuid || null,
+    has_token: hasToken,
+    expires_at: vm.claude?.expires_at || null,
+    refreshed_at: vm.claude?.refreshed_at || null,
+    oauth_source: vm.claude?.source || null,
+    credential_mode: vm.claude?.mode || 'oauth',
+    auth_scheme: vm.claude?.auth_scheme || null,
+    has_refresh: hasRefreshPresence(vm.claude),
+    refresh_error: vm.claude?.refresh_error || null,
+    account_tier: vm.claude?.account_tier || (hasToken ? 'pro' : null),
+  }
+}
+
+function schedulingSummary(kind, vm, openAIPolicy, globalOpenAI) {
+  if (kind === 'codex') {
+    return {
+      max_concurrency: openAIPolicy.max_concurrency,
+      max_concurrency_override: openAIPolicy.concurrency_override,
+      max_rpm: openAIPolicy.max_rpm,
+      max_rpm_override: openAIPolicy.rpm_override,
+      max_sessions: openAIPolicy.max_sessions,
+      max_sessions_override: openAIPolicy.sessions_override,
+      session_slots: null,
+      session_slots_override: false,
+      scheduling_inherited: {
+        max_concurrency: globalOpenAI.max_concurrency,
+        max_rpm: globalOpenAI.max_rpm,
+        max_sessions: globalOpenAI.max_sessions,
+        session_slots: null,
+      },
+      quota_override: null,
+    }
+  }
+  const claude = kind === 'claude'
+  return {
+    max_concurrency: vm.policy?.maxConcurrency ?? 2,
+    max_concurrency_override: vm.policy?.concurrencyOverride === true,
+    max_rpm: vm.policy?.maxRpm ?? 0,
+    max_rpm_override: vm.policy?.rpmOverride === true,
+    max_sessions: null,
+    max_sessions_override: false,
+    session_slots: claude ? (vm.policy?.sessionSlots ?? null) : null,
+    session_slots_override: claude ? vm.policy?.sessionSlotsOverride === true : false,
+    scheduling_inherited: null,
+    quota_override: claude ? vmQuotaOverrideOf(vm) : null,
+  }
+}
+
 export function summarizeVm(vm, projectRoot = null, routing = null) {
   const kind = normalizeVmKind(vm)
-  const codex = kind.kind === 'codex' ? summarizeCodexSlot(projectRoot, vm) : null
+  const isCodex = kind.kind === 'codex'
+  const isClaude = kind.kind === 'claude'
+  const codex = isCodex ? summarizeCodexSlot(projectRoot, vm) : null
+  const grok = kind.kind === 'grok' ? summarizeGrokSlot(projectRoot, vm) : null
   const quota = codex?.usage?.quota || {}
   const globalOpenAI = normalizeOpenAIQuotaPolicy(routing?.codex?.quota)
-  const openAIPolicy = kind.kind === 'codex' ? effectiveOpenAIPolicy(vm, globalOpenAI) : null
-  const quotaGate = kind.kind === 'codex' ? evaluateCodexQuotaSchedule(vm, Date.now(), globalOpenAI) : null
+  const openAIPolicy = isCodex ? effectiveOpenAIPolicy(vm, globalOpenAI) : null
+  const quotaGate = isCodex ? evaluateCodexQuotaSchedule(vm, Date.now(), globalOpenAI) : null
+  const cred = credentialSummary(kind.kind, vm, codex, grok)
+  const sched = schedulingSummary(kind.kind, vm, openAIPolicy, globalOpenAI)
   return {
     id: vm.id,
     name: vm.name,
@@ -84,44 +175,22 @@ export function summarizeVm(vm, projectRoot = null, routing = null) {
     note: vm.note || null,
     platform: kind.platform,
     family: kind.family,
-    codex_kernel: kind.kind === 'codex',
-    email: kind.kind === 'codex' ? codex?.email || null : vm.claude?.email || null,
-    account_uuid: kind.kind === 'codex' ? null : vm.claude?.account_uuid || null,
-    org_uuid: kind.kind === 'codex' ? vm.codex?.chatgpt_account_id || null : vm.claude?.org_uuid || null,
-    has_token: kind.kind === 'codex' ? !!codex?.has_token : hasAccessPresence(vm.claude),
-    expires_at: kind.kind === 'codex' ? codex?.expires_at || null : vm.claude?.expires_at || null,
-    refreshed_at:
-      kind.kind === 'codex' ? vm.codex?.usage?.snapshot?.updated_at || null : vm.claude?.refreshed_at || null,
-    oauth_source: kind.kind === 'codex' ? 'codex-credentials' : vm.claude?.source || null,
-    credential_mode: kind.kind === 'codex' ? 'oauth' : vm.claude?.mode || 'oauth',
-    can_claude_reset: canClaudeResetCredits(vm, {
-      hasToken: kind.kind === 'codex' ? !!codex?.has_token : hasAccessPresence(vm.claude),
-    }),
-    auth_scheme: kind.kind === 'codex' ? null : vm.claude?.auth_scheme || null,
-    has_refresh: kind.kind === 'codex' ? !!codex?.has_refresh : hasRefreshPresence(vm.claude),
-    refresh_error: kind.kind === 'codex' ? null : vm.claude?.refresh_error || null,
-    account_tier:
-      kind.kind === 'codex' ? 'codex' : vm.claude?.account_tier || (hasAccessPresence(vm.claude) ? 'pro' : null),
+    codex_kernel: isCodex,
+    email: cred.email,
+    account_uuid: cred.account_uuid,
+    org_uuid: cred.org_uuid,
+    has_token: cred.has_token,
+    expires_at: cred.expires_at,
+    refreshed_at: cred.refreshed_at,
+    oauth_source: cred.oauth_source,
+    credential_mode: cred.credential_mode,
+    can_claude_reset: canClaudeResetCredits(vm, { hasToken: cred.has_token }),
+    auth_scheme: cred.auth_scheme,
+    has_refresh: cred.has_refresh,
+    refresh_error: cred.refresh_error,
+    account_tier: cred.account_tier,
     has_session_key: false,
-    max_concurrency: kind.kind === 'codex' ? openAIPolicy.max_concurrency : (vm.policy?.maxConcurrency ?? 2),
-    max_concurrency_override:
-      kind.kind === 'codex' ? openAIPolicy.concurrency_override : vm.policy?.concurrencyOverride === true,
-    max_rpm: kind.kind === 'codex' ? openAIPolicy.max_rpm : (vm.policy?.maxRpm ?? 0),
-    max_rpm_override: kind.kind === 'codex' ? openAIPolicy.rpm_override : vm.policy?.rpmOverride === true,
-    max_sessions: kind.kind === 'codex' ? openAIPolicy.max_sessions : null,
-    max_sessions_override: kind.kind === 'codex' ? openAIPolicy.sessions_override : false,
-    session_slots: kind.kind === 'codex' ? null : (vm.policy?.sessionSlots ?? null),
-    session_slots_override: kind.kind === 'codex' ? false : vm.policy?.sessionSlotsOverride === true,
-    scheduling_inherited:
-      kind.kind === 'codex'
-        ? {
-            max_concurrency: globalOpenAI.max_concurrency,
-            max_rpm: globalOpenAI.max_rpm,
-            max_sessions: globalOpenAI.max_sessions,
-            session_slots: null,
-          }
-        : null,
-    quota_override: kind.kind === 'codex' ? null : vmQuotaOverrideOf(vm),
+    ...sched,
     allowed_models:
       Array.isArray(vm.policy?.allowed_models) && vm.policy.allowed_models.length
         ? vm.policy.allowed_models.map((id) => String(id || '').trim()).filter(Boolean)
@@ -157,19 +226,21 @@ export function summarizeVm(vm, projectRoot = null, routing = null) {
     status_5h: quota.status_5h ?? null,
     status_7d: quota.status_7d ?? null,
     codex_usage: codex?.usage || null,
-    quota_policy:
-      kind.kind === 'codex'
-        ? {
-            ...globalOpenAI,
-            ...openAIPolicy,
-            reason: quotaGate?.reason || null,
-            restricted_until: quotaGate?.until || null,
-          }
-        : null,
+    quota_policy: isCodex
+      ? {
+          ...globalOpenAI,
+          ...openAIPolicy,
+          reason: quotaGate?.reason || null,
+          restricted_until: quotaGate?.until || null,
+        }
+      : null,
     reset_credits: codex?.reset_credits || null,
     codex_credits: codex?.credits || null,
-    plan_type: codex?.plan_type || null,
-    claude_reset_credits: kind.kind === 'codex' ? null : vm.claude_reset_credits || null,
+    plan_type: codex?.plan_type || (grok ? vm.grok?.plan_type || null : null),
+    grok_auth_error: grok?.auth_error || null,
+    grok_limited_until: grok?.limited_until || null,
+    grok_limited_reason: grok?.limited_reason || null,
+    claude_reset_credits: isClaude ? vm.claude_reset_credits || null : null,
   }
 }
 
@@ -188,6 +259,7 @@ export function persistAccountTier(projectRoot, vmId, tier, { source = null } = 
   const file = path.join(projectRoot, 'vms', `${vmId}.json`)
   if (!fs.existsSync(file)) return null
   const vm = JSON.parse(fs.readFileSync(file, 'utf8'))
+  if (!isClaudeVm(vm)) return vm
   vm.claude = vm.claude || {}
   if (vm.claude.account_tier_source === 'profile' && source !== 'profile' && source !== 'usage') return vm
   if (vm.claude.account_tier === key && (vm.claude.account_tier_source || null) === source) return vm
@@ -464,7 +536,11 @@ export function vmHasClaudeCredential(vm) {
  */
 export function vmHasSchedulableCredential(vm, projectRoot = null) {
   if (!vm) return false
-  if (!isCodexVm(vm)) {
+  if (isGrokVm(vm)) {
+    const grok = summarizeGrokSlot(projectRoot, vm)
+    return grok.has_token || grok.has_refresh
+  }
+  if (isClaudeVm(vm)) {
     if (!vmHasClaudeCredential(vm)) return false
     // An expired access token with a recorded refresh failure is not a live
     // credential: the worker cannot rotate it, every hop will answer 401.

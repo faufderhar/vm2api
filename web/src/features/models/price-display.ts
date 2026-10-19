@@ -38,7 +38,7 @@ export function fmtBaseRates(price: Price | null | undefined): string {
 }
 
 export function cacheFillHint(
-  platform: 'anthropic' | 'openai',
+  platform: 'anthropic' | 'openai' | 'xai',
   field: 'cache_5m' | 'cache_1h',
   input: string
 ): string {

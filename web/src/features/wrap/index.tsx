@@ -6,7 +6,7 @@ import type { Vm } from '@/types/panel-vm'
 import { toast } from 'sonner'
 import { fmtBytes } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import { isCodexVm } from '@/lib/vm-kind'
+import { isClaudeVm } from '@/lib/vm-kind'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -89,7 +89,7 @@ function selectedDataplane(
 }
 
 function dataplaneOf(vm: Vm): 'wrap' | 'cc' | 'crag' | '—' {
-  if (isCodexVm(vm)) return '—'
+  if (!isClaudeVm(vm)) return '—'
   return selectedDataplane(vm.resolved_dataplane)
 }
 
@@ -421,11 +421,11 @@ export function WrapSamplePage() {
     mutationFn: (next: 'wrap' | 'cc' | 'crag') => {
       const ids = selected.filter((id) => {
         const vm = vms.find((item) => item.id === id)
-        return Boolean(vm && !isCodexVm(vm))
+        return Boolean(vm && isClaudeVm(vm))
       })
       if (selected.length && !ids.length) {
         return Promise.reject(
-          new Error('所选槽都是 Codex，Claude 内核切不到它们')
+          new Error('所选槽都不是 Claude，Claude 内核切不到它们')
         )
       }
       return setKernelDataplane({

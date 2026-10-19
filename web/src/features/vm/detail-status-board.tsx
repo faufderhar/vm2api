@@ -10,7 +10,7 @@ import {
   type WeeklySplitSummary,
 } from '@/lib/fable-status'
 import { fmtNum, fmtUsd } from '@/lib/format'
-import { isCodexVm } from '@/lib/vm-kind'
+import { isClaudeVm, isCodexVm, isGrokVm } from '@/lib/vm-kind'
 import {
   accountStatus,
   accountUsable,
@@ -40,6 +40,7 @@ import {
   ResetAt,
 } from '@/features/vm/detail-section-primitives'
 import type { VmTodayCounts } from '@/features/vm/detail-today'
+import { GrokStatusPanel } from '@/features/vm/grok-status-panel'
 import { KernelFeatTags } from '@/features/vm/kernel-feat-tags'
 import { OpenaiPlanBadge } from '@/features/vm/openai-plan-badge'
 import { OpenaiQuotaPanel } from '@/features/vm/openai-quota-panel'
@@ -232,6 +233,10 @@ export function VmStatusBoard(props: Props) {
               <Field label='平台' compact>
                 OpenAI / Codex
               </Field>
+            ) : isGrokVm(vm) ? (
+              <Field label='平台' compact>
+                xAI / Grok
+              </Field>
             ) : (
               <>
                 <Field label='镜像' compact>
@@ -270,7 +275,9 @@ export function VmStatusBoard(props: Props) {
         <div className='min-w-0 border-t p-4 xl:border-t-0 xl:border-l xl:px-5'>
           <h3 className='text-sm font-medium'>额度</h3>
           <div className='mt-3 grid gap-3'>
-            {isCodexVm(vm) ? (
+            {isGrokVm(vm) ? (
+              <GrokStatusPanel vm={vm} now={now} />
+            ) : isCodexVm(vm) ? (
               <OpenaiQuotaPanel
                 vm={vm}
                 u5={u5}
@@ -382,7 +389,7 @@ export function VmStatusBoard(props: Props) {
               <VmSchedulingBlock vm={vm} conc={conc} rpm={rpm} />
               <VmMemoryBlock vm={vm} />
             </div>
-            {isCodexVm(vm) ? null : (
+            {isClaudeVm(vm) ? (
               <>
                 <Field label='5h 重置' compact>
                   <ResetAt value={reset5} now={now} />
@@ -391,8 +398,8 @@ export function VmStatusBoard(props: Props) {
                   <ResetAt value={reset7} now={now} />
                 </Field>
               </>
-            )}
-            {isCodexVm(vm) ? (
+            ) : null}
+            {isGrokVm(vm) ? null : isCodexVm(vm) ? (
               <CodexKernelHealthFields health={kernel?.codex_health} />
             ) : (
               <>
@@ -400,7 +407,7 @@ export function VmStatusBoard(props: Props) {
                   {rust}
                 </Field>
                 <Field label='内核' compact>
-                  {isCodexVm(vm) ? '—' : dataplaneLabel(vm.resolved_dataplane)}
+                  {dataplaneLabel(vm.resolved_dataplane)}
                 </Field>
                 <Field label='拓扑' compact>
                   {topologyLabel(topology)}

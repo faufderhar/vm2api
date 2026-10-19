@@ -52,6 +52,10 @@ import { ApiEndpointStore } from './lib/admin/api-endpoints.mjs'
 import { ApiScheduler } from './lib/pool/api-scheduler.mjs'
 import { resolveInferenceBackend } from './lib/pool/api-protocol.mjs'
 import { bootApiKernel, apiKernelPaths, apiKernelSnapshot } from './lib/transport/api-kernel-client.mjs'
+import { superviseApiKernel } from './lib/transport/api-kernel-client.mjs'
+import { createGrokRefreshMonitor } from './lib/oauth/grok-refresh-monitor.mjs'
+import { hostProxyUrlForVm } from './lib/vm/slot-host.mjs'
+import { probeGrokModels } from './lib/protocol/grok-models.mjs'
 import { PanelUserStore } from './lib/admin/panel-users.mjs'
 import { RequestLogStore } from './lib/admin/request-log.mjs'
 import {
@@ -63,6 +67,7 @@ import {
   isCodexVm,
   syncCodexQuotaSchedule,
 } from './lib/vm/vm-registry.mjs'
+import { isClaudeVm } from './lib/vm/vm-kind.mjs'
 import { makeError, ErrorType, ErrorCode } from './lib/core/errors.mjs'
 import * as panel from './lib/admin/panel-api.mjs'
 import { ProxyPool } from './lib/vm/proxy-pool.mjs'
@@ -173,6 +178,8 @@ let kernelWatchdog = null
 let cliNodeGuard = null
 let usageProbeMonitor = null
 let catalogMonitor = null
+let grokRefreshMonitor = null
+let apiKernelSupervisor = null
 let notifyMonitor = null
 
 let routingConfig = {}
@@ -418,7 +425,7 @@ const USAGE_ACTIVE_WINDOW_MS = 5 * 3600_000
 
 /** Serving traffic within one 5h window, or still holding pinned conversations (#163). */
 function usageProbeActive(vm, account) {
-  if (isCodexVm(vm)) return false
+  if (!isClaudeVm(vm)) return false
   const id = account?.account_id || vm?.claude?.account_uuid || vm?.account_uuid || vm?.id
   const lastUsed = Number(poolScheduler?.lastUsed?.get?.(id) || runtimeRepo?.get?.(id)?.last_used_at || 0)
   if (lastUsed && Date.now() - lastUsed < USAGE_ACTIVE_WINDOW_MS) return true
@@ -460,6 +467,8 @@ healthMonitor = createHealthProbeMonitor({
       unofficial: false,
       extraHeaders: { [HEALTH_REAL_HEADER]: '1' },
     }),
+  probeGrokModels: () =>
+    probeGrokModels({ projectRoot: cfg.paths.project, routing: routingConfig, cfg }),
 })
 const vmTestSchedule = new VmTestScheduleRunner({
   projectRoot: cfg.paths.project,
@@ -531,6 +540,7 @@ usageProbeMonitor = createUsageProbeMonitor({
       } catch {}
       return
     }
+    if (!isClaudeVm(vm)) return
     try {
       accountQuota.persistEffectiveWindows(id)
     } catch {}
@@ -542,8 +552,16 @@ usageProbeMonitor = createUsageProbeMonitor({
 })
 catalogMonitor = createCatalogMonitor({
   projectRoot: cfg.paths.project,
+  cfg,
+  getRouting: () => routingConfig,
   codexCatalogVersion: () => routingConfig.codex?.catalog_client_version || 'auto',
   log: (event) => console.log(JSON.stringify(event)),
+})
+grokRefreshMonitor = createGrokRefreshMonitor({
+  projectRoot: cfg.paths.project,
+  listTargets: () => listVms(cfg.paths.project).map((vm) => getVm(cfg.paths.project, vm.id) || vm),
+  getRouting: () => routingConfig,
+  proxyUrlFor: (vm) => hostProxyUrlForVm(vm),
 })
 notifyMonitor = createNotifyMonitor({
   config: routingConfig.notify,
@@ -933,7 +951,7 @@ if (proxyPool.snapshot().config.ipv6_enabled !== true) {
 const clusterRoutes = createClusterRoutes({ manager: clusterManager, json, readBody, ok: panel.ok })
 const slotShell = createSlotShell({ projectRoot: cfg.paths.project })
 for (const vm of listVms(cfg.paths.project)) {
-  if (isCodexVm(vm)) continue
+  if (!isClaudeVm(vm)) continue
   try {
     ensureSlotSubscriptionType(path.join(cfg.paths.project, 'vms', vm.id, 'cli-home'), vm.account_tier)
   } catch (error) {
@@ -1270,6 +1288,12 @@ function shutdown(signal) {
   try {
     catalogMonitor?.stop?.()
   } catch {}
+  try {
+    grokRefreshMonitor?.stop?.()
+  } catch {}
+  try {
+    apiKernelSupervisor?.stop?.()
+  } catch {}
 
   try {
     notifyMonitor?.stop?.()
@@ -1295,6 +1319,7 @@ process.on('SIGTERM', () => shutdown('SIGTERM'))
 process.on('SIGINT', () => shutdown('SIGINT'))
 
 await bootApiKernel(cfg)
+apiKernelSupervisor = superviseApiKernel(cfg)
 
 server.listen(cfg.port, cfg.host, () => {
   try {
@@ -1311,6 +1336,11 @@ server.listen(cfg.port, cfg.host, () => {
     credentialRefreshMonitor?.start?.({ immediate: true })
   } catch (e) {
     console.warn('[credential-refresh] start failed', e?.message || e)
+  }
+  try {
+    grokRefreshMonitor?.start?.({ immediate: true })
+  } catch (e) {
+    console.warn('[grok-refresh] start failed', e?.message || e)
   }
   try {
     kernelWatchdog?.start?.({ immediate: true })

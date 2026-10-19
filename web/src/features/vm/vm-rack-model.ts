@@ -1,7 +1,9 @@
 import type { UsageAccountRow } from '@/types/panel-usage'
 import type { Vm } from '@/types/panel-vm'
+import { expiresAtToMs } from '@/lib/fable-status'
 import { usedPctOf } from '@/lib/format'
 import { windowProbed } from '@/lib/pool-quota'
+import { grokAuthErrorText, grokStateOf, isGrokVm } from '@/lib/vm-kind'
 import { fleetGroup, type FleetGroup } from '@/lib/vm-status'
 import { vmCostLedger, type VmLedgerRow } from '@/lib/vm-usage'
 import { fableRow } from '@/features/vm/usage-meter'
@@ -97,6 +99,7 @@ export type WindowReadout = {
 
 /** 5H → 7D → Fable。Fable 只在 Max 且有读数或明确态时出现。 */
 export function vmWindows(vm: Vm): WindowReadout[] {
+  if (isGrokVm(vm)) return grokWindows(vm)
   const probed = (w: '5h' | '7d') =>
     vm.has_token && windowProbed(vm, w) ? usedPctOf(vm, w) : null
   const windows: WindowReadout[] = [
@@ -128,6 +131,29 @@ export function vmWindows(vm: Vm): WindowReadout[] {
   return windows
 }
 
+/** xAI 没有 5h / 7d 用量窗口，只在授权失效或被上游限流时给一行说明。 */
+function grokWindows(vm: Vm): WindowReadout[] {
+  if (!vm.has_token) return []
+  if (grokAuthErrorText(vm)) {
+    return [
+      { key: '5h', label: '授权', pct: null, note: '授权失效', reset: null },
+    ]
+  }
+  const grok = grokStateOf(vm)
+  if (expiresAtToMs(grok.limited_until) > Date.now()) {
+    return [
+      {
+        key: '5h',
+        label: '限流',
+        pct: null,
+        note: grok.limited_reason || '上游限流中',
+        reset: grok.limited_until,
+      },
+    ]
+  }
+  return []
+}
+
 /**
  * 刀片主体画什么：读数表，或一句说明加一步动作。
  * `unprobed` = 有凭证但 5h / 7d 都没有实测值——画 0% 会冒充「还很空」。
@@ -138,6 +164,7 @@ export function bladeState(vm: Vm): BladeState {
   const zone = zoneOf(vm)
   if (zone === 'dead') return 'dead'
   if (zone === 'none' || !vm.has_token) return 'vacant'
+  if (isGrokVm(vm)) return 'live'
   if (!windowProbed(vm, '5h') && !windowProbed(vm, '7d')) return 'unprobed'
   return 'live'
 }

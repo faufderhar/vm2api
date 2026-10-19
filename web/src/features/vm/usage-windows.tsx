@@ -7,7 +7,7 @@ import {
 } from '@/lib/fable-status'
 import { fmtNum, fmtUsd } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import { isCodexVm } from '@/lib/vm-kind'
+import { isCodexVm, isGrokVm } from '@/lib/vm-kind'
 import { vmCostLedger } from '@/lib/vm-usage'
 import { useNow } from '@/hooks/use-now'
 import { ClaudeResetActions } from '@/features/vm/claude-reset-actions'
@@ -90,8 +90,9 @@ function WindowRow({
   )
 }
 
-/** GPT 槽：查询 / 重置券；Claude 完整 OAuth：原生限额查询 / 重置。 */
+/** GPT 槽：查询 / 重置券；Claude 完整 OAuth：原生限额查询 / 重置；Grok 无。 */
 export function VmQuotaActions({ vm, now }: { vm: Vm; now: number }) {
+  if (isGrokVm(vm)) return null
   return isCodexVm(vm) ? (
     <OpenaiQuotaActions vm={vm} compact />
   ) : (

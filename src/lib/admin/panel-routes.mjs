@@ -28,10 +28,13 @@ import { RefusalGuardsRepo } from '../db/repos/refusal-guards-repo.mjs'
 import { RefusalDeviceBlocksRepo } from '../db/repos/refusal-device-blocks-repo.mjs'
 import { SettingsRepo } from '../db/repos/settings-repo.mjs'
 import { parseCodexImportPayload, upsertCodexAccount, readCodexAccounts } from '../vm/codex-slot.mjs'
+import { grokBagFromAccount, parseGrokCredentialInput, upsertGrokAccount } from '../vm/grok-slot.mjs'
 import { generateAuthUrl, exchangeAuthCode, normalizeOauthFlavor } from '../oauth/oauth-auth-url.mjs'
 import { sessionKeyToOAuth, panelImportErrorPayload } from '../oauth/cookie-auth.mjs'
 import { enrichOauthIdentity } from '../oauth/oauth-identity.mjs'
 import { generateCodexAuthUrl, exchangeCodexAuthCode } from '../oauth/codex-oauth.mjs'
+import { exchangeGrokAuthCode, generateGrokAuthUrl, refreshGrokAccessToken } from '../oauth/grok-oauth.mjs'
+import { ensureGrokAccessToken } from '../oauth/grok-token.mjs'
 import {
   completeClaudeSetupToken,
   readSetupTokenSession,
@@ -66,6 +69,12 @@ import {
   saveGptModelPolicy,
   resetGptModelPolicy,
 } from '../protocol/gpt-model-policy.mjs'
+import {
+  getGrokModelPolicy,
+  listGrokPolicyModels,
+  resetGrokModelPolicy,
+  saveGrokModelPolicy,
+} from '../protocol/grok-model-policy.mjs'
 import { refreshCodexAccessToken } from '../protocol/codex-models.mjs'
 import {
   defaultSeedPolicy,
@@ -77,6 +86,7 @@ import {
 import { runVmTestChat, resolveTestModels, syncCodexCatalog } from './vm-test-chat.mjs'
 import { VmTestScheduleError } from './vm-test-schedule.mjs'
 import { readCatalogSync, syncClaudeCatalog, syncGptCatalog } from './catalog-monitor.mjs'
+import { syncGrokCatalog } from './catalog-monitor.mjs'
 import { setPriceOverride, listPriceOverrides, syncModelsDev } from './price-catalog.mjs'
 import { buildPricing } from './pricing-view.mjs'
 import { publicKeyView } from './api-keys.mjs'
@@ -140,11 +150,13 @@ import {
 import { fillVmTimezoneFromExit, syncVmTimezoneFromProxy } from '../vm/proxy-timezone.mjs'
 import { validTimezone } from '../core/timezone.mjs'
 import { stampVmKind, isCodexVm } from '../vm/vm-kind.mjs'
+import { isGrokVm } from '../vm/vm-kind.mjs'
 import { parseAllowedModelsPatch } from '../pool/slot-model-gate.mjs'
 import { parseScheduleLevelInput, manualScheduleLevelOf } from '../pool/credential-weight.mjs'
 import { parseActiveHoursInput } from '../pool/active-hours.mjs'
 import { parseVmQuotaOverride } from '../pool/vm-quota-override.mjs'
 import { validateOpenAIQuotaPatch, normalizeOpenAIQuotaPolicy } from '../pool/openai-quota-policy.mjs'
+import { normalizeGrokQuotaPolicy } from '../pool/openai-quota-policy.mjs'
 import { validateInferenceWebsocketPatch } from '../protocol/codex-route.mjs'
 import {
   normalizeInferenceConfig,
@@ -446,6 +458,55 @@ async function commitImportedCodexVm({
     vm: summarizeVm(existing, cfg.paths.project, routingConfig),
     platform: 'openai',
     catalog: catalog && catalog.ok ? { synced: catalog.synced, ids: catalog.ids } : catalog,
+  }
+}
+
+async function commitImportedGrokVm({ cfg, existing, account, routingConfig = {} }) {
+  const wasGrok = isGrokVm(existing)
+  const previousPolicy = existing.policy && typeof existing.policy === 'object' ? existing.policy : {}
+  const saved = upsertGrokAccount(cfg.paths.project, existing.id, account, { replaceCredentials: true })
+  existing.platform = 'xai'
+  existing.family = 'grok'
+  existing.grok = { ...grokBagFromAccount(saved, existing.grok), auth_error: null }
+  delete existing.claude
+  delete existing.codex
+  delete existing.codex_kernel
+  const global = normalizeGrokQuotaPolicy(routingConfig.grok?.quota || {})
+  const preservePin = (value, override) =>
+    previousPolicy[override] === true &&
+    typeof previousPolicy[value] === 'number' &&
+    Number.isInteger(previousPolicy[value]) &&
+    previousPolicy[value] >= 0
+  existing.policy = {
+    ...previousPolicy,
+    maxConcurrency:
+      wasGrok && preservePin('maxConcurrency', 'concurrencyOverride')
+        ? previousPolicy.maxConcurrency
+        : global.max_concurrency,
+    concurrencyOverride: wasGrok && preservePin('maxConcurrency', 'concurrencyOverride'),
+    maxRpm: wasGrok && preservePin('maxRpm', 'rpmOverride') ? previousPolicy.maxRpm : global.max_rpm,
+    rpmOverride: wasGrok && preservePin('maxRpm', 'rpmOverride'),
+    maxSessions:
+      wasGrok && preservePin('maxSessions', 'sessionsOverride') ? previousPolicy.maxSessions : global.max_sessions,
+    sessionsOverride: wasGrok && preservePin('maxSessions', 'sessionsOverride'),
+  }
+  stampVmKind(existing)
+  const written = patchVmRecord(cfg.paths.project, existing.id, (vm) => {
+    vm.platform = existing.platform
+    vm.family = existing.family
+    vm.grok = existing.grok
+    vm.policy = existing.policy
+    delete vm.claude
+    delete vm.codex
+    delete vm.codex_kernel
+    stampVmKind(vm)
+  })
+  if (written) Object.assign(existing, written)
+  return {
+    vm: summarizeVm(existing, cfg.paths.project, routingConfig),
+    platform: 'xai',
+    email: saved.email || null,
+    has_refresh: !!saved.refresh_token,
   }
 }
 
@@ -3727,6 +3788,12 @@ export function createPanelHandler(ctx) {
               error: { code: 'remote_unsupported', message: '集群节点上的虚拟机暂不支持此操作' },
             })
           }
+          if (isGrokVm(kindProbe) && !slotHost(kindProbe).supports('grok')) {
+            return json(res, 400, {
+              ok: false,
+              error: { code: 'remote_unsupported', message: '集群节点上的虚拟机暂不支持此操作' },
+            })
+          }
           let preflight
           try {
             preflight = await preflightNode(nodeId, { kernel: wantKernel, runtime })
@@ -3863,6 +3930,7 @@ export function createPanelHandler(ctx) {
         if (nodeId) vm.node_id = nodeId
         stampVmKind(vm, body)
         const openaiPolicy = normalizeOpenAIQuotaPolicy(ctx.routingConfig?.codex?.quota)
+        const grokPolicy = normalizeGrokQuotaPolicy(ctx.routingConfig?.grok?.quota)
         const explicitConcurrency =
           Object.prototype.hasOwnProperty.call(body, 'max_concurrency') ||
           Object.prototype.hasOwnProperty.call(body, 'maxConcurrency')
@@ -3899,6 +3967,27 @@ export function createPanelHandler(ctx) {
           vm.policy.maxRpm = explicitRpm && rawRpm !== null ? rawRpm : openaiPolicy.max_rpm
           vm.policy.rpmOverride = explicitRpm && rawRpm !== null
           vm.policy.maxSessions = explicitSessions && rawSessions !== null ? rawSessions : openaiPolicy.max_sessions
+          vm.policy.sessionsOverride = explicitSessions && rawSessions !== null
+        } else if (isGrokVm(vm)) {
+          if (
+            (explicitConcurrency && invalidCreate(rawConcurrency, 1, 256)) ||
+            (explicitRpm && invalidCreate(rawRpm, 0, 1e6)) ||
+            (explicitSessions && invalidCreate(rawSessions, 0, 256))
+          ) {
+            return json(res, 400, {
+              ok: false,
+              error: {
+                code: 'invalid_create_schedule',
+                message: 'Grok scheduling values must be finite integers in range',
+              },
+            })
+          }
+          vm.policy.maxConcurrency =
+            explicitConcurrency && rawConcurrency !== null ? rawConcurrency : grokPolicy.max_concurrency
+          vm.policy.concurrencyOverride = explicitConcurrency && rawConcurrency !== null
+          vm.policy.maxRpm = explicitRpm && rawRpm !== null ? rawRpm : grokPolicy.max_rpm
+          vm.policy.rpmOverride = explicitRpm && rawRpm !== null
+          vm.policy.maxSessions = explicitSessions && rawSessions !== null ? rawSessions : grokPolicy.max_sessions
           vm.policy.sessionsOverride = explicitSessions && rawSessions !== null
         } else {
           if (
@@ -4103,6 +4192,63 @@ export function createPanelHandler(ctx) {
           }
           const existing = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
           existing.id = existing.id || vmId
+          if (isGrokVm(existing)) {
+            const mode = String(body.mode || 'json').toLowerCase()
+            if (mode === 'oauth') {
+              return json(res, 400, {
+                ok: false,
+                error: { code: 'oauth_callback_required', message: 'OAuth 请先生成授权链接，再提交回调' },
+              })
+            }
+            let account
+            try {
+              account = parseGrokCredentialInput(
+                body.auth_json ?? body.credential ?? body,
+                mode === 'access_token' || mode === 'refresh_token' ? mode : 'json',
+              )
+            } catch (error) {
+              return json(res, 400, {
+                ok: false,
+                error: { code: error.code || 'invalid_grok_credential', message: String(error.message || error) },
+              })
+            }
+            if (!account.access_token && account.refresh_token) {
+              const slotProxy = requireSlotProxy(existing, body)
+              if (!slotProxy.ok) {
+                return json(res, slotProxy.status, {
+                  ok: false,
+                  error: { code: 'proxy_required', message: slotProxy.message },
+                })
+              }
+              const tok = await refreshGrokAccessToken({
+                routing: ctx.routingConfig,
+                refreshToken: account.refresh_token,
+                proxyUrl: slotProxy.proxyUrl,
+              })
+              if (!tok.ok) {
+                const status = tok.error === 'grok_oauth_not_configured' ? 503 : 502
+                return json(res, status, {
+                  ok: false,
+                  error: {
+                    code: tok.error || 'refresh_failed',
+                    message:
+                      tok.error === 'grok_oauth_not_configured'
+                        ? 'xAI OAuth 未配置，请先在设置 → Grok 中填写'
+                        : 'Refresh Token 换票失败，请检查配置或改用 access_token',
+                    missing: tok.missing,
+                  },
+                })
+              }
+              account = { ...account, ...tok }
+            }
+            const committed = await commitImportedGrokVm({
+              cfg,
+              existing,
+              account,
+              routingConfig: ctx.routingConfig,
+            })
+            return json(res, 200, panel.ok(committed))
+          }
           if (isCodexVm(existing)) {
             const parsed = parseCodexImportPayload(body)
             if (!parsed.ok) {
@@ -4268,6 +4414,15 @@ export function createPanelHandler(ctx) {
           })
         }
         try {
+          if (isGrokVm(existing)) {
+            const generated = generateGrokAuthUrl({
+              routing: ctx.routingConfig,
+              vmId: id,
+              proxyUrl: slotProxy.proxyUrl,
+            })
+            const px = existing.proxy || {}
+            return json(res, 200, panel.ok({ ...generated, proxy_hint: slotProxyHint(px, proxyPool?.labelOf(px.id)) }))
+          }
           if (isCodexVm(existing)) {
             const generated = generateCodexAuthUrl({
               vmId: id,
@@ -4300,9 +4455,14 @@ export function createPanelHandler(ctx) {
             }),
           )
         } catch (e) {
-          return json(res, 400, {
+          const status = e.status || (e.code === 'grok_oauth_not_configured' ? 503 : 400)
+          return json(res, status, {
             ok: false,
-            error: { code: e.code || 'generate_auth_url_failed', message: String(e.message || e).slice(0, 240) },
+            error: {
+              code: e.code || 'generate_auth_url_failed',
+              message: String(e.message || e).slice(0, 240),
+              missing: e.missing,
+            },
           })
         }
       }
@@ -4348,6 +4508,26 @@ export function createPanelHandler(ctx) {
           })
         }
         try {
+          if (isGrokVm(existing)) {
+            const oauth = await exchangeGrokAuthCode({
+              sessionId: body.session_id || body.sessionId,
+              code: body.code || body.auth_code || body.callback || body.callback_url,
+              proxyUrl: slotProxy.proxyUrl,
+              vmId: id,
+            })
+            const committed = await commitImportedGrokVm({
+              cfg,
+              existing,
+              routingConfig: ctx.routingConfig,
+              account: {
+                access_token: oauth.access_token,
+                refresh_token: oauth.refresh_token,
+                id_token: oauth.id_token,
+                expires_at: oauth.expires_at,
+              },
+            })
+            return json(res, 200, panel.ok({ ...committed, source: oauth.source, flavor: 'grok' }))
+          }
           if (isCodexVm(existing)) {
             const oauth = await exchangeCodexAuthCode({
               sessionId: body.session_id || body.sessionId,
@@ -4518,6 +4698,12 @@ export function createPanelHandler(ctx) {
             },
           })
         }
+        if (isGrokVm(existing)) {
+          return json(res, 409, {
+            ok: false,
+            error: { code: 'credential_kind_mismatch', message: 'Grok 槽不能转为 Claude Setup Token' },
+          })
+        }
         const homeDir = path.join(cfg.paths.project, 'vms', id, 'cli-home')
         const cred = readWorkerCredentialFile(homeDir)
         if (isApiKeyMode(existing.claude?.mode) || isApiKeyMode(cred?.type || cred?.mode)) {
@@ -4616,6 +4802,30 @@ export function createPanelHandler(ctx) {
           })
           return json(res, 200, panel.ok({ ok: true, refreshed: true, platform: 'openai' }))
         }
+        if (isGrokVm(vm)) {
+          const proxyUrl = hostProxyUrlForVm(vm)
+          if (!proxyUrl) {
+            return json(res, 503, {
+              ok: false,
+              error: { code: 'grok_proxy_required', message: 'Grok 槽没有出口，不能刷新' },
+            })
+          }
+          const tok = await ensureGrokAccessToken({
+            projectRoot: cfg.paths.project,
+            vm,
+            routing: ctx.routingConfig,
+            proxyUrl,
+            force: true,
+          })
+          if (!tok.ok) {
+            const status = tok.code === 'grok_oauth_not_configured' ? 503 : 502
+            return json(res, status, {
+              ok: false,
+              error: { code: tok.code || 'refresh_failed', message: 'Grok OAuth 刷新失败，请重新导入' },
+            })
+          }
+          return json(res, 200, panel.ok({ ok: true, refreshed: !!tok.refreshed, platform: 'xai' }))
+        }
         if (isApiKeyMode(vm?.claude?.mode)) {
           return json(res, 400, {
             ok: false,
@@ -4713,6 +4923,11 @@ export function createPanelHandler(ctx) {
           const models = listGptPolicyModels()
           return json(res, 200, panel.ok({ policy: pol, models, effective: models, platform: 'openai' }))
         }
+        if (platform === 'xai' || platform === 'grok') {
+          const pol = getGrokModelPolicy()
+          const models = listGrokPolicyModels()
+          return json(res, 200, panel.ok({ policy: pol, models, effective: models, platform: 'xai' }))
+        }
         const pol = getModelPolicy()
         return json(
           res,
@@ -4732,6 +4947,11 @@ export function createPanelHandler(ctx) {
           const saved = saveGptModelPolicy(body.policy || body)
           const models = listGptPolicyModels()
           return json(res, 200, panel.ok({ policy: saved, models, effective: models, platform: 'openai' }))
+        }
+        if (platform === 'xai' || platform === 'grok') {
+          const saved = saveGrokModelPolicy(body.policy || body)
+          const models = listGrokPolicyModels()
+          return json(res, 200, panel.ok({ policy: saved, models, effective: models, platform: 'xai' }))
         }
         const saved = saveModelPolicy(body.policy || body)
         seedModelCatalog()
@@ -4754,6 +4974,11 @@ export function createPanelHandler(ctx) {
           const saved = resetGptModelPolicy()
           const models = listGptPolicyModels()
           return json(res, 200, panel.ok({ policy: saved, models, effective: models, platform: 'openai' }))
+        }
+        if (platform === 'xai' || platform === 'grok') {
+          const saved = resetGrokModelPolicy()
+          const models = listGrokPolicyModels()
+          return json(res, 200, panel.ok({ policy: saved, models, effective: models, platform: 'xai' }))
         }
         const saved = resetModelPolicy()
         seedModelCatalog()
@@ -4870,6 +5095,43 @@ export function createPanelHandler(ctx) {
             catalog_version: result.catalog_version,
             ids: result.ids,
             added: result.added || [],
+            catalog_sync: readCatalogSync(),
+          }),
+        )
+      }
+
+      if (req.method === 'POST' && p === '/api/panel/model-policy/sync-grok') {
+        const body = await readBody(req, 8192).catch(() => ({}))
+        const result = await syncGrokCatalog({
+          projectRoot: cfg.paths.project,
+          cfg,
+          routing: ctx.routingConfig,
+          vmId: body?.vm_id || body?.vmId || url.searchParams.get('vm_id') || '',
+        })
+        if (!result.ok) {
+          const status =
+            result.error === 'no_grok_slot' ||
+            result.error === 'proxy_required' ||
+            result.error === 'grok_oauth_not_configured'
+              ? 400
+              : 502
+          return json(res, status, {
+            ok: false,
+            error: { code: result.error, message: result.error },
+            data: { vm_id: result.vm_id || null, synced: 0, catalog_sync: readCatalogSync() },
+          })
+        }
+        return json(
+          res,
+          200,
+          panel.ok({
+            policy: result.policy || getGrokModelPolicy(),
+            models: result.models || listGrokPolicyModels(),
+            effective: result.models || listGrokPolicyModels(),
+            platform: 'xai',
+            synced: (result.ids || []).length,
+            added: result.added || [],
+            vm_id: result.vm_id,
             catalog_sync: readCatalogSync(),
           }),
         )

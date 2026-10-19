@@ -102,6 +102,12 @@
   --tier-codex-fg: oklch(0.42 0.12 155);
   --tier-codex-solid: oklch(0.62 0.16 155);
   --tier-codex-solid-fg: oklch(0.16 0.03 155);
+  /* Grok / xAI：石墨灰，几乎无彩度，和三种彩色相都正交。 */
+  --tier-grok-surface-hover: oklch(0.955 0.004 265);
+  --tier-grok-border: oklch(0.72 0.012 265);
+  --tier-grok-fg: oklch(0.32 0.015 265);
+  --tier-grok-solid: oklch(0.3 0.012 265);
+  --tier-grok-solid-fg: oklch(0.98 0.003 265);
   /* 调用形式标签（类型列）。Console 用 Anthropic 品牌的陶土橙实心块——它是
      线上绝大多数槽的形式，也是要被一眼认出来的那一类；深色字压在橙底上 6:1。
      OAuth 复用 tier-pro 蓝；API 是白：浅色主题下白底需要描边才成立。 */
@@ -236,6 +242,11 @@
   --tier-codex-fg: oklch(0.82 0.11 155);
   --tier-codex-solid: oklch(0.72 0.16 155);
   --tier-codex-solid-fg: oklch(0.14 0.03 155);
+  --tier-grok-surface-hover: oklch(0.245 0.008 265);
+  --tier-grok-border: oklch(0.52 0.014 265);
+  --tier-grok-fg: oklch(0.88 0.01 265);
+  --tier-grok-solid: oklch(0.86 0.01 265);
+  --tier-grok-solid-fg: oklch(0.16 0.01 265);
   --lane-console-bg: oklch(0.68 0.13 41);
   --lane-console-fg: oklch(0.16 0.03 41);
   --lane-api-bg: oklch(1 0 0 / 12%);

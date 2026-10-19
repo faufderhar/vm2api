@@ -16,6 +16,25 @@ export type AuthScheme = 'x_api_key' | 'authorization_bearer'
  */
 export type OauthFlavor = 'cai' | 'claude_code' | 'setup_token'
 
+export type GrokAuthError = {
+  code?: string | null
+  message?: string | null
+  at?: string | number | null
+}
+
+/** xAI Grok 槽的账号状态，仅 `platform: 'xai'` 槽位带。 */
+export type VmGrokState = {
+  email?: string | null
+  account_id?: string | null
+  expires_at?: string | number | null
+  has_access?: boolean
+  has_refresh?: boolean
+  auth_error?: GrokAuthError | null
+  limited_until?: string | number | null
+  limited_reason?: string | null
+  last_refresh_at?: string | number | null
+}
+
 /** 代理出口节点的地理位置。`checked_at` 有值而 `ip` 为空即检测失败，见 `error`。 */
 export type ProxyGeo = {
   ip?: string | null
@@ -290,10 +309,14 @@ export type Vm = {
   account_tier?: string
   /** Complete official usage: true = Max, false = Pro, null = unconfirmed. */
   usage_has_fable?: boolean | null
-  /** anthropic | openai。缺省按 Claude 槽展示。 */
+  /** anthropic | openai | xai。缺省按 Claude 槽展示。 */
   platform?: string | null
-  /** claude | codex */
+  /** claude | codex | grok */
   family?: string | null
+  grok?: VmGrokState | null
+  grok_auth_error?: GrokAuthError | null
+  grok_limited_until?: string | number | null
+  grok_limited_reason?: string | null
   codex_kernel?: boolean
   inference_engine?: 'go' | 'rust' | null
   resolved_inference_engine?: 'go' | 'rust' | null
@@ -691,7 +714,7 @@ export type OfficialCcBootstrapPayload = {
 export type TestModelsPayload = {
   items?: { id: string; label?: string; family?: string }[]
   models?: { id: string; label?: string; family?: string }[]
-  platform?: 'openai' | 'anthropic' | 'all'
+  platform?: 'openai' | 'anthropic' | 'xai' | 'all'
   protocol?: 'openai.responses' | 'anthropic.messages' | null
   inbound_path?: '/v1/responses' | '/v1/messages' | null
   source?: string

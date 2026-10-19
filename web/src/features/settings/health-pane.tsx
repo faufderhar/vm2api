@@ -245,10 +245,25 @@ function HealthCacheCard({
             aria-label='GPT 探测模型'
           />
         </SettingRow>
+        <SettingRow
+          label='Grok 探测模型'
+          desc='填了就在 Grok 槽上跑一轮对话。留空则只请求 /v1/models，不发聊天。'
+        >
+          <Input
+            className='w-56'
+            placeholder='grok-3'
+            value={String(real.grok_model ?? '')}
+            onChange={(event) =>
+              onRealChange({ grok_model: event.target.value })
+            }
+            aria-label='Grok 探测模型'
+          />
+        </SettingRow>
         <SettingRow label='最近快照'>
           <div className='flex flex-col items-end gap-1 text-xs'>
             <SnapshotLine label='Claude' snap={snaps?.anthropic} />
             <SnapshotLine label='GPT' snap={snaps?.openai} />
+            <SnapshotLine label='Grok' snap={snaps?.xai} />
           </div>
         </SettingRow>
       </CardContent>

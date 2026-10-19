@@ -38,11 +38,13 @@ export function splitBilling(
     const kind: VmKind | null = groupBy === 'vm' && vm ? vmKindOf(vm) : null
     return { row, vm, kind }
   })
-  let claude = emptyTotals()
-  let gpt = emptyTotals()
-  for (const item of rows) {
-    if (item.kind === 'codex') gpt = addItem(gpt, item.row)
-    else if (item.kind === 'claude') claude = addItem(claude, item.row)
-  }
-  return { rows, claude, gpt }
+ let claude = emptyTotals()
+ let gpt = emptyTotals()
+  let grok = emptyTotals()
+ for (const item of rows) {
+   if (item.kind === 'codex') gpt = addItem(gpt, item.row)
+   else if (item.kind === 'claude') claude = addItem(claude, item.row)
+    else if (item.kind === 'grok') grok = addItem(grok, item.row)
+ }
+  return { rows, claude, gpt, grok }
 }

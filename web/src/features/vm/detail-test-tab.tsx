@@ -1,5 +1,6 @@
 import type { Vm } from '@/types/panel-vm'
 import { type CredType, credTypeLabel } from '@/lib/cred-type'
+import { isGrokVm } from '@/lib/vm-kind'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -85,6 +86,7 @@ export function VmTestPanel(props: VmTestTabProps & { className?: string }) {
     canRefreshModels = true,
     schedule,
   } = props
+  const grok = isGrokVm(vm)
 
   return (
     <>
@@ -119,7 +121,7 @@ export function VmTestPanel(props: VmTestTabProps & { className?: string }) {
             />
           </div>
           <div className='space-y-1.5'>
-            <Label>{isCodex ? '思考档位' : '思考预算'}</Label>
+            <Label>{isCodex ? '思考档位' : grok ? '最大输出' : '思考预算'}</Label>
             {isCodex ? (
               <Select
                 value={reasoningEffort}
@@ -159,7 +161,11 @@ export function VmTestPanel(props: VmTestTabProps & { className?: string }) {
             <p className='text-xs text-muted-foreground'>
               {isCodex
                 ? 'GPT OAuth · Codex kernel / OpenAI Responses'
-                : credType === 'none'
+                : grok
+                  ? credType === 'none'
+                    ? '无凭证 · 测试会被拒绝，请先导入凭证'
+                    : 'xAI OAuth · Grok 上游经槽代理'
+                  : credType === 'none'
                   ? '无凭证 · 测试会被拒绝，请先导入凭证'
                   : `${credTypeLabel(credType)}${
                       credType === 'setup-token' || credType === 'apikey'
@@ -168,7 +174,7 @@ export function VmTestPanel(props: VmTestTabProps & { className?: string }) {
                     }`}
             </p>
           </div>
-          {isCodex ? null : (
+          {isCodex || grok ? null : (
             <div className='space-y-1'>
               <Label>内核</Label>
               <p className='text-xs text-muted-foreground'>

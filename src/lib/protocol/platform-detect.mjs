@@ -1,8 +1,10 @@
 /**
  * Inbound platform from model id. Unknown models fail closed.
- * GPT = /^gpt/i minus SKIP_GPT. Claude = claude-* family. Not URL, not pin.
+ * GPT = /^gpt/i minus SKIP_GPT. Grok = /^grok/i minus SKIP_GROK. Claude = claude-* family. Not URL, not pin.
  */
 import { SKIP_GPT, isGptSeriesId } from './gpt-ids.mjs'
+import { SKIP_GROK, isGrokSeriesId } from './grok-ids.mjs'
+
 export function detectInboundPlatform(model) {
   const raw = String(model || '').trim()
   if (!raw) {
@@ -22,6 +24,14 @@ export function detectInboundPlatform(model) {
     }
   }
   if (isGptSeriesId(id)) return { ok: true, platform: 'openai', model: id }
+  if (SKIP_GROK.test(lower)) {
+    return {
+      ok: false,
+      code: 'model_not_supported',
+      message: `model '${raw}' is not a Grok chat model`,
+    }
+  }
+  if (isGrokSeriesId(id)) return { ok: true, platform: 'xai', model: id }
   if (
     lower.startsWith('claude-') ||
     lower.startsWith('anthropic.claude-') ||

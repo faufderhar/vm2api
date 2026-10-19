@@ -7,7 +7,7 @@
 import { saveDistillRules } from '../core/distill-detect.mjs'
 import { applyRefusalGuardPatch } from '../core/refusal-guard.mjs'
 import { DEFAULT_TIER_POLICIES } from '../pool/quota-tiers.mjs'
-import { OPENAI_QUOTA_DEFAULTS } from '../pool/openai-quota-policy.mjs'
+import { GROK_QUOTA_DEFAULTS, OPENAI_QUOTA_DEFAULTS } from '../pool/openai-quota-policy.mjs'
 import { applyJevPatch, POLICY_NOUL } from '../protocol/jev-intercept.mjs'
 
 export const USAGE_PROFILES = Object.freeze(['personal', 'relay'])
@@ -63,6 +63,9 @@ export function routingPatchForProfile(mode) {
     concurrency: personal ? { ...PERSONAL_CONCURRENCY } : { ...RELAY_CONCURRENCY },
     tiers: tierPatch(profile),
     codex: { quota: codexBase },
+    grok: {
+      quota: personal ? { ...GROK_QUOTA_DEFAULTS, max_concurrency: 256 } : { ...GROK_QUOTA_DEFAULTS },
+    },
   }
 }
 

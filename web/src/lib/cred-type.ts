@@ -1,5 +1,5 @@
 import type { AuthScheme, OauthFlavor, Vm } from '@/types/panel-vm'
-import { isCodexVm } from '@/lib/vm-kind'
+import { isCodexVm, isGrokVm } from '@/lib/vm-kind'
 
 export type CredType =
   'oauth' | 'setup-token' | 'official-setup-token' | 'apikey' | 'none'
@@ -76,22 +76,23 @@ export function credEndpointLabel(endpoint: CredEndpoint): string {
  */
 export function credEndpointOf(vm: Vm | undefined): CredEndpoint {
   if (credTypeOf(vm) === 'none') return 'none'
-  if (isCodexVm(vm)) return 'oauth'
+  if (isCodexVm(vm) || isGrokVm(vm)) return 'oauth'
   return authSchemeOf(vm) === 'x_api_key' ? 'api' : 'console'
 }
 
-/** 只有 Claude 完整 OAuth 槽才支持官方初装。GPT 槽走 Codex OAuth。 */
+/** 只有 Claude 完整 OAuth 槽才支持官方初装。GPT / Grok 槽走各自 OAuth。 */
 export function supportsOfficialCc(vm: Vm | undefined): boolean {
-  if (isCodexVm(vm)) return false
+  if (isCodexVm(vm) || isGrokVm(vm)) return false
   return credTypeOf(vm) === 'oauth'
 }
 
 /**
  * 能否刷新凭证。镜像 gateway `canRefreshCredential`：
  * Console API Key 和官方 Setup Token 永远不能刷新；转换后的 Setup Token 无 refresh 时也不能。
- * GPT 槽有 refresh_token 才能刷新。
+ * GPT / Grok 槽有 refresh_token 才能刷新。
  */
 export function canRefreshCredential(vm: Vm | undefined): boolean {
+  if (isGrokVm(vm)) return Boolean(vm?.has_refresh || vm?.grok?.has_refresh)
   if (isCodexVm(vm)) return Boolean(vm?.has_refresh)
   const type = credTypeOf(vm)
   if (type === 'apikey' || type === 'official-setup-token') return false
@@ -102,8 +103,11 @@ export function canRefreshCredential(vm: Vm | undefined): boolean {
 /** 导入面板里用户选择的凭证类型。与 `CredType` 不同，它没有 `none`。 */
 export type ImportKind = 'oauth' | 'setup-token' | 'apikey'
 
-/** GPT 槽只走 Codex OAuth / 账号文件；Claude 才有 Setup Token / Console。 */
-export function importSurfaceFor(vm: Vm | undefined): 'claude' | 'codex' {
+/** GPT 槽只走 Codex OAuth / 账号文件，Grok 槽只走 xAI OAuth / 账号文件；Claude 才有 Setup Token / Console。 */
+export function importSurfaceFor(
+  vm: Vm | undefined
+): 'claude' | 'codex' | 'grok' {
+  if (isGrokVm(vm)) return 'grok'
   return isCodexVm(vm) ? 'codex' : 'claude'
 }
 

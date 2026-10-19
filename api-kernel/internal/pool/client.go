@@ -20,15 +20,21 @@ const (
 	dialTimeout         = 10 * time.Second
 	tlsHandshakeTimeout = 10 * time.Second
 	responseHeaderWait  = 300 * time.Second
+	clientIdleTTL       = 30 * time.Minute
 )
+
+type pooledClient struct {
+	client   *http.Client
+	lastUsed time.Time
+}
 
 type Manager struct {
 	mu      sync.Mutex
-	clients map[string]*http.Client
+	clients map[string]*pooledClient
 }
 
 func NewManager() *Manager {
-	return &Manager{clients: make(map[string]*http.Client)}
+	return &Manager{clients: make(map[string]*pooledClient)}
 }
 
 func (m *Manager) Client(proxyURL string) (*http.Client, error) {
@@ -36,17 +42,30 @@ func (m *Manager) Client(proxyURL string) (*http.Client, error) {
 	if key == "" || key == "direct" {
 		key = "direct"
 	}
+	now := time.Now()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if c, ok := m.clients[key]; ok {
-		return c, nil
+	m.evictIdle(now, key)
+	if pc, ok := m.clients[key]; ok {
+		pc.lastUsed = now
+		return pc.client, nil
 	}
 	c, err := newClient(key)
 	if err != nil {
 		return nil, err
 	}
-	m.clients[key] = c
+	m.clients[key] = &pooledClient{client: c, lastUsed: now}
 	return c, nil
+}
+
+// In-flight requests keep their client alive; eviction only drops idle sockets and the cache entry.
+func (m *Manager) evictIdle(now time.Time, keep string) {
+	for k, pc := range m.clients {
+		if k != keep && now.Sub(pc.lastUsed) > clientIdleTTL {
+			pc.client.CloseIdleConnections()
+			delete(m.clients, k)
+		}
+	}
 }
 
 func newClient(proxyKey string) (*http.Client, error) {

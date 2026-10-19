@@ -18,6 +18,7 @@ function row(vm_id: string, cost: number): BillingItem {
 const vms = new Map<string, Vm>([
   ['vm-c', { id: 'vm-c', platform: 'anthropic' } as Vm],
   ['vm-g', { id: 'vm-g', platform: 'openai' } as Vm],
+  ['vm-x', { id: 'vm-x', platform: 'xai', family: 'grok' } as Vm],
 ])
 
 describe('billing platform split', () => {
@@ -25,6 +26,13 @@ describe('billing platform split', () => {
     const out = splitBilling([row('vm-c', 2), row('vm-g', 3)], 'vm', vms)
     expect(out.claude.cost_usd).toBe(2)
     expect(out.gpt.cost_usd).toBe(3)
+    const withGrok = splitBilling(
+      [row('vm-c', 2), row('vm-g', 3), row('vm-x', 4)],
+      'vm',
+      vms
+    )
+    expect(withGrok.grok.cost_usd).toBe(4)
+    expect(withGrok.claude.cost_usd).toBe(2)
   })
 
   it('does not count unknown slots as Claude', () => {
@@ -32,6 +40,7 @@ describe('billing platform split', () => {
     expect(out.rows[0].kind).toBeNull()
     expect(out.claude.cost_usd).toBe(0)
     expect(out.gpt.cost_usd).toBe(0)
+    expect(out.grok.cost_usd).toBe(0)
   })
 
   it('does not split when grouped by key', () => {

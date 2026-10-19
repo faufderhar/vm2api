@@ -35,7 +35,7 @@ import { unitCircuit } from './unit-circuit.mjs'
 import { isSlotProxyDesynced, readWorkerProxyEndpoint, readWorkerEgressMode } from '../vm/vm-runtime.mjs'
 import { splitBlocksModel } from './weekly-split.mjs'
 import { slotAllowsModel } from './slot-model-gate.mjs'
-import { isCodexVm } from '../vm/vm-kind.mjs'
+import { platformOf } from '../vm/vm-kind.mjs'
 import { detectInboundPlatform } from '../protocol/platform-detect.mjs'
 import { resolveCredentialScheduleLevel } from './credential-weight.mjs'
 import { PLATFORM_SCOPE, normalizeOwnerId, vmMatchesOwnerScope } from '../admin/resource-owner.mjs'
@@ -294,13 +294,10 @@ function grantable(candidate) {
   return !candidate.busy || LIVE_RECHECKED_WAITS.has(candidate.waitReason)
 }
 
-function platformMismatch(model, vm) {
+export function platformMismatch(model, vm) {
   const detected = detectInboundPlatform(model)
-  if (!detected.ok) return false
-  const codex = isCodexVm(vm)
-  if (detected.platform === 'openai') return !codex
-  if (detected.platform === 'anthropic') return codex
-  return false
+  if (!detected.ok || !detected.platform) return false
+  return detected.platform !== platformOf(vm)
 }
 
 function runtimeHealthStatus(value) {

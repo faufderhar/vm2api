@@ -44,6 +44,8 @@ export const DEFAULT_HEALTH_PROBE = Object.freeze({
     vm_ids: Object.freeze([]),
     // GPT snapshot for chat/responses on GPT models. Empty = no Codex probe.
     openai_model: '',
+    // Grok snapshot. Empty = probe GET /v1/models instead of a chat turn.
+    grok_model: '',
   }),
   match: Object.freeze({
     max_tokens: 32,
@@ -177,6 +179,9 @@ export function normalizeHealthProbeConfig(raw = {}) {
       outbound_mode: modeRaw === 'unofficial' ? 'unofficial' : 'official',
       vm_ids: normalizeVmIds(realSrc.vm_ids),
       openai_model: String(realSrc.openai_model || '')
+        .trim()
+        .slice(0, 120),
+      grok_model: String(realSrc.grok_model || '')
         .trim()
         .slice(0, 120),
     },
@@ -405,7 +410,16 @@ export function healthUnavailableError(snapshot = null, requestId = null) {
 /** Which cached snapshot answers this inbound model: GPT models use the Codex probe. */
 export function healthPlatformOf(body = {}) {
   const platform = detectInboundPlatform(body?.model)
-  return platform.ok && platform.platform === 'openai' ? 'openai' : 'anthropic'
+  if (platform.ok && platform.platform === 'openai') return 'openai'
+  if (platform.ok && platform.platform === 'xai') return 'xai'
+  return 'anthropic'
+}
+
+function healthSlotPlatform(vm = {}) {
+  const platform = String(vm.platform || vm.family || '').toLowerCase()
+  if (platform === 'openai' || platform === 'gpt' || platform === 'codex') return 'openai'
+  if (platform === 'xai' || platform === 'grok') return 'xai'
+  return 'anthropic'
 }
 
 export function decideHealthIntercept({
@@ -612,7 +626,7 @@ export function selectHealthProbeTargets(vms = [], cfg = DEFAULT_HEALTH_PROBE, n
 export function createHealthProbeMonitor(opts = {}) {
   let config = normalizeHealthProbeConfig(opts.config)
   // anthropic: Claude slot probe (legacy single snapshot). openai: Codex slot probe.
-  const snapshots = { anthropic: null, openai: null }
+  const snapshots = { anthropic: null, openai: null, xai: null }
   let lastRunAt = 0
   let inflight = null
   let timer = null
@@ -642,7 +656,7 @@ export function createHealthProbeMonitor(opts = {}) {
   const probePlatform = async (platform, real, started) => {
     const vms = typeof opts.listTargets === 'function' ? opts.listTargets() || [] : []
     const targets = selectHealthProbeTargets(vms, config, nowFn()).filter(
-      (vm) => (String(vm.platform || '').toLowerCase() === 'openai' ? 'openai' : 'anthropic') === platform,
+      (vm) => healthSlotPlatform(vm) === platform,
     )
     if (!targets.length) {
       // Every slot off-shift: a still-valid good reply keeps serving until it expires.
@@ -775,6 +789,27 @@ export function createHealthProbeMonitor(opts = {}) {
       } else {
         snapshots.openai = null
       }
+      if (config.real.grok_model) {
+        await probePlatform('xai', { ...config.real, model: config.real.grok_model }, started)
+      } else if (typeof opts.probeGrokModels === 'function') {
+        const listed = await opts.probeGrokModels().catch((error) => ({
+          ok: false,
+          error: String(error?.message || error).slice(0, 200),
+        }))
+        snapshots.xai = {
+          ok: !!listed?.ok,
+          at: new Date(started).toISOString(),
+          vm_id: listed?.vm_id || null,
+          model: '',
+          text: listed?.ok ? `models:${(listed.ids || []).length}` : null,
+          status: listed?.ok ? 200 : 0,
+          error: listed?.ok ? null : String(listed?.error || 'models_failed').slice(0, 300),
+          duration_ms: nowFn() - started,
+          body: null,
+        }
+      } else {
+        snapshots.xai = null
+      }
       return getSnapshot('anthropic')
     })().finally(() => {
       inflight = null
@@ -814,7 +849,11 @@ export function createHealthProbeMonitor(opts = {}) {
     getConfig,
     setConfig,
     getSnapshot,
-    getSnapshots: () => ({ anthropic: getSnapshot('anthropic'), openai: getSnapshot('openai') }),
+    getSnapshots: () => ({
+      anthropic: getSnapshot('anthropic'),
+      openai: getSnapshot('openai'),
+      xai: getSnapshot('xai'),
+    }),
     rawSnapshot: (platform = 'anthropic') => snapshots[platform] || null,
     decide,
     runRealProbe,

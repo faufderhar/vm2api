@@ -39,6 +39,7 @@ import { sanitizeInboundBody, defaultSeedPolicy } from './seed-policy.mjs'
 import { fingerprintRequest } from './client-fingerprint.mjs'
 import { validateOfficialModel } from './models.mjs'
 import { handleCodexProtocol, handleCodexSearch } from './handle-codex.mjs'
+import { handleGrokProtocol } from './handle-grok.mjs'
 import { disjointOpenaiUsage } from './openai-usage.mjs'
 import { costColumnsFromUsage } from '../admin/pricing.mjs'
 import { detectInboundPlatform } from './platform-detect.mjs'
@@ -675,10 +676,10 @@ export function createHandleProtocol(deps) {
       logBag.error_message = errorResult.body?.error?.message || null
       return json(res, 403, errorResult.body)
     }
-    // Codex returns before conversion. Distill does not apply to OpenAI platform models; the rest
-    // of the gate scans them only when jev.openai_platform_enabled is on.
+    // Codex and Grok return before conversion. Distill does not apply to OpenAI/xAI platform models;
+    // the rest of the gate scans them only when jev.openai_platform_enabled / grok_platform_enabled is on.
     if (
-      platform.platform !== 'openai' &&
+      platform.platform === 'anthropic' &&
       protocol === 'anthropic.messages' &&
       getHealthMonitor()?.getConfig?.()?.intercept_warmup === true
     ) {
@@ -768,6 +769,38 @@ export function createHandleProtocol(deps) {
         captureOutbound: logCtx.capture_outbound === true,
         accountGate,
         ...codexSticky,
+      })
+    }
+    if (platform.platform === 'xai') {
+      return handleGrokProtocol({
+        req,
+        res,
+        protocol,
+        ctx,
+        inbound,
+        logBag,
+        stats,
+        json,
+        writeSSEHeaders,
+        routing: getRouting() || {},
+        cfg,
+        projectRoot: cfg.paths.project,
+        captureOutbound: logCtx.capture_outbound === true,
+        accountGate: (account) =>
+          applyProtocolIntercept({
+            req,
+            inbound,
+            body: ctx.body,
+            fp,
+            logBag,
+            requestId: logCtx.request_id,
+            res,
+            account,
+          }),
+        requestStartedAt: logCtx.t0,
+        stickyRouter,
+        sessions: accountQuota?.sessions || null,
+        body: ctx.body,
       })
     }
     if (protocol === 'openai.responses') {

@@ -30,7 +30,7 @@ export type SyncStatus = {
 }
 
 export type PricingEntry = {
-  platform: 'anthropic' | 'openai'
+  platform: 'anthropic' | 'openai' | 'xai'
   id: string
   name: string | null
   context: number | null

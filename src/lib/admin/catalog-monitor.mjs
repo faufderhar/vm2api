@@ -9,11 +9,13 @@ import path from 'node:path'
 import { SettingsRepo } from '../db/repos/settings-repo.mjs'
 import { runSlotOauth } from '../transport/slot-oauth.mjs'
 import { getVm, listVms, vmHasClaudeCredential } from '../vm/vm-registry.mjs'
-import { isCodexVm } from '../vm/vm-kind.mjs'
+import { isClaudeVm } from '../vm/vm-kind.mjs'
+import { probeGrokModels } from '../protocol/grok-models.mjs'
+import { syncGrokIdsIntoPolicy, getGrokModelPolicy, listGrokPolicyModels } from '../protocol/grok-model-policy.mjs'
+import { modelsDevMeta, syncModelsDev } from './price-catalog.mjs'
 import { vmHasProxyPath } from '../oauth/credential-refresh-monitor.mjs'
 import { seedModelCatalog } from '../protocol/models.mjs'
 import { syncWorkerModelsIntoPolicy } from '../protocol/model-policy.mjs'
-import { modelsDevMeta, syncModelsDev } from './price-catalog.mjs'
 import { syncCodexCatalog } from './vm-test-chat.mjs'
 
 export const CATALOG_SYNC_KEY = 'model_catalog_sync'
@@ -26,7 +28,7 @@ const CLAUDE_ACCOUNTS_PER_SYNC = 3
 
 export function readCatalogSync() {
   try {
-    return new SettingsRepo().get(CATALOG_SYNC_KEY, null) || { claude: null, codex: null }
+    return new SettingsRepo().get(CATALOG_SYNC_KEY, null) || { claude: null, codex: null, xai: null }
   } catch {
     return { claude: null, codex: null }
   }
@@ -34,7 +36,7 @@ export function readCatalogSync() {
 
 function writeCatalogSync(platform, status) {
   const repo = new SettingsRepo()
-  const cur = repo.get(CATALOG_SYNC_KEY, null) || { claude: null, codex: null }
+  const cur = repo.get(CATALOG_SYNC_KEY, null) || { claude: null, codex: null, xai: null }
   repo.set(CATALOG_SYNC_KEY, { ...cur, [platform]: status })
   return status
 }
@@ -46,7 +48,7 @@ function syncStatus(status, { added = [], error = null } = {}) {
 // listVms strips credentials; the exec needs the raw record's OAuth block.
 function claudeCatalogTargets(projectRoot) {
   return listVms(projectRoot)
-    .filter((vm) => vm?.id && !isCodexVm(vm) && !HARD_DOWN.has(String(vm.status || '').toLowerCase()))
+    .filter((vm) => vm?.id && isClaudeVm(vm) && !HARD_DOWN.has(String(vm.status || '').toLowerCase()))
     .map((vm) => getVm(projectRoot, vm.id))
     .filter((vm) => vm && vmHasClaudeCredential(vm) && vmHasProxyPath(vm))
 }
@@ -90,10 +92,31 @@ export async function syncGptCatalog({ projectRoot, vmId = '', catalogClientVers
   return result
 }
 
+/** Live xAI /v1/models → grok_model_policy. */
+export async function syncGrokCatalog({ projectRoot, cfg, routing, vmId = '' } = {}) {
+  const live = await probeGrokModels({ projectRoot, routing, cfg, vmId })
+  if (!live.ok) {
+    const skipped = live.error === 'no_grok_slot' || live.error === 'proxy_required' || live.error === 'grok_oauth_not_configured'
+    writeCatalogSync('xai', syncStatus(skipped ? 'skipped' : 'error', { error: live.error }))
+    return live
+  }
+  const { added } = syncGrokIdsIntoPolicy(live.models?.length ? live.models : live.ids, {
+    displayNameOf: (id) => modelsDevMeta('xai', id)?.name,
+  })
+  writeCatalogSync('xai', syncStatus('ok', { added }))
+  return { ...live, added, policy: getGrokModelPolicy(), models: listGrokPolicyModels() }
+}
+
 /**
  * @param {{ projectRoot: string, codexCatalogVersion?: () => string, log?: (event: object) => void }} opts
  */
-export function createCatalogMonitor({ projectRoot, codexCatalogVersion = () => 'auto', log = () => {} } = {}) {
+export function createCatalogMonitor({
+  projectRoot,
+  cfg,
+  getRouting = () => ({}),
+  codexCatalogVersion = () => 'auto',
+  log = () => {},
+} = {}) {
   const timers = []
   let running = false
   const guard = (name, fn) => async () => {
@@ -108,6 +131,7 @@ export function createCatalogMonitor({ projectRoot, codexCatalogVersion = () => 
   const upstream = guard('upstream', async () => {
     const claude = await syncClaudeCatalog({ projectRoot })
     await syncGptCatalog({ projectRoot, catalogClientVersion: codexCatalogVersion() })
+    await syncGrokCatalog({ projectRoot, cfg, routing: getRouting() })
     return claude
   })
 

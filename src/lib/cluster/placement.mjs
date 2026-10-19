@@ -45,11 +45,11 @@ export function vmNodeId(vm) {
 /**
  * What a node slot can do (see vm/slot-host.mjs). Official CC init, setup-token
  * PTY, wrap repair/promote and engine switching drive host-side processes or
- * the host's .kin copy; those stay local. Codex is allowed: its kernel runs on
- * the control plane and dials vms/<id>/run/codex-kernel.sock there. The node
- * container only holds identity and the slot network, same as a local GPT slot.
+ * the host's .kin copy; those stay local. Codex and Grok are allowed: their
+ * inference runs on the control plane (Codex kernel / shared api-kernel). The node
+ * container only holds identity and the slot network, same as a local headless slot.
  */
-export const SLOT_CAPS_NODE = new Set(['codex'])
+export const SLOT_CAPS_NODE = new Set(['codex', 'grok'])
 
 function state() {
   if (!bound) throw new ClusterError(503, 'cluster_unavailable', '集群未初始化')

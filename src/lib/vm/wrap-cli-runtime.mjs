@@ -11,7 +11,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { kernelBinPath } from '../transport/rust-kernel-supervisor.mjs'
-import { isCodexVm } from './vm-kind.mjs'
+import { isClaudeVm } from './vm-kind.mjs'
 import { resolveKernelDataplane } from './slot-engine.mjs'
 
 export const WRAP_CLI_BIN = 'cli-node'
@@ -726,7 +726,7 @@ export function inspectKernelChanges(projectRoot, vms, { routing } = {}) {
   const crag = describeCragPayload(projectRoot)
   const items = []
   for (const vm of vms || []) {
-    if (isCodexVm(vm)) continue
+    if (!isClaudeVm(vm)) continue
     const dataplane = resolveKernelDataplane(vm, routing) || 'wrap'
     const dest = path.join(wrapCliHomeDir(projectRoot, vm.id), WRAP_KERNEL_BIN)
     const src = dataplane === 'crag' ? crag.path : kernelPayloadPath(sample.dir, projectRoot)
@@ -759,7 +759,7 @@ export function syncWrapSample(projectRoot, vms, { uidOf, routing } = {}) {
   const crag = describeCragPayload(projectRoot)
   const items = []
   for (const vm of vms || []) {
-    if (isCodexVm(vm)) continue
+    if (!isClaudeVm(vm)) continue
     const dataplane = resolveKernelDataplane(vm, routing) || 'wrap'
     if ((dataplane === 'wrap' || dataplane === 'cc') && !sample.ok) {
       items.push({ id: vm.id, dataplane, ok: false, code: sample.code, error: sample.error })

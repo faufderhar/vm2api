@@ -2,11 +2,10 @@ import { queryOptions, type QueryClient } from '@tanstack/react-query'
 import type { ModelsPayload } from '@/types/panel-models'
 import type { PricingPayload } from '@/types/panel-pricing'
 import { api } from '@/lib/api'
+import type { VmPlatform } from '@/lib/vm-kind'
 import type { PolicyPayload } from '@/features/models/policy'
 
-export function modelPolicyQueryOptions(
-  platform: 'anthropic' | 'openai' = 'anthropic'
-) {
+export function modelPolicyQueryOptions(platform: VmPlatform = 'anthropic') {
   return queryOptions({
     queryKey: ['panel', 'model-policy', platform] as const,
     queryFn: () =>

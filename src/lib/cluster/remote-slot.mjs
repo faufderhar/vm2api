@@ -29,13 +29,12 @@ import {
 } from '../vm/egress.mjs'
 import { OS_CATALOG } from '../vm/os-catalog.mjs'
 import { REMOTE_KERNEL_ENTRY, resolveKernelDataplane } from '../vm/slot-engine.mjs'
-import { isCodexVm } from '../vm/vm-kind.mjs'
+import { isHeadlessSlotVm, PLATFORMS, platformDescriptor } from '../vm/vm-kind.mjs'
 import { proxyBlockedReason } from '../vm/proxy-policy.mjs'
 import { isKvmRuntime, runtimeKind } from '../vm/runtime-kind.mjs'
 import { slotMemory, slotDockerCpus, memoryMiB, normalizeVmConfig, VM_CONFIG_DEFAULTS } from '../vm/machine-spec.mjs'
 import { slotExecArgv, slotExecCmd } from '../vm/slot-exec.mjs'
 import {
-  CODEX_SLOT_ROLE,
   containerName,
   displayName,
   kvmBindChownArgv,
@@ -473,7 +472,7 @@ export function slotContainerBody(vm, { image, network, remoteDir, user, routing
   const slotName = displayName(vm.id)
   const mem = parseMemoryBytes(slotMemory(vm, routing))
   const cpus = slotDockerCpus(vm)
-  const codex = isCodexVm(vm)
+  const headless = isHeadlessSlotVm(vm)
   return {
     Image: image,
     Hostname: String(vm.fingerprint?.hostname || '').trim() || slotName,
@@ -489,7 +488,7 @@ export function slotContainerBody(vm, { image, network, remoteDir, user, routing
       `KIN_VM_OS=${vm.kernel}`,
     ],
     // Node images bake the Claude kernel here; local slots bind-mount a different path.
-    Cmd: codex ? ['sleep', 'infinity'] : [REMOTE_KERNEL_ENTRY, '--gateway-worker', '--config', '/run/kin/kernel.json'],
+    Cmd: headless ? ['sleep', 'infinity'] : [REMOTE_KERNEL_ENTRY, '--gateway-worker', '--config', '/run/kin/kernel.json'],
     Labels: {
       'kin.vm': '1',
       'kin.vm.id': vm.id,
@@ -497,7 +496,7 @@ export function slotContainerBody(vm, { image, network, remoteDir, user, routing
       'kin.vm.os': vm.kernel,
       'kin.vm.layout': SLOT_LAYOUT,
       'kin.vm.runtime': 'docker',
-      ...(codex ? { 'kin.vm.role': CODEX_SLOT_ROLE } : {}),
+      ...(headless ? { 'kin.vm.role': platformDescriptor(vm).role } : {}),
       'vm2api.cluster': '1',
     },
     HostConfig: {
@@ -616,16 +615,22 @@ function roleLabelOf(info) {
   return info?.Config?.Labels?.['kin.vm.role'] || ''
 }
 
+const HEADLESS_ROLES = new Set(
+  Object.values(PLATFORMS)
+    .map((d) => d.role)
+    .filter(Boolean),
+)
+
 /**
- * Docker GPT slots idle as PID 1. One still running kin-kernel crash-loops and
- * must be recreated. KVM has no such label: its runner boots the guest, and the
- * Codex kernel stays on the control plane, so requiring the role would remove
- * a freshly built VM on every start.
+ * Docker headless slots (GPT, Grok) idle as PID 1. One still running kin-kernel
+ * crash-loops and must be recreated. KVM has no such label: its runner boots the
+ * guest, and inference stays on the control plane, so requiring the role would
+ * remove a freshly built VM on every start.
  */
-export function codexRoleMatches(info, vm) {
+export function slotRoleMatches(info, vm) {
   if (isKvmRuntime(vm) || runtimeLabelOf(info) === 'kvm') return true
   const role = roleLabelOf(info)
-  return isCodexVm(vm) ? role === CODEX_SLOT_ROLE : role !== CODEX_SLOT_ROLE
+  return isHeadlessSlotVm(vm) ? role === platformDescriptor(vm).role : !HEADLESS_ROLES.has(role)
 }
 
 async function startRemoteTelemetry(docker, vm, name) {
@@ -666,7 +671,7 @@ export async function startRemoteSlot(vm, projectRoot, { recreate = false, routi
       existing.HostConfig?.NetworkMode === eg.network &&
       existing.Config?.Labels?.['kin.vm.layout'] === SLOT_LAYOUT &&
       runtimeLabelOf(existing) === runtimeKind(vm) &&
-      codexRoleMatches(existing, vm) &&
+      slotRoleMatches(existing, vm) &&
       // Running stays true during Docker restart-policy backoff. Recreate the
       // loop just like the local runtime; otherwise watchdog revival is a no-op.
       !existing.State?.Restarting &&
@@ -696,7 +701,7 @@ export async function startRemoteSlot(vm, projectRoot, { recreate = false, routi
     }
     writeWorkerFiles(vm, projectRoot, { transparent: true, routing })
     ensureGuestMachineIdFile(projectRoot, vm)
-    await pushSlotFiles(vm, slotDir, ['run', 'seed'], session)
+    await pushSlotFiles(vm, slotDir, ['run', 'seed', 'grok'], session)
     if (!existing) await migrateClaudeDir(session, vm, remoteDir)
     if (kvm) {
       await runRemote(
@@ -742,13 +747,13 @@ export async function reloadRemoteSlot(vm, projectRoot, { routing } = {}) {
       existing.HostConfig?.NetworkMode !== eg.network ||
       existing.Config?.Labels?.['kin.vm.layout'] !== SLOT_LAYOUT ||
       runtimeLabelOf(existing) !== runtimeKind(vm) ||
-      !codexRoleMatches(existing, vm)
+      !slotRoleMatches(existing, vm)
     ) {
       return startRemoteSlot(vm, projectRoot, { recreate: !!existing, routing })
     }
     const relays = await clusterManager().ensureSlotRelays(nodeId, vm.id)
     writeWorkerFiles(vm, projectRoot, { transparent: true, routing })
-    await pushSlotFiles(vm, slotDir, ['run', 'seed'], session)
+    await pushSlotFiles(vm, slotDir, ['run', 'seed', 'grok'], session)
     await reconcileSlotCredentials(vm, slotDir, session)
     const running = !!existing.State?.Running
     if (isKvmRuntime(vm) && running) {

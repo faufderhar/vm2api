@@ -10,14 +10,14 @@
  *   ownsSocketFiles slot sockets are real files of the slot (local). A node slot's
  *                   socket path is a local relay: never rm it, its mtime is not the kernel's
  *   bins            in-container CLI paths written to kernel.json
- *   supports(cap)   'official_cc' | 'wrap_cli' | 'engine_switch' | 'auth_scheme' | 'codex'
+ *   supports(cap)   'official_cc' | 'wrap_cli' | 'engine_switch' | 'auth_scheme' | 'codex' | 'grok'
  *   dockerEnv()     env for async docker CLI spawns (undefined = this host's daemon)
  *   dockerApi()     Engine API connector for the daemon that runs the slot
  *   execUser(vm)    `docker exec -u` for in-slot kin-worker commands
  *   start/reload/stop/destroy   same result contract as vm-runtime
  *   setProxyEgressEnabled(vm, projectRoot, enabled) stop/resume only the proxy helper
  *   localExitProxyUrl(vm)  host-side route for a slot on local egress: '' = this
- *                   host's default route (or the deployment proxy of a Codex slot); a node
+ *                   host's default route (or the deployment proxy of a headless slot); a node
  *                   slot gets a loopback SOCKS5 that dials from the node itself
  *   syncRun(vm, slotDir)        publish run/ (kernel.json, worker.json, token) where the slot reads it
  *   queueSyncRun(vm, slotDir)   fire-and-forget syncRun
@@ -60,7 +60,7 @@ import {
   localEgressProxyUrl,
   stopEgressProcess,
 } from './egress.mjs'
-import { isCodexVm } from './vm-kind.mjs'
+import { isCodexVm, isHeadlessSlotVm } from './vm-kind.mjs'
 import { nodeEgressProxyUrl } from '../cluster/node-egress-socks.mjs'
 import { isKvmRuntime } from './runtime-kind.mjs'
 import { stopCodexKernel } from '../transport/codex-kernel-supervisor.mjs'
@@ -101,6 +101,8 @@ const LOCAL_HOST = Object.freeze({
         child.once('exit', exited)
       })
     }
+    // Grok runs in the shared host api-kernel: no per-slot process to stop.
+    if (isHeadlessSlotVm(vm)) return { ok: true }
     if (enabled) return await ensureProxyEgress(projectRoot, vm.proxy)
     const stopped = stopEgressProcess(projectRoot, vm.proxy?.id)
     if (!stopped.ok) return stopped
@@ -111,7 +113,7 @@ const LOCAL_HOST = Object.freeze({
     }
     return stopEgressProcess(projectRoot, vm.proxy?.id)
   },
-  localExitProxyUrl: (vm) => (isCodexVm(vm) ? localEgressProxyUrl() : ''),
+  localExitProxyUrl: (vm) => (isHeadlessSlotVm(vm) ? localEgressProxyUrl() : ''),
   // The container bind-mounts vms/<id>/ directly: every local write is already published.
   syncRun: noop,
   queueSyncRun: () => null,
