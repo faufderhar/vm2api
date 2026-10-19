@@ -417,12 +417,14 @@ function ingestGrokHop(projectRoot, vm, result, now = Date.now()) {
 }
 
 function tokenFailure(code) {
-  const status = code === 'grok_oauth_not_configured' ? 503 : 401
+  const status = code === 'grok_oauth_not_configured' ? 503 : code === 'grok_oauth_discovery_failed' ? 502 : 401
   const message =
     code === 'grok_refresh_rejected'
       ? 'Grok 槽位登录已失效，请重新登录'
       : code === 'grok_oauth_not_configured'
         ? 'xAI OAuth 未配置，无法刷新 Grok 令牌'
+        : code === 'grok_oauth_discovery_failed'
+          ? '读不到 xAI 授权地址，无法刷新 Grok 令牌'
         : 'Grok 槽位没有可用凭证'
   return { ok: false, status, body: { error: { type: 'authentication_error', code, message } } }
 }

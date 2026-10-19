@@ -1,17 +1,23 @@
 /**
  * Grok (xAI) routing. Claude and Codex traffic never read this object.
- * OAuth endpoints are operator configuration; nothing here guesses xAI URLs.
+ * The OAuth client and scope are the public Grok CLI client (same values as
+ * CLIProxyAPI). Device and token endpoints are read from OIDC discovery unless
+ * an operator explicitly overrides token_url.
  */
 import { normalizeGrokQuotaPolicy, validateGrokQuotaPatch } from '../pool/openai-quota-policy.mjs'
 
 export const DEFAULT_GROK_BASE_URL = 'https://api.x.ai'
+export const GROK_OAUTH_CLIENT_ID = 'b1a00492-073a-47ea-816f-4c329264a828'
+export const GROK_OAUTH_SCOPE = 'openid profile email offline_access grok-cli:access api:access'
+export const GROK_OAUTH_ISSUER = 'https://auth.x.ai'
+export const GROK_OAUTH_DISCOVERY_URL = `${GROK_OAUTH_ISSUER}/.well-known/openid-configuration`
+export const GROK_OAUTH_DEVICE_GRANT = 'urn:ietf:params:oauth:grant-type:device_code'
 export const GROK_PROTOCOL_MODES = Object.freeze({
   'openai.responses': Object.freeze(['native', 'reject']),
   'openai.chat': Object.freeze(['native', 'reject']),
   'openai.completions': Object.freeze(['reject']),
   'anthropic.messages': Object.freeze(['native', 'convert', 'reject']),
 })
-export const GROK_OAUTH_REQUIRED = Object.freeze(['authorize_url', 'token_url', 'client_id', 'redirect_uri'])
 
 export const DEFAULT_GROK_ROUTING = Object.freeze({
   enabled: false,
@@ -173,22 +179,29 @@ export function grokRoutingOf(routing = {}) {
 }
 
 /**
- * Resolved OAuth client config, or the list of missing fields.
- * Callers must fail closed (503 grok_oauth_not_configured) on !ok.
+ * Official client plus any operator overrides.
+ * An empty token_url means "discover it"; that is not a configuration error.
+ * !ok only when an override is present but not https (redirect may be loopback).
  */
 export function grokOauthConfig(routing = {}) {
   const oauth = grokRoutingOf(routing).oauth
-  const missing = GROK_OAUTH_REQUIRED.filter((key) => !oauth[key])
   const invalid = []
   if (oauth.authorize_url && !isHttpsUrl(oauth.authorize_url)) invalid.push('authorize_url')
   if (oauth.token_url && !isHttpsUrl(oauth.token_url)) invalid.push('token_url')
   if (oauth.redirect_uri && !isHttpsUrl(oauth.redirect_uri) && !isLoopbackHttp(oauth.redirect_uri)) {
     invalid.push('redirect_uri')
   }
-  if (missing.length || invalid.length) {
-    return { ok: false, code: 'grok_oauth_not_configured', missing: [...missing, ...invalid] }
+  if (invalid.length) {
+    return { ok: false, code: 'grok_oauth_not_configured', missing: invalid }
   }
-  return { ok: true, config: oauth }
+  return {
+    ok: true,
+    config: {
+      ...oauth,
+      client_id: oauth.client_id || GROK_OAUTH_CLIENT_ID,
+      scope: oauth.scope || GROK_OAUTH_SCOPE,
+    },
+  }
 }
 
 export function grokBaseUrl(routing = {}) {

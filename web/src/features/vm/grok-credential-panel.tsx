@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
 import type { Vm } from '@/types/panel-vm'
-import { AlertTriangle, Copy, ExternalLink, Upload } from 'lucide-react'
+import { Copy, ExternalLink, Upload } from 'lucide-react'
 import { toast } from 'sonner'
-import { api, isApiError } from '@/lib/api'
+import { api } from '@/lib/api'
 import { proxyNamedLabel } from '@/lib/vm-status'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
@@ -22,22 +21,22 @@ const MODES: { id: GrokImportMode; label: string }[] = [
   { id: 'access_token', label: 'Access Token' },
 ]
 
-const NOT_CONFIGURED = 'grok_oauth_not_configured'
-
 type AuthLink = {
   sessionId: string
   authUrl: string
+  userCode: string
   expiresAt: number
+  intervalSec: number
   proxyHint: string
-  redirectUri: string
 }
 
 const EMPTY_LINK: AuthLink = {
   sessionId: '',
   authUrl: '',
+  userCode: '',
   expiresAt: 0,
+  intervalSec: 5,
   proxyHint: '',
-  redirectUri: '',
 }
 
 function Seg({
@@ -95,45 +94,6 @@ function useCountdown(expiresAt: number) {
   return `${mm}:${ss}`
 }
 
-function missingFields(error: unknown): string[] {
-  if (!isApiError(error)) return []
-  const details =
-    error.details && typeof error.details === 'object'
-      ? (error.details as { missing?: unknown })
-      : null
-  const raw = error.missing ?? details?.missing
-  return Array.isArray(raw) ? raw.map((item) => String(item)) : []
-}
-
-function NotConfiguredNotice({ missing }: { missing: string[] }) {
-  return (
-    <div className='flex items-start gap-2 rounded-md border border-[color:var(--status-caution)]/40 bg-[color:var(--status-caution)]/10 px-3 py-2 text-xs'>
-      <AlertTriangle
-        className='mt-0.5 size-3.5 shrink-0 text-[color:var(--status-caution)]'
-        aria-hidden='true'
-      />
-      <div className='min-w-0 space-y-1'>
-        <p>
-          请先在
-          <Link
-            to='/settings/$tab'
-            params={{ tab: 'grok' }}
-            className='mx-1 underline underline-offset-2'
-          >
-            设置 → Grok
-          </Link>
-          中填写 xAI OAuth 配置。
-        </p>
-        {missing.length ? (
-          <p className='text-muted-foreground'>
-            缺少：<span className='font-mono'>{missing.join(', ')}</span>
-          </p>
-        ) : null}
-      </div>
-    </div>
-  )
-}
-
 export function GrokCredentialPanel({
   vm,
   onCommitted,
@@ -145,30 +105,26 @@ export function GrokCredentialPanel({
   const fileRef = useRef<HTMLInputElement>(null)
   const [mode, setMode] = useState<GrokImportMode>('oauth')
   const [text, setText] = useState('')
-  const [code, setCode] = useState('')
   const [link, setLink] = useState<AuthLink>(EMPTY_LINK)
   const [fileError, setFileError] = useState('')
-  const [missing, setMissing] = useState<string[] | null>(null)
   const [pickedFile, setPickedFile] = useState<{
     name: string
     size: number
   } | null>(null)
+  const pollInterval = useRef(5)
+  const committedRef = useRef(onCommitted)
+  committedRef.current = onCommitted
 
   const remaining = useCountdown(link.expiresAt)
-  const linkReady = !!(link.sessionId && link.authUrl)
+  const linkReady = !!(link.sessionId && link.userCode)
   const proxyHint =
     link.proxyHint || (vm.proxy?.host ? proxyNamedLabel(vm.proxy) : '')
-  const callbackPlaceholder = link.redirectUri
-    ? `${link.redirectUri}${link.redirectUri.includes('?') ? '&' : '?'}code=...&state=...`
-    : '粘贴授权完成后浏览器地址栏里的回调 URL'
 
   useEffect(() => {
     setText('')
-    setCode('')
     setLink(EMPTY_LINK)
     setFileError('')
     setPickedFile(null)
-    setMissing(null)
   }, [vm.id, mode])
 
   const invalidate = () =>
@@ -203,10 +159,11 @@ export function GrokCredentialPanel({
     mutationFn: () =>
       api<{
         auth_url?: string
+        user_code?: string
         session_id?: string
         expires_at?: number
+        interval_sec?: number
         proxy_hint?: string | null
-        redirect_uri?: string | null
       }>(
         `/api/panel/vms/${encodeURIComponent(vm.id)}/oauth/generate-auth-url`,
         {
@@ -215,50 +172,68 @@ export function GrokCredentialPanel({
         }
       ),
     onSuccess: (data) => {
-      setMissing(null)
+      pollInterval.current = Number(data.interval_sec) || 5
       setLink({
         sessionId: String(data.session_id || ''),
         authUrl: String(data.auth_url || ''),
+        userCode: String(data.user_code || ''),
         expiresAt: Number(data.expires_at) || 0,
+        intervalSec: Number(data.interval_sec) || 5,
         proxyHint: String(data.proxy_hint || ''),
-        redirectUri: String(data.redirect_uri || ''),
       })
-      setCode('')
-      toast.success('授权链接已生成')
-    },
-    onError: (error: Error) => {
-      if (isApiError(error) && error.code === NOT_CONFIGURED) {
-        setMissing(missingFields(error))
-        return
-      }
-      toast.error(error.message)
-    },
-  })
-
-  const exchange = useMutation({
-    mutationFn: () =>
-      api<CommitResult>(
-        `/api/panel/vms/${encodeURIComponent(vm.id)}/oauth/exchange-code`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            session_id: link.sessionId,
-            code: code.trim(),
-            flavor: 'grok',
-          }),
-        }
-      ),
-    onSuccess: async (data) => {
-      setCode('')
-      setLink(EMPTY_LINK)
-      await invalidate()
-      toast.success('已完成 xAI OAuth')
-      onCommitted?.(data, vm.id, '已完成 xAI OAuth')
+      toast.success('请在 xAI 页面输入验证码')
     },
     onError: (error: Error) => toast.error(error.message),
   })
 
-  const busy = importCred.isPending || gen.isPending || exchange.isPending
+  useEffect(() => {
+    if (mode !== 'oauth' || !link.sessionId) return
+    let stopped = false
+    let timer = 0
+    const sessionId = link.sessionId
+    const schedule = (seconds: number) => {
+      timer = window.setTimeout(() => {
+        void pollOnce()
+      }, Math.max(1, seconds) * 1000)
+    }
+    async function pollOnce() {
+      if (stopped) return
+      try {
+        const data = await api<{ status?: string; interval_sec?: number } & CommitResult>(
+          `/api/panel/vms/${encodeURIComponent(vm.id)}/oauth/device-poll`,
+          {
+            method: 'POST',
+            body: JSON.stringify({ session_id: sessionId, flavor: 'grok' }),
+          }
+        )
+        if (stopped) return
+        if (data.status === 'authorized') {
+          setLink(EMPTY_LINK)
+          await Promise.all([
+            qc.invalidateQueries({ queryKey: dashboardQueryOptions().queryKey }),
+            qc.invalidateQueries({ queryKey: vmQueryOptions(vm.id).queryKey }),
+          ])
+          toast.success('已完成 xAI 授权')
+          committedRef.current?.(data, vm.id, '已完成 xAI 授权')
+          return
+        }
+        const next = Number(data.interval_sec) || pollInterval.current || 5
+        pollInterval.current = next
+        schedule(next)
+      } catch (error) {
+        if (stopped) return
+        setLink(EMPTY_LINK)
+        toast.error(error instanceof Error ? error.message : '授权失败')
+      }
+    }
+    schedule(pollInterval.current || 5)
+    return () => {
+      stopped = true
+      window.clearTimeout(timer)
+    }
+  }, [mode, link.sessionId, qc, vm.id])
+
+  const busy = importCred.isPending || gen.isPending
   const textLabel =
     mode === 'access_token'
       ? 'Access Token'
@@ -326,25 +301,23 @@ export function GrokCredentialPanel({
               剩余有效 {remaining}
               {proxyHint ? ` · 经 ${proxyHint}` : ''}
             </p>
-            <div className='space-y-1'>
-              <Label htmlFor='grok-oauth-callback'>回调 URL</Label>
-              <Textarea
-                id='grok-oauth-callback'
-                rows={3}
-                value={code}
-                disabled={busy}
-                onChange={(event) => setCode(event.target.value)}
-                placeholder={callbackPlaceholder}
-              />
+            <div className='rounded-md border px-3 py-2'>
+              <p className='text-xs text-muted-foreground'>验证码</p>
+              <p className='font-mono text-lg tracking-[0.2em]'>{link.userCode}</p>
             </div>
             <div className='flex flex-wrap items-center gap-2'>
               <Button
                 size='sm'
-                disabled={!code.trim() || busy}
-                loading={exchange.isPending}
-                onClick={() => exchange.mutate()}
+                variant='outline'
+                onClick={() => {
+                  void navigator.clipboard
+                    ?.writeText(link.userCode)
+                    .then(() => toast.success('已复制验证码'))
+                    .catch(() => toast.error('复制失败'))
+                }}
               >
-                {exchange.isPending ? '验证中…' : '完成授权'}
+                <Copy className='size-3.5' aria-hidden='true' />
+                复制验证码
               </Button>
               <Button
                 size='sm'
@@ -353,28 +326,23 @@ export function GrokCredentialPanel({
                 loading={gen.isPending}
                 onClick={() => gen.mutate()}
               >
-                重新生成
+                重新开始
               </Button>
             </div>
-            <Hint>
-              授权完成后把
-              {link.redirectUri ? ` ${link.redirectUri} ` : '回调地址'}
-              整段贴回来，也可以只贴 code。
-            </Hint>
+            <Hint>打开授权页，输入上面的验证码。确认后这里会自动完成，不用粘贴回调。</Hint>
           </div>
         ) : (
           <div className='space-y-2'>
             <Hint>
-              生成 xAI 授权链接。换票经槽代理，打开链接仍是本机浏览器。
+              使用 xAI 官方客户端发起设备码登录。不用填写授权地址、client id 或回调地址。
             </Hint>
-            {missing ? <NotConfiguredNotice missing={missing} /> : null}
             <Button
               size='sm'
               disabled={busy}
               loading={gen.isPending}
               onClick={() => gen.mutate()}
             >
-              {gen.isPending ? '生成中…' : '生成授权链接'}
+              {gen.isPending ? '请求中…' : '开始授权'}
             </Button>
           </div>
         )

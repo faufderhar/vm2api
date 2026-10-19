@@ -1,6 +1,5 @@
 import { KeyRound, ShieldCheck, Waypoints } from 'lucide-react'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { SettingRow } from '@/components/setting-row'
 import { PaneSection } from './scheduler-controls'
@@ -77,8 +76,6 @@ export function GrokPane({
   const quota = asBlock(grok.quota)
   const enabled = grok.enabled === true
   const update = (patch: Block) => onChange({ ...grok, ...patch })
-  const setOauth = (key: string, value: string) =>
-    update({ oauth: { ...oauth, [key]: value } })
   const setProtocol = (key: string, mode: string) => {
     const current = asBlock(protocols[key])
     update({
@@ -120,41 +117,23 @@ export function GrokPane({
       <PaneSection
         icon={KeyRound}
         title='xAI OAuth'
-        desc='授权地址、换票地址、client_id、回调地址都要自己填。没填齐时导入会返回 503，不会去猜官方地址。'
+        desc='使用 Grok 官方客户端做设备码登录。不用填 client id、授权地址或回调地址。换票地址留空时，会从 auth.x.ai 的发现文档读取。'
       >
-        <div className='grid gap-3 p-4 md:grid-cols-2'>
-          {(
-            [
-              ['authorize_url', '授权地址'],
-              ['token_url', '换票地址'],
-              ['client_id', 'Client ID'],
-              ['redirect_uri', '回调地址'],
-              ['scope', 'Scope（可空）'],
-            ] as const
-          ).map(([key, label]) => (
-            <div key={key} className='space-y-1.5'>
-              <Label htmlFor={`grok-oauth-${key}`}>{label}</Label>
-              <Input
-                id={`grok-oauth-${key}`}
-                value={textOf(oauth[key])}
-                disabled={saving}
-                onChange={(event) => setOauth(key, event.target.value)}
-              />
-            </div>
-          ))}
+        <div className='divide-y'>
           <div className='space-y-1.5'>
-            <Label htmlFor='grok-refresh-skew'>提前刷新（秒）</Label>
-            <NumberField
-              id='grok-refresh-skew'
-              label='Grok 提前刷新秒数'
-              min={30}
-              max={3600}
-              value={Number(oauth.refresh_skew_sec ?? 300)}
-              disabled={saving}
-              onCommit={(next) =>
-                update({ oauth: { ...oauth, refresh_skew_sec: next } })
-              }
-            />
+            <SettingRow label='提前刷新' desc='access token 到期前多少秒开始换票。'>
+              <NumberField
+                id='grok-refresh-skew'
+                label='Grok 提前刷新秒数'
+                min={30}
+                max={3600}
+                value={Number(oauth.refresh_skew_sec ?? 300)}
+                disabled={saving}
+                onCommit={(next) =>
+                  update({ oauth: { ...oauth, refresh_skew_sec: next } })
+                }
+              />
+            </SettingRow>
           </div>
         </div>
       </PaneSection>

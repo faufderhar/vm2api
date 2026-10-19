@@ -104,7 +104,8 @@ async function refreshLocked({ projectRoot, vmId, routing, proxyUrl, force, fetc
       return { ok: false, code: 'grok_refresh_rejected', status: res.status }
     }
     if (!force && tokenUsable(account, now)) return ok(account, false)
-    return { ok: false, code: res.error === 'grok_oauth_not_configured' ? res.error : 'grok_refresh_failed', status: res.status }
+    const passthrough = res.error === 'grok_oauth_not_configured' || res.error === 'grok_oauth_discovery_failed' || res.error === 'proxy_required'
+    return { ok: false, code: passthrough ? res.error : 'grok_refresh_failed', status: res.status }
   })
 }
 

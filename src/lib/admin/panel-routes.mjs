@@ -33,7 +33,7 @@ import { generateAuthUrl, exchangeAuthCode, normalizeOauthFlavor } from '../oaut
 import { sessionKeyToOAuth, panelImportErrorPayload } from '../oauth/cookie-auth.mjs'
 import { enrichOauthIdentity } from '../oauth/oauth-identity.mjs'
 import { generateCodexAuthUrl, exchangeCodexAuthCode } from '../oauth/codex-oauth.mjs'
-import { exchangeGrokAuthCode, generateGrokAuthUrl, refreshGrokAccessToken } from '../oauth/grok-oauth.mjs'
+import { exchangeGrokAuthCode, pollGrokDeviceLogin, refreshGrokAccessToken, startGrokDeviceLogin } from '../oauth/grok-oauth.mjs'
 import { ensureGrokAccessToken } from '../oauth/grok-token.mjs'
 import {
   completeClaudeSetupToken,
@@ -4233,8 +4233,10 @@ export function createPanelHandler(ctx) {
                     code: tok.error || 'refresh_failed',
                     message:
                       tok.error === 'grok_oauth_not_configured'
-                        ? 'xAI OAuth 未配置，请先在设置 → Grok 中填写'
-                        : 'Refresh Token 换票失败，请检查配置或改用 access_token',
+                        ? 'xAI OAuth 地址无效'
+                        : tok.error === 'grok_oauth_discovery_failed'
+                          ? '读不到 xAI 授权地址，请检查槽位代理能否访问 auth.x.ai'
+                          : 'Refresh Token 换票失败，请检查代理或改用 access_token',
                     missing: tok.missing,
                   },
                 })
@@ -4415,7 +4417,7 @@ export function createPanelHandler(ctx) {
         }
         try {
           if (isGrokVm(existing)) {
-            const generated = generateGrokAuthUrl({
+            const generated = await startGrokDeviceLogin({
               routing: ctx.routingConfig,
               vmId: id,
               proxyUrl: slotProxy.proxyUrl,
@@ -4465,6 +4467,63 @@ export function createPanelHandler(ctx) {
             },
           })
         }
+      }
+
+      if (req.method === 'POST' && /^\/api\/panel\/vms\/[^/]+\/oauth\/device-poll$/.test(p)) {
+        const id = p.split('/')[4]
+        const vmPath = path.join(cfg.paths.project, 'vms', `${id}.json`)
+        if (!fs.existsSync(vmPath)) {
+          return json(res, 404, { ok: false, error: { message: 'vm not found, 请先创建种子虚拟机' } })
+        }
+        const existing = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
+        existing.id = existing.id || id
+        if (!isGrokVm(existing)) {
+          return json(res, 409, { ok: false, error: { code: 'not_grok', message: '只有 Grok 槽能用设备码登录' } })
+        }
+        const body = await readBody(req, 8 * 1024)
+        const slotProxy = requireSlotProxy(existing, body)
+        if (!slotProxy.ok) {
+          return json(res, slotProxy.status, {
+            ok: false,
+            error: { code: 'proxy_required', message: slotProxy.message },
+          })
+        }
+        const polled = await pollGrokDeviceLogin({
+          sessionId: body.session_id || body.sessionId,
+          vmId: id,
+          proxyUrl: slotProxy.proxyUrl,
+        })
+        if (polled.status === 'pending') {
+          return json(res, 200, panel.ok({
+            status: 'pending',
+            interval_sec: polled.interval_sec || 5,
+            session_id: body.session_id || body.sessionId || '',
+          }))
+        }
+        if (!polled.ok) {
+          const denied = polled.status === 'expired' || polled.status === 'denied'
+          const message =
+            polled.error === 'access_denied'
+              ? 'xAI 拒绝了这次授权'
+              : polled.error === 'expired' || polled.error === 'session_expired'
+                ? '验证码已过期，请重新开始'
+                : polled.error === 'session_vm_mismatch'
+                  ? '授权会话和当前槽位不一致'
+                  : 'xAI 授权失败，请重新开始'
+          return json(res, denied ? 409 : 502, { ok: false, error: { code: polled.error, message } })
+        }
+        const committed = await commitImportedGrokVm({
+          cfg,
+          existing,
+          routingConfig: ctx.routingConfig,
+          account: {
+            access_token: polled.access_token,
+            refresh_token: polled.refresh_token,
+            id_token: polled.id_token,
+            expires_at: polled.expires_at,
+          },
+        })
+        return json(res, 200, panel.ok({ status: 'authorized', ...committed, source: polled.source, flavor: 'grok' }))
       }
 
       if (req.method === 'GET' && /^\/api\/panel\/vms\/[^/]+\/oauth\/setup-token-session$/.test(p)) {
@@ -5112,7 +5171,8 @@ export function createPanelHandler(ctx) {
           const status =
             result.error === 'no_grok_slot' ||
             result.error === 'proxy_required' ||
-            result.error === 'grok_oauth_not_configured'
+            result.error === 'grok_oauth_not_configured' ||
+            result.error === 'grok_oauth_discovery_failed'
               ? 400
               : 502
           return json(res, status, {

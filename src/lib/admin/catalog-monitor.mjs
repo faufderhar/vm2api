@@ -96,7 +96,7 @@ export async function syncGptCatalog({ projectRoot, vmId = '', catalogClientVers
 export async function syncGrokCatalog({ projectRoot, cfg, routing, vmId = '' } = {}) {
   const live = await probeGrokModels({ projectRoot, routing, cfg, vmId })
   if (!live.ok) {
-    const skipped = live.error === 'no_grok_slot' || live.error === 'proxy_required' || live.error === 'grok_oauth_not_configured'
+    const skipped = live.error === 'no_grok_slot' || live.error === 'proxy_required' || live.error === 'grok_oauth_not_configured' || live.error === 'grok_oauth_discovery_failed'
     writeCatalogSync('xai', syncStatus(skipped ? 'skipped' : 'error', { error: live.error }))
     return live
   }

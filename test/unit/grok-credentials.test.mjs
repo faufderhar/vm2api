@@ -15,8 +15,10 @@ import {
   generateGrokAuthUrl,
   grokIdentityFromTokens,
   parseGrokOAuthCallback,
+  pollGrokDeviceLogin,
   refreshGrokAccessToken,
   resetGrokAuthUrlSessions,
+  startGrokDeviceLogin,
 } from '../../src/lib/oauth/grok-oauth.mjs'
 import {
   grokCredentialPath,
@@ -63,9 +65,10 @@ test('routing defaults are disabled and fail closed without OAuth config', () =>
   assert.equal(grok.protocols['openai.responses'].mode, 'native')
   assert.equal(grok.protocols['anthropic.messages'].mode, 'reject')
   const cfg = grokOauthConfig({})
-  assert.equal(cfg.ok, false)
-  assert.equal(cfg.code, 'grok_oauth_not_configured')
-  assert.deepEqual(cfg.missing, ['authorize_url', 'token_url', 'client_id', 'redirect_uri'])
+  assert.equal(cfg.ok, true)
+  assert.equal(cfg.config.client_id, 'b1a00492-073a-47ea-816f-4c329264a828')
+  assert.equal(cfg.config.token_url, '')
+  assert.match(cfg.config.scope, /grok-cli:access/)
   assert.equal(isGrokProtocolAllowed('openai.chat', {}).code, 'grok_disabled')
 })
 
@@ -89,7 +92,8 @@ test('auth url requires config and proxy, and carries PKCE S256', () => {
   assert.throws(() => generateGrokAuthUrl({ routing: {}, vmId: 'vm-g1', proxyUrl: 'socks5h://p' }), (err) => {
     assert.equal(err.code, 'grok_oauth_not_configured')
     assert.equal(err.status, 503)
-    assert.ok(err.missing.includes('client_id'))
+    assert.ok(err.missing.includes('authorize_url'))
+    assert.ok(err.missing.includes('redirect_uri'))
     return true
   })
   assert.throws(() => generateGrokAuthUrl({ routing, vmId: 'vm-g1' }), { code: 'proxy_required' })
@@ -160,7 +164,48 @@ test('refresh maps invalid_grant to refresh_rejected and keeps the old refresh t
   })
   assert.equal(fine.ok, true)
   assert.equal(fine.refresh_token, 'rt')
-  assert.equal((await refreshGrokAccessToken({ routing: {}, refreshToken: 'rt' })).error, 'grok_oauth_not_configured')
+  assert.equal((await refreshGrokAccessToken({ routing: {}, refreshToken: 'rt' })).error, 'proxy_required')
+})
+
+test('device login uses discovery and never returns the device code', async () => {
+  resetGrokAuthUrlSessions()
+  const calls = []
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, body: init.body ? new URLSearchParams(init.body) : null })
+    if (String(url).includes('openid-configuration')) {
+      return tokenResponse(200, {
+        device_authorization_endpoint: 'https://auth.x.ai/oauth2/device',
+        token_endpoint: 'https://auth.x.ai/oauth2/token',
+      })
+    }
+    if (!calls.at(-1).body?.get('grant_type')) {
+      return tokenResponse(200, {
+        device_code: 'secret-device',
+        user_code: 'ABCD-EFGH',
+        verification_uri: 'https://auth.x.ai/device',
+        expires_in: 600,
+        interval: 5,
+      })
+    }
+    if (calls.filter((call) => call.body?.get('grant_type')).length === 1) {
+      return tokenResponse(400, { error: 'authorization_pending' })
+    }
+    return tokenResponse(200, { access_token: 'at-device', refresh_token: 'rt-device', expires_in: 60 })
+  }
+  const started = await startGrokDeviceLogin({ routing: {}, vmId: 'vm-g1', fetchImpl })
+  assert.equal(started.flow, 'device')
+  assert.equal(started.user_code, 'ABCD-EFGH')
+  assert.equal(JSON.stringify(started).includes('secret-device'), false)
+  assert.equal(calls[1].body.get('client_id'), 'b1a00492-073a-47ea-816f-4c329264a828')
+  const pending = await pollGrokDeviceLogin({ sessionId: started.session_id, vmId: 'vm-g1', fetchImpl })
+  assert.equal(pending.status, 'pending')
+  const done = await pollGrokDeviceLogin({ sessionId: started.session_id, vmId: 'vm-g1', fetchImpl })
+  assert.equal(done.ok, true)
+  assert.equal(done.access_token, 'at-device')
+  assert.equal(done.source, 'grok-device')
+  const grant = calls.find((call) => call.body?.get('grant_type') === 'urn:ietf:params:oauth:grant-type:device_code')
+  assert.equal(grant.body.get('device_code'), 'secret-device')
+  assert.equal(grant.url, 'https://auth.x.ai/oauth2/token')
 })
 
 test('identity is decoded from id_token claims', () => {
