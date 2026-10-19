@@ -26,7 +26,14 @@ import {
   StatusBadge,
   ThinkingEffortDisplay,
 } from './log-cells'
-import { cacheWriteSplit, copyText, hasFastMode } from './log-display'
+import {
+  actualCacheRate,
+  cacheHitRateClass,
+  cacheWriteSplit,
+  copyText,
+  formatCacheHitRate,
+  hasFastMode,
+} from './log-display'
 import { ProviderCell } from './provider-chain-popover'
 import { usageLogsBatchQueryOptions } from './queries'
 import { RelativeTime } from './relative-time'
@@ -99,6 +106,37 @@ function CostBadges({ row }: { row: UsageLogRow }) {
     )
   }
   return null
+}
+
+function CacheHitCell({ row }: { row: UsageLogRow }) {
+  const rate = actualCacheRate(row)
+  const hasCache = row.cacheReadInputTokens + row.cacheCreationInputTokens > 0
+  if (rate == null || !hasCache) {
+    return <span className='text-muted-foreground'>-</span>
+  }
+  return (
+    <Tooltip delayDuration={250}>
+      <TooltipTrigger asChild>
+        <span
+          className={cn(
+            'cursor-help font-medium tabular-nums',
+            cacheHitRateClass(rate)
+          )}
+        >
+          {formatCacheHitRate(rate)}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent align='end' className='max-w-[240px] space-y-1 text-xs'>
+        <div>缓存读取 /（输入 + 缓存读取 + 缓存写入）</div>
+        <div>读取 {formatTokenAmount(row.cacheReadInputTokens)}</div>
+        <div>输入 {formatTokenAmount(row.inputTokens)}</div>
+        <div>写入 {formatTokenAmount(row.cacheCreationInputTokens)}</div>
+        <div className='text-muted-foreground'>
+          低于 60% 红色，60%–85% 黄色，高于 85% 绿色
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  )
 }
 
 function LogRow({
@@ -270,6 +308,11 @@ function LogRow({
               </div>
             </TooltipContent>
           </Tooltip>
+        </div>
+      )}
+      {hidden('cacheHit') ? null : (
+        <div className='min-w-[58px] flex-[0.55] px-1.5 text-right font-mono text-xs'>
+          <CacheHitCell row={row} />
         </div>
       )}
       {hidden('cost') ? null : (
@@ -454,7 +497,7 @@ export function VirtualizedLogsTable({
         </div>
       )}
       <div className='overflow-x-auto'>
-        <div className='min-w-[900px]'>
+        <div className='min-w-[960px]'>
           {/* Same scrollbar gutter as the body below so flex columns resolve to the same widths. */}
           <div className='sticky top-0 z-10 [scrollbar-gutter:stable] overflow-y-hidden border-b bg-muted/30'>
             <div className='flex h-8 items-center text-[11px] font-medium tracking-wide text-muted-foreground/80'>
@@ -498,6 +541,14 @@ export function VirtualizedLogsTable({
               {isHidden('cache') ? null : (
                 <HeadCell className='min-w-[70px] flex-[0.8] text-right'>
                   缓存
+                </HeadCell>
+              )}
+              {isHidden('cacheHit') ? null : (
+                <HeadCell
+                  className='min-w-[58px] flex-[0.55] text-right'
+                  title='缓存读取占输入侧的比例。低于 60% 红色，60%–85% 黄色，高于 85% 绿色'
+                >
+                  命中率
                 </HeadCell>
               )}
               {isHidden('cost') ? null : (

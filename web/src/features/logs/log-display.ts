@@ -145,6 +145,27 @@ export function actualCacheRate(row: UsageLogRow): number | null {
   return total > 0 ? row.cacheReadInputTokens / total : null
 }
 
+const CACHE_HIT_LOW = 'text-red-600 dark:text-red-400'
+const CACHE_HIT_MID = 'text-yellow-600 dark:text-yellow-400'
+const CACHE_HIT_HIGH = 'text-green-600 dark:text-green-400'
+
+/**
+ * 命中率颜色：低于 60% 红色，60%–85%（含两端）黄色，高于 85% 绿色。
+ * `rate` 是 0–1。
+ */
+export function cacheHitRateClass(rate: number): string {
+  const percent = rate * 100
+  if (percent < 60) return CACHE_HIT_LOW
+  if (percent <= 85) return CACHE_HIT_MID
+  return CACHE_HIT_HIGH
+}
+
+/** 一位小数的百分号；没有输入侧 token 时显示 "-"。 */
+export function formatCacheHitRate(rate: number | null): string {
+  if (rate == null || !Number.isFinite(rate)) return '-'
+  return `${(rate * 100).toFixed(1)}%`
+}
+
 // ---------- 倍率 / 特殊开关 ----------
 
 /** 分组倍率 ≠ 1 才显示；返回有限数或 null。 */

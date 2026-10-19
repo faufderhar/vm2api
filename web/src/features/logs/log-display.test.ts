@@ -1,10 +1,13 @@
-import type { ProviderChainItem } from '@/types/panel-usage-logs'
+import type { ProviderChainItem, UsageLogRow } from '@/types/panel-usage-logs'
 import { describe, expect, it } from 'vitest'
 import {
+  actualCacheRate,
   cacheCostSplit,
+  cacheHitRateClass,
   cacheWriteSplit,
   chainItemStatus,
   finalChainItem,
+  formatCacheHitRate,
   formatShortDistance,
   latencySegments,
   resolveModelAuditDisplay,
@@ -80,6 +83,29 @@ describe('cache TTL split', () => {
   it('derives the per-million unit price', () => {
     expect(unitPricePerMillion(0.003, 1000)).toBe('3.00')
     expect(unitPricePerMillion(0.003, 0)).toBeNull()
+  })
+
+  it('colors cache hit rate by the 60 and 85 percent bands', () => {
+    const row = {
+      inputTokens: 20,
+      cacheReadInputTokens: 60,
+      cacheCreationInputTokens: 20,
+    } as UsageLogRow
+    expect(actualCacheRate(row)).toBe(0.6)
+    expect(
+      actualCacheRate({
+        ...row,
+        inputTokens: 0,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+      })
+    ).toBeNull()
+    expect(cacheHitRateClass(0.599)).toContain('text-red-600')
+    expect(cacheHitRateClass(0.6)).toContain('text-yellow-600')
+    expect(cacheHitRateClass(0.85)).toContain('text-yellow-600')
+    expect(cacheHitRateClass(0.851)).toContain('text-green-600')
+    expect(formatCacheHitRate(0.6)).toBe('60.0%')
+    expect(formatCacheHitRate(null)).toBe('-')
   })
 })
 

@@ -32,8 +32,10 @@ import { ThinkingEffortBadge } from '../log-cells'
 import {
   actualCacheRate,
   cacheCostSplit,
+  cacheHitRateClass,
   cacheWriteSplit,
   effectiveMultiplier,
+  formatCacheHitRate,
   hasFastMode,
   isSuccessStatus,
   resolveModelAuditDisplay,
@@ -265,8 +267,13 @@ export function SummaryTab({
                   <div className='text-xs text-muted-foreground'>
                     实际缓存率
                   </div>
-                  <div className='font-mono text-sm font-semibold'>
-                    {(cacheRate * 100).toFixed(1)}%
+                  <div
+                    className={cn(
+                      'font-mono text-sm font-semibold',
+                      cacheHitRateClass(cacheRate)
+                    )}
+                  >
+                    {formatCacheHitRate(cacheRate)}
                   </div>
                 </div>
               </TooltipTrigger>

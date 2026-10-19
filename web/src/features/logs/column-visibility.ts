@@ -8,6 +8,7 @@ export const LOGS_TABLE_COLUMNS = [
   { id: 'reasoningEffort', label: '思考强度' },
   { id: 'tokens', label: 'Tokens' },
   { id: 'cache', label: '缓存' },
+  { id: 'cacheHit', label: '命中率' },
   { id: 'performance', label: '性能' },
   { id: 'cost', label: '成本' },
 ] as const
