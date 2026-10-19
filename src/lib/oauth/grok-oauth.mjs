@@ -2,7 +2,9 @@
  * xAI OAuth. Default login is the device-code flow used by the Grok CLI:
  * public client id, scope, and endpoints from OIDC discovery. No redirect URI.
  * Authorization-code + PKCE remains only when an operator set authorize_url and redirect_uri.
- * Token calls egress through the slot SOCKS5.
+ * Token calls leave through the slot exit. A SOCKS5 URL is used as-is.
+ * An empty URL is the slot's own route (本机出口) and is fetched directly.
+ * null means the slot has no exit.
  */
 import crypto from 'node:crypto'
 import {
@@ -73,6 +75,11 @@ function isXaiHttps(value) {
   }
 }
 
+/** null means no exit was resolved. '' is 本机出口 and must not be treated as unbound. */
+function egressMissing(proxyUrl, fetchImpl) {
+  return proxyUrl == null && !fetchImpl
+}
+
 async function readJson(res) {
   if (res && res.body && typeof res.body === 'object' && !res.body.pipe) return res.body
   if (typeof res?.json === 'function') {
@@ -109,7 +116,8 @@ export async function discoverGrokOauth({ proxyUrl, fetchImpl, timeoutMs, force 
       token_endpoint: discoveryCache.tokenUrl,
     }
   }
-  const fetchFn = fetchImpl || (proxyUrl ? await fetchWithProxy(proxyUrl, timeoutMs) : null)
+  if (egressMissing(proxyUrl, fetchImpl)) return { ok: false, error: 'proxy_required' }
+  const fetchFn = fetchImpl || (await fetchWithProxy(proxyUrl, timeoutMs))
   if (!fetchFn) return { ok: false, error: 'proxy_required' }
   let res
   try {
@@ -204,7 +212,7 @@ export function generateGrokAuthUrl({ routing, vmId, proxyUrl } = {}) {
 export async function startGrokDeviceLogin({ routing, vmId, proxyUrl, fetchImpl, timeoutMs } = {}) {
   sweepExpired()
   if (!vmId) throw fail('vm_required', 'vm_id required (先创建虚拟机)')
-  if (!proxyUrl && !fetchImpl) {
+  if (egressMissing(proxyUrl, fetchImpl)) {
     throw fail('proxy_required', '虚拟机未绑定 SOCKS5，请先分配代理再开始授权', { status: 503 })
   }
   const config = requireConfig(routing)
@@ -271,7 +279,7 @@ export async function pollGrokDeviceLogin({ sessionId, vmId, proxyUrl, fetchImpl
   if (!session) return { ok: false, error: 'session_expired', status: 'expired' }
   if (vmId && session.vmId !== String(vmId)) return { ok: false, error: 'session_vm_mismatch', status: 'failed' }
   const px = proxyUrl ?? session.proxyUrl
-  if (!px && !fetchImpl) return { ok: false, error: 'proxy_required', status: 'failed' }
+  if (egressMissing(px, fetchImpl)) return { ok: false, error: 'proxy_required', status: 'failed' }
   const res = await postToken({
     tokenUrl: session.tokenUrl,
     form: {
@@ -353,7 +361,7 @@ export async function exchangeGrokAuthCode({ sessionId, code, vmId, proxyUrl, fe
   if (!parsed.code) throw fail('code_required', '请粘贴 xAI 回调 URL 或授权码')
   if (parsed.state && parsed.state !== session.state) throw fail('state_mismatch', '回调 state 与授权会话不匹配')
   const px = proxyUrl ?? session.proxyUrl
-  if (!px) throw fail('proxy_required', '虚拟机未绑定 SOCKS5，无法换票')
+  if (egressMissing(px, fetchImpl)) throw fail('proxy_required', '虚拟机未绑定 SOCKS5，无法换票')
   const res = await postToken({
     tokenUrl: session.tokenUrl,
     form: {
@@ -387,7 +395,7 @@ export async function refreshGrokAccessToken({ routing, refreshToken, proxyUrl, 
   if (!rt) return { ok: false, error: 'missing_refresh_token' }
   const resolved = grokOauthConfig(routing)
   if (!resolved.ok) return { ok: false, error: 'grok_oauth_not_configured', missing: resolved.missing }
-  if (!proxyUrl && !fetchImpl) return { ok: false, error: 'proxy_required' }
+  if (egressMissing(proxyUrl, fetchImpl)) return { ok: false, error: 'proxy_required' }
   const config = resolved.config
   let tokenUrl = config.token_url
   if (!tokenUrl) {

@@ -21,6 +21,7 @@ import {
 import { extractOpenaiUsage, openaiAnthropicUsageFromExtract, disjointOpenaiUsage } from './openai-usage.mjs'
 import { forwardApi } from '../transport/api-kernel-client.mjs'
 import { hostProxyUrlForVm } from '../vm/slot-host.mjs'
+import { isLocalEgressProxy } from '../vm/egress.mjs'
 import { persistGrokRateLimit } from '../vm/grok-slot.mjs'
 import { ensureGrokAccessToken } from '../oauth/grok-token.mjs'
 import { scopeAccountFromVm } from './jev-intercept.mjs'
@@ -179,7 +180,7 @@ export async function grokUpstreamCall({ cfg, url, token, body, stream, proxyUrl
         proxyUrl,
         signal: idle.signal,
         stream,
-        requireProxy: true,
+        requireProxy: Boolean(String(proxyUrl || '').trim()),
       })
     } catch (error) {
       return {
@@ -445,7 +446,8 @@ export async function runGrokSlotHop({
   ops = {},
 }) {
   const proxyUrl = String((ops.hostProxyUrlForVm || hostProxyUrlForVm)(vm) || '')
-  if (!proxyUrl) {
+  // '' is 本机出口: the kernel dials api.x.ai on the slot host's own route.
+  if (!proxyUrl && !isLocalEgressProxy(vm?.proxy)) {
     return {
       ok: false,
       status: 503,

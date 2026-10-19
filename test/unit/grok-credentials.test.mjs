@@ -208,6 +208,47 @@ test('device login uses discovery and never returns the device code', async () =
   assert.equal(grant.url, 'https://auth.x.ai/oauth2/token')
 })
 
+test('empty proxy url is the slot route, not an unbound SOCKS5', async () => {
+  resetGrokAuthUrlSessions()
+  const started = await startGrokDeviceLogin({
+    routing: {},
+    vmId: 'vm-g1',
+    proxyUrl: '',
+    fetchImpl: async (url, init) => {
+      if (String(url).includes('openid-configuration')) {
+        return tokenResponse(200, {
+          device_authorization_endpoint: 'https://auth.x.ai/oauth2/device',
+          token_endpoint: 'https://auth.x.ai/oauth2/token',
+        })
+      }
+      assert.equal(init.body.includes('grant_type'), false)
+      return tokenResponse(200, {
+        device_code: 'secret-device',
+        user_code: 'WXYZ-1234',
+        verification_uri: 'https://auth.x.ai/device',
+        expires_in: 600,
+        interval: 5,
+      })
+    },
+  })
+  assert.equal(started.user_code, 'WXYZ-1234')
+  const polled = await pollGrokDeviceLogin({
+    sessionId: started.session_id,
+    vmId: 'vm-g1',
+    proxyUrl: '',
+    fetchImpl: async () => tokenResponse(200, { access_token: 'at-direct', refresh_token: 'rt-direct', expires_in: 60 }),
+  })
+  assert.equal(polled.ok, true)
+  assert.equal(polled.access_token, 'at-direct')
+  const refreshed = await refreshGrokAccessToken({
+    routing: {},
+    refreshToken: 'rt',
+    proxyUrl: '',
+    fetchImpl: async () => tokenResponse(200, { access_token: 'at-2', expires_in: 60 }),
+  })
+  assert.equal(refreshed.ok, true)
+})
+
 test('identity is decoded from id_token claims', () => {
   assert.deepEqual(grokIdentityFromTokens({ id_token: jwt({ email: 'a@x.test', sub: 'u-1' }) }), {
     email: 'a@x.test',

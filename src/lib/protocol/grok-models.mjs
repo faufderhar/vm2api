@@ -5,6 +5,7 @@
 import { listVms, getVm } from '../vm/vm-registry.mjs'
 import { isGrokVm } from '../vm/vm-kind.mjs'
 import { hostProxyUrlForVm } from '../vm/slot-host.mjs'
+import { isLocalEgressProxy } from '../vm/egress.mjs'
 import { ensureGrokAccessToken } from '../oauth/grok-token.mjs'
 import { grokBaseUrl } from './grok-route.mjs'
 import { isGrokSeriesId } from './grok-ids.mjs'
@@ -17,12 +18,14 @@ export async function fetchGrokUpstreamModels({
   baseUrl,
   token,
   proxyUrl,
+  allowDirect = false,
   forward = forwardApi,
   readJson = readApiJson,
 } = {}) {
   const access = String(token || '').trim()
+  const px = String(proxyUrl || '').trim()
   if (!access) return { ok: false, error: 'no_token', ids: [] }
-  if (!proxyUrl) return { ok: false, error: 'proxy_required', ids: [] }
+  if (!px && !allowDirect) return { ok: false, error: 'proxy_required', ids: [] }
   const root = String(baseUrl || 'https://api.x.ai').replace(/\/+$/, '')
   let res
   try {
@@ -32,8 +35,8 @@ export async function fetchGrokUpstreamModels({
       url: `${root}/v1/models`,
       headers: { authorization: `Bearer ${access}`, accept: 'application/json' },
       body: '',
-      proxyUrl,
-      requireProxy: true,
+      proxyUrl: px,
+      requireProxy: Boolean(px),
       timeoutMs: 30_000,
     })
   } catch (error) {
@@ -73,7 +76,8 @@ export async function probeGrokModels({ projectRoot, routing, cfg, vmId = '', fe
   let lastError = 'no_token'
   for (const vm of targets) {
     const proxyUrl = hostProxyUrlForVm(vm)
-    if (!proxyUrl) {
+    const direct = !proxyUrl && isLocalEgressProxy(vm?.proxy)
+    if (!proxyUrl && !direct) {
       lastError = 'proxy_required'
       continue
     }
@@ -87,6 +91,7 @@ export async function probeGrokModels({ projectRoot, routing, cfg, vmId = '', fe
       baseUrl: grokBaseUrl(routing),
       token: token.access_token,
       proxyUrl,
+      allowDirect: direct,
     })
     if (!live.ok) {
       lastError = live.error || 'models_failed'
