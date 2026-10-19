@@ -117,7 +117,7 @@
 
 `account.runtime_window`：`rate_limited_at` / `rate_limit_reset_at` / `overload_until` / `session_window_start|end|status`。
 
-`schedule_level` 是当前有效调度等级，范围 1–10；`schedule_level_mode` 为 `manual` 或 `auto`。`PATCH {"schedule_level": 1..10}` 写入手动等级，`null` 或 `"auto"` 清除手动值。自动模式按 Claude 7D 重置剩余时间滚动分档：不足 24h 为 7，之后每 24h 降一级，144h 及以上或无有效重置时间为 1。Claude 同等级内按 `routing.pool.strategy`（`balanced` / `fill`）开新席位；`weight` 只用于 Codex 选槽，与调度等级无关。整池改这两项用 `POST /vms/pool-policy`（只写记录，不重建槽详情）。
+`schedule_level` 是当前有效调度等级，范围 1–10；`schedule_level_mode` 为 `manual` 或 `auto`。`PATCH {"schedule_level": 1..10}` 写入手动等级，`null` 或 `"auto"` 清除手动值。自动模式按 Claude 7D 重置剩余时间滚动分档：不足 24h 为 7，之后每 24h 降一级，144h 及以上或无有效重置时间为 1。Claude 同等级、同占用时，7 天用量窗口重置更早的账号先开席位；没有这个时间的仍按槽位 id。GPT / Grok 在同一权重且分数接近时同样先用 7 天窗口更早的账号。`weight` 只用于 Codex 选槽，与调度等级无关。整池改这两项用 `POST /vms/pool-policy`（只写记录，不重建槽详情）。
 
 ### 平台独立的槽位限额
 

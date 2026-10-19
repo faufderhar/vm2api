@@ -37,7 +37,8 @@ import { splitBlocksModel } from './weekly-split.mjs'
 import { slotAllowsModel } from './slot-model-gate.mjs'
 import { platformOf } from '../vm/vm-kind.mjs'
 import { detectInboundPlatform } from '../protocol/platform-detect.mjs'
-import { resolveCredentialScheduleLevel } from './credential-weight.mjs'
+import { resolveCredentialScheduleLevel, window7dResetAt } from './credential-weight.mjs'
+import { compareWindow7dAsc } from './refresh-order.mjs'
 import { PLATFORM_SCOPE, normalizeOwnerId, vmMatchesOwnerScope } from '../admin/resource-owner.mjs'
 import { keyAllowsVm } from '../admin/key-scope.mjs'
 import {
@@ -934,6 +935,7 @@ export class PoolScheduler extends EventEmitter {
         account: eligibility.account || null,
         loadRatio: (inflight + this.waiterCount(accountId)) / maxConcurrency,
         lastUsedAt: this.lastUsed.get(accountId) || state?.last_used_at || 0,
+        window7dAt: window7dResetAt(eligibility.account?.unified || {}) || vm.reset_7d || null,
         workerStatus: eligibility.workerStatus,
         busy: !!eligibility.busy,
         availableAt: eligibility.availableAt || null,
@@ -1340,7 +1342,12 @@ export class PoolScheduler extends EventEmitter {
     let pool = candidates.filter((candidate) => candidate.priority === highestPriority)
     const minLoad = Math.min(...pool.map((candidate) => candidate.loadRatio))
     pool = pool.filter((candidate) => candidate.loadRatio === minLoad)
-    pool.sort((left, right) => left.lastUsedAt - right.lastUsedAt || left.accountId.localeCompare(right.accountId))
+    pool.sort(
+      (left, right) =>
+        left.lastUsedAt - right.lastUsedAt ||
+        compareWindow7dAsc(left.window7dAt, right.window7dAt) ||
+        left.accountId.localeCompare(right.accountId),
+    )
     return { ...pool[0], selectionReason: pool.length === 1 ? 'priority-load' : 'peek' }
   }
 

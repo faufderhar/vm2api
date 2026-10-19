@@ -17,6 +17,8 @@
  * as taken and cannot jump the queue.
  */
 
+import { compareWindow7dAsc } from './refresh-order.mjs'
+
 export const SEAT_STRATEGIES = Object.freeze(['balanced', 'fill'])
 
 /** Float slack so a headroom exactly on the reserve line still opens. */
@@ -50,8 +52,8 @@ function headroomRank(value) {
 /**
  * Order VMs for a new seat. Priority first; inside one level balanced takes
  * the lowest occupancy and fill the highest (still below cap). Ties go to the
- * larger headroom, then vmId so the result is deterministic.
- * @param {Array<{ vmId: string, priority?: number, seatCap: number, headroom?: number|null }>} candidates
+ * larger headroom, then the earlier 7d usage-window reset, then vmId.
+ * @param {Array<{ vmId: string, priority?: number, seatCap: number, headroom?: number|null, window7dAt?: number|string|null }>} candidates
  * @param {{ strategy: string, openOf: (vmId: string) => number }} opts
  */
 export function rankSeatCandidates(candidates, { strategy = 'balanced', openOf }) {
@@ -65,6 +67,8 @@ export function rankSeatCandidates(candidates, { strategy = 'balanced', openOf }
     const lh = headroomRank(left.headroom)
     const rh = headroomRank(right.headroom)
     if (lh !== rh) return rh > lh ? 1 : -1
+    const window7d = compareWindow7dAsc(left.window7dAt, right.window7dAt)
+    if (window7d) return window7d
     return String(left.vmId).localeCompare(String(right.vmId))
   })
 }

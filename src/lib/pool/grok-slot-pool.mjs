@@ -6,6 +6,7 @@
 import { isGrokVm } from '../vm/vm-kind.mjs'
 import { isLeftoverQuotaScheduleOff } from './availability.mjs'
 import { orderOpenAIAccounts } from './openai-account-selector.mjs'
+import { compareWindow7dAsc } from './refresh-order.mjs'
 import { grokRuntime } from './openai-account-runtime.mjs'
 import { modelMatchesAllowlist } from './slot-model-gate.mjs'
 import { proxyBlockedReason } from '../vm/proxy-policy.mjs'
@@ -85,6 +86,7 @@ export function grokAccountCandidate(vm, now = Date.now(), signals = null, polic
     lastStartedAt: runtime.lastStartedAt ?? null,
     quotaResetAt: limitedUntilOf(vm),
     quotaRemainingRank: null,
+    window7dAt: vm?.reset_7d || null,
     failureRateBps: runtime.failureRateBps || 0,
     firstOutputLatencyMs: runtime.firstOutputLatencyMs ?? null,
   }
@@ -115,7 +117,7 @@ export function pickGrokSlots(vms, { pin = null, now = Date.now(), model = null 
     if (isGrokSlotParked(vm, now)) parked.push(vm)
     else ready.push(vm)
   }
-  ready.sort((a, b) => String(a.id).localeCompare(String(b.id)))
+  ready.sort((a, b) => compareWindow7dAsc(a.reset_7d, b.reset_7d) || String(a.id).localeCompare(String(b.id)))
   parked.sort((a, b) => limitedUntilOf(a) - limitedUntilOf(b) || String(a.id).localeCompare(String(b.id)))
   const ids = [...ready, ...parked].map((vm) => vm.id)
   if (!ids.length) {

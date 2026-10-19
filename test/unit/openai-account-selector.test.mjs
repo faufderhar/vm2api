@@ -71,6 +71,16 @@ test('scores inside 0.05 rotate by account id', () => {
   assert.equal(second.candidate.id, 'b')
 })
 
+test('close scores on one platform prefer the earlier 7d window reset', () => {
+  const later = account('a', { quotaRemainingRank: 8_000, window7dAt: '2026-10-18T00:00:00.000Z' })
+  const sooner = account('b', { quotaRemainingRank: 8_100, window7dAt: '2026-10-01T00:00:00.000Z' })
+  assert.ok(Math.abs(smartScore(later, 2) - smartScore(sooner, 2)) <= 0.05)
+  const first = selectOpenAIAccount([later, sooner], { strategy: 'smart', roundRobinCursor: 0 })
+  const second = selectOpenAIAccount([later, sooner], { strategy: 'smart', roundRobinCursor: 1 })
+  assert.equal(first.candidate.id, 'b')
+  assert.equal(second.candidate.id, 'b')
+})
+
 test('concurrency and request interval block before scoring', () => {
   const now = 1_000_000
   const busy = account('busy', { inFlight: 2, concurrency: 2, quotaRemainingRank: 10_000 })

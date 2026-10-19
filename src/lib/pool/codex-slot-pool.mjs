@@ -12,6 +12,7 @@ import {
 } from '../protocol/codex-usage.mjs'
 import { isLeftoverQuotaScheduleOff, isQuotaWindowReason } from './availability.mjs'
 import { orderOpenAIAccounts } from './openai-account-selector.mjs'
+import { compareWindow7dAsc } from './refresh-order.mjs'
 import { expiresAtToMs } from '../oauth/oauth-credentials.mjs'
 import {
   bumpOpenAICursor,
@@ -70,6 +71,13 @@ function extraFromSummary(vm) {
   }
 }
 
+/** 7d usage-window reset only. A smaller time is used first; 5h does not compete. */
+function window7dResetOf(vm) {
+  const extra = extraFromSummary(vm)
+  const limits = normalizeCodexLimits(extraToCodexSnapshot(extra))
+  return limits.reset_7d_at || vm?.reset_7d || null
+}
+
 function stressOf(vm) {
   const u5 = Number(vm?.utilization_5h)
   const u7 = Number(vm?.utilization_7d)
@@ -123,7 +131,9 @@ export function pickCodexSlots(vms, { pin = null, now = Date.now(), quotaPolicy 
   }
   ready.sort((a, b) => {
     const d = stressOf(a) - stressOf(b)
-    return d !== 0 ? d : String(a.id).localeCompare(String(b.id))
+    if (d) return d
+    const window7d = compareWindow7dAsc(window7dResetOf(a), window7dResetOf(b))
+    return window7d || String(a.id).localeCompare(String(b.id))
   })
   parked.sort((a, b) => {
     const d = parkUntil(a, now) - parkUntil(b, now)
@@ -206,6 +216,7 @@ export function codexAccountCandidate(vm, now = Date.now(), signals = null, poli
     lastStartedAt: runtime.lastStartedAt ?? null,
     quotaResetAt: quotaResetAt(vm),
     quotaRemainingRank: quotaRemainingRank(vm),
+    window7dAt: window7dResetOf(vm),
     failureRateBps: runtime.failureRateBps || 0,
     firstOutputLatencyMs: runtime.firstOutputLatencyMs ?? null,
   }

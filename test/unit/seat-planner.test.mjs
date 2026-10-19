@@ -255,6 +255,15 @@ test('balanced spreads 4 devices 2/2, fill packs 4/0; headroom then vmId break t
     { vmId: 'vm-a', seatCap: 4, headroom: 0.4 },
   ]
   assert.equal(rankSeatCandidates(even, { strategy: 'balanced', openOf })[0].vmId, 'vm-a')
+  const windows = [
+    { vmId: 'vm-late', seatCap: 4, headroom: 0.4, window7dAt: '2026-10-18T00:00:00.000Z' },
+    { vmId: 'vm-soon', seatCap: 4, headroom: 0.4, window7dAt: '2026-10-01T00:00:00.000Z' },
+    { vmId: 'vm-none', seatCap: 4, headroom: 0.4, window7dAt: null },
+  ]
+  assert.deepEqual(
+    rankSeatCandidates(windows, { strategy: 'balanced', openOf }).map((item) => item.vmId),
+    ['vm-soon', 'vm-late', 'vm-none'],
+  )
 })
 
 test('queue timeout is pool_queue_timeout', async (t) => {

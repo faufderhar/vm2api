@@ -45,9 +45,25 @@ function headroomOf(vm: Vm): number | null {
 
 /**
  * 按草稿策略复现 rankSeatCandidates 的顺序：调度等级降序 → 占用比例
- * （平衡升序 / 填充降序）→ 余量降序 → id。并发、RPM 和预算闸不在这里判，
- * 所以只是预估。
+ * （平衡升序 / 填充降序）→ 余量降序 → 7 天窗口重置更早的在前 → id。
+ * 并发、RPM 和预算闸不在这里判，所以只是预估。
  */
+function window7dMs(vm: Vm): number | null {
+  const raw = vm.reset_7d
+  if (raw == null || raw === '') return null
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    return raw < 10_000_000_000 ? raw * 1000 : raw
+  }
+  const text = String(raw).trim()
+  if (/^\d+(\.\d+)?$/.test(text)) {
+    const numeric = Number(text)
+    if (!Number.isFinite(numeric) || numeric <= 0) return null
+    return numeric < 10_000_000_000 ? numeric * 1000 : numeric
+  }
+  const parsed = Date.parse(text)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
 export function predictSeatOrder(vms: Vm[], strategy: string): SeatRow[] {
   const fill = strategy === 'fill'
   const rows: SeatRow[] = vms
@@ -80,6 +96,17 @@ export function predictSeatOrder(vms: Vm[], strategy: string): SeatRow[] {
         (headroomOf(b.vm) ?? Number.POSITIVE_INFINITY) -
         (headroomOf(a.vm) ?? Number.POSITIVE_INFINITY)
       if (room && Number.isFinite(room)) return room
+      const leftWindow = window7dMs(a.vm)
+      const rightWindow = window7dMs(b.vm)
+      if (leftWindow == null && rightWindow != null) return 1
+      if (leftWindow != null && rightWindow == null) return -1
+      if (
+        leftWindow != null &&
+        rightWindow != null &&
+        leftWindow !== rightWindow
+      ) {
+        return leftWindow - rightWindow
+      }
       return a.vm.id.localeCompare(b.vm.id)
     })
   open.forEach((row, i) => {

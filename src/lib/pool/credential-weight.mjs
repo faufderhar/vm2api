@@ -1,4 +1,4 @@
-import { headerWindowOrEmpty, officialWindow, parseResetMs } from './quota-window.mjs'
+import { headerWindow, headerWindowOrEmpty, officialWindow, parseResetMs } from './quota-window.mjs'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const MIN_LEVEL = 1
@@ -41,6 +41,16 @@ export function weeklyResetAt(unified = {}, now = Date.now()) {
   const official = officialWindow(unified, '7d')
   const officialReset = official.reset ?? official.resets_at ?? null
   return parseResetMs(officialReset) > now ? officialReset : null
+}
+
+/** Raw 7d usage-window reset used to order accounts. Elapsed values stay, so a smaller time still sorts first. */
+export function window7dResetAt(unified = {}) {
+  const header = headerWindow(unified, '7d')
+  const headerReset = header.reset ?? header.resets_at ?? null
+  if (Number.isFinite(parseResetMs(headerReset))) return headerReset
+  const official = officialWindow(unified, '7d')
+  const officialReset = official.reset ?? official.resets_at ?? null
+  return Number.isFinite(parseResetMs(officialReset)) ? officialReset : null
 }
 
 export function resolveCredentialScheduleLevel({
