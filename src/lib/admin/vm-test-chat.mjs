@@ -353,6 +353,9 @@ function extractText(body) {
   }
   if (parts.length) return parts.join('\n')
   if (typeof body.output_text === 'string' && body.output_text) return body.output_text
+  const choice = Array.isArray(body.choices) ? body.choices[0] : null
+  const choiceText = chatMessageText(choice?.message) || chatMessageText(choice?.delta)
+  if (choiceText) return choiceText
   const err = body.error
   if (err && typeof err === 'object') {
     const bits = [err.message, err.type, err.code].filter((x) => x && String(x) !== 'Error')
@@ -484,6 +487,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-
 
 export function testChatCredentialMode(vm = {}) {
   if (isCodexVm(vm)) return 'codex'
+  if (isGrokVm(vm)) return 'grok'
   const inferred = credentialModeFromOauth({
     type: vm.claude?.type || vm.claude?.mode,
     mode: vm.claude?.mode,
@@ -548,6 +552,16 @@ function parseSseBuffer(buffer, onEvent) {
       onEvent(JSON.parse(raw))
     } catch {}
   }
+}
+
+function chatMessageText(message) {
+  if (!message) return ''
+  if (typeof message === 'string') return message
+  if (typeof message.content === 'string') return message.content
+  if (!Array.isArray(message.content)) return ''
+  return message.content
+    .map((part) => (typeof part === 'string' ? part : part?.text || part?.content || ''))
+    .join('')
 }
 
 async function consumeMessagesResponse(res) {
@@ -794,6 +808,93 @@ async function consumeResponsesResponse(res) {
   }
 }
 
+async function consumeChatResponse(res) {
+  const status = res.status
+  const headers = {}
+  res.headers.forEach((v, k) => {
+    headers[k.toLowerCase()] = v
+  })
+  if (status < 200 || status >= 300) {
+    let body = null
+    try {
+      body = await res.json()
+    } catch {
+      try {
+        body = { error: { message: await res.text() } }
+      } catch {
+        body = { error: { message: 'upstream error' } }
+      }
+    }
+    return { ok: false, status, headers, body, text: '', usage: null, stop_reason: null, model: null }
+  }
+
+  const ctype = String(headers['content-type'] || '')
+  if (!ctype.includes('text/event-stream') && !ctype.includes('text/plain')) {
+    const body = await res.json().catch(() => null)
+    const choice = Array.isArray(body?.choices) ? body.choices[0] : null
+    return {
+      ok: true,
+      status,
+      headers,
+      body,
+      text: chatMessageText(choice?.message),
+      usage: body?.usage || null,
+      stop_reason: choice?.finish_reason || null,
+      model: body?.model || null,
+      vm_id: body?.kin?.vm_id || null,
+    }
+  }
+
+  let text = ''
+  let usage = null
+  let model = null
+  let responseId = null
+  let stopReason = null
+  let lastError = null
+  const reader = res.body.getReader()
+  const dec = new TextDecoder()
+  let buf = ''
+  const onEvent = (ev) => {
+    if (!ev || typeof ev !== 'object') return
+    if (ev.error) lastError = ev.error
+    if (ev.id) responseId = ev.id
+    if (ev.model) model = ev.model
+    if (ev.usage) usage = ev.usage
+    const choice = Array.isArray(ev.choices) ? ev.choices[0] : null
+    text += chatMessageText(choice?.delta)
+    if (choice?.finish_reason) stopReason = choice.finish_reason
+  }
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += dec.decode(value, { stream: true })
+    buf = parseSseBuffer(buf, onEvent)
+  }
+  if (buf) parseSseBuffer(buf + '\n', onEvent)
+  if (lastError) {
+    return {
+      ok: false,
+      status,
+      headers,
+      body: { error: lastError, id: responseId },
+      text,
+      usage,
+      stop_reason: stopReason,
+      model,
+    }
+  }
+  return {
+    ok: true,
+    status,
+    headers,
+    body: { id: responseId, object: 'chat.completion', model, choices: [{ message: { content: text } }], usage },
+    text,
+    usage,
+    stop_reason: stopReason,
+    model,
+  }
+}
+
 function freshLoopbackRequest(rawUrl, init = {}) {
   const target = new URL(rawUrl)
   if (target.protocol !== 'http:') throw new Error('loopback requires http')
@@ -828,7 +929,8 @@ function freshLoopbackRequest(rawUrl, init = {}) {
 async function postV1Loopback({ path, baseUrl, apiKey, inbound, headers, vmId, timeoutMs, extraHeaders = {} }) {
   const ac = new AbortController()
   const timer = setTimeout(() => ac.abort(), timeoutMs)
-  const endpoint = path === '/v1/responses' ? '/v1/responses' : '/v1/messages'
+  const endpoint =
+    path === '/v1/responses' || path === '/v1/chat/completions' || path === '/v1/messages' ? path : '/v1/messages'
   try {
     const res = await freshLoopbackRequest(`${baseUrl}${endpoint}`, {
       method: 'POST',
@@ -844,7 +946,9 @@ async function postV1Loopback({ path, baseUrl, apiKey, inbound, headers, vmId, t
       body: JSON.stringify(inbound),
       signal: ac.signal,
     })
-    return endpoint === '/v1/responses' ? await consumeResponsesResponse(res) : await consumeMessagesResponse(res)
+    if (endpoint === '/v1/responses') return await consumeResponsesResponse(res)
+    if (endpoint === '/v1/chat/completions') return await consumeChatResponse(res)
+    return await consumeMessagesResponse(res)
   } catch (e) {
     const aborted = ac.signal.aborted
     return {
@@ -1299,6 +1403,8 @@ export async function runVmTestChat(opts = {}) {
       inbound_beta: headers['anthropic-beta'] || null,
       inbound_class: codex
         ? 'openai_responses'
+        : grok
+          ? 'openai_chat'
         : cliHop
           ? 'cli_hop_passthrough'
           : unofficial

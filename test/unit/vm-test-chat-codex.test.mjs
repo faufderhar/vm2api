@@ -81,6 +81,56 @@ test('testChatCredentialMode reports Codex slots as codex', () => {
   assert.equal(testChatCredentialMode({ platform: 'openai', family: 'codex' }), 'codex')
 })
 
+test('runVmTestChat Grok slot loopbacks /v1/chat/completions and never /v1/messages', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-testchat-grok-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const id = 'vm-grok-01'
+  fs.mkdirSync(path.join(root, 'vms', id), { recursive: true })
+  fs.writeFileSync(
+    path.join(root, 'vms', `${id}.json`),
+    JSON.stringify({
+      id,
+      name: id,
+      status: 'running',
+      schedulable: true,
+      platform: 'xai',
+      family: 'grok',
+      proxy: { id: 'px-local', host: 'local', scheme: 'local' },
+      grok: { has_access: true, email: 'a@x.test' },
+    }),
+  )
+  seedRouting(root)
+  const { baseUrl, calls } = await startLoopbackServer(t, () => ({
+    status: 200,
+    body: {
+      id: 'chatcmpl-test',
+      object: 'chat.completion',
+      model: 'grok-4',
+      choices: [{ message: { role: 'assistant', content: 'hello from chat' }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 4, completion_tokens: 2 },
+    },
+  }))
+  const result = await runVmTestChat({
+    projectRoot: root,
+    vmId: id,
+    model: 'grok-4',
+    prompt: 'hello',
+    max_tokens: 32,
+    baseUrl,
+    apiKey: 'test-master-key',
+  })
+  assert.equal(result.ok, true)
+  assert.equal(result.text, 'hello from chat')
+  assert.equal(result.credential_mode, 'grok')
+  assert.equal(result.debug?.path, '/v1/chat/completions')
+  assert.equal(result.debug?.inbound_class, 'openai_chat')
+  assert.equal(calls.length, 1)
+  assert.equal(new URL(calls[0].url).pathname, '/v1/chat/completions')
+  assert.equal(calls[0].body.model, 'grok-4')
+  assert.equal(calls[0].body.messages[0].content, 'hello')
+  assert.ok(!result.log.some((row) => /\/v1\/messages/.test(row.message)))
+})
+
 test('runVmTestChat Codex slot loopbacks /v1/responses and never /v1/messages', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-testchat-codex-'))
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
