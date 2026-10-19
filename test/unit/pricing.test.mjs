@@ -192,7 +192,7 @@ test('GPT-5.5 official standard: $5 / $30 per MTok', () => {
   const c = calculateCost({ input_tokens: 200_000, output_tokens: 200_000 }, 'gpt-5.5')
   assert.equal(c.known, true)
   assert.equal(c.price_source, 'builtin')
-  assert.equal(c.price_version, 'builtin-2026-10-14')
+  assert.equal(c.price_version, 'builtin-2026-10-19')
   assert.equal(c.input_cost, 1)
   assert.equal(c.output_cost, 6)
   assert.equal(c.total_cost, 7)
@@ -528,4 +528,25 @@ test('normalizeUsage is idempotent and Codex 100k/80k cached becomes 20k', () =>
   const billed = calculateCost(raw, 'gpt-5.5')
   assert.equal(billed.input_tokens, 20_000)
   assert.equal(billed.cache_read_tokens, 80_000)
+})
+
+test('Grok 4.7 list price doubles once the prompt reaches 200k tokens', () => {
+  const short = calculateCost(
+    { input_tokens: 100_000, output_tokens: 10_000, cache_read_tokens: 50_000 },
+    'grok-4.7',
+  )
+  assert.equal(short.known, true)
+  assert.equal(short.price_source, 'builtin')
+  assert.equal(short.long_context, false)
+  assert.equal(short.input_cost, 0.2)
+  assert.equal(short.output_cost, 0.06)
+  assert.equal(short.cache_read_cost, 0.025)
+  const long = calculateCost(
+    { input_tokens: 200_001, output_tokens: 1_000_000, cache_read_tokens: 1_000_000 },
+    'grok-4.7',
+  )
+  assert.equal(long.long_context, true)
+  assert.equal(long.input_cost, 0.800004)
+  assert.equal(long.output_cost, 12)
+  assert.equal(long.cache_read_cost, 1)
 })

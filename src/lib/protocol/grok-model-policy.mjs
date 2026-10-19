@@ -1,21 +1,66 @@
 /**
  * Grok catalog. Settings key `grok_model_policy`, separate from Claude and GPT.
- * The seed is empty: prices and ids come from a live /v1/models sync, not a guessed list.
+ * Seed lists the published chat models. A live /v1/models sync replaces that list.
  */
 import { SettingsRepo } from '../db/repos/settings-repo.mjs'
 import { isGrokSeriesId } from './grok-ids.mjs'
 
 const SETTINGS_KEY = 'grok_model_policy'
 
-const CAP_GROK = {
-  context_window: 131072,
-  supports_1m: false,
-  thinking_mode: 'enabled_only',
-  supports_adaptive: false,
-  requires_adaptive: false,
-  supports_interleaved: false,
-  supports_effort: false,
-  supports_context_management: false,
+const LEGACY_CONTEXT_WINDOW = 131072
+
+/** Published context windows (docs.x.ai/developers/models.md). Unknown chat ids stay at 500k. */
+const GROK_CONTEXT = [
+  [/^grok-4\.(?:5|6|7)(?:-|$)/i, 500_000],
+  [/^grok-4\.3(?:-|$)/i, 1_000_000],
+  [/^grok-4\.20(?:-|$)/i, 1_000_000],
+  [/^grok-build-/i, 256_000],
+]
+
+const GROK_SEED = [
+  ['grok-4.7', { display_name: 'Grok 4.7', sort: 70 }],
+  ['grok-4.6', { display_name: 'Grok 4.6', sort: 71 }],
+  ['grok-4.5', { display_name: 'Grok 4.5', sort: 72 }],
+  ['grok-4.3', { display_name: 'Grok 4.3', sort: 80 }],
+  ['grok-4.20-0309-reasoning', { display_name: 'Grok 4.20 Reasoning', sort: 81 }],
+  ['grok-4.20-0309-non-reasoning', { display_name: 'Grok 4.20', sort: 82 }],
+  ['grok-4.20-multi-agent-0309', { display_name: 'Grok 4.20 Multi-Agent', sort: 83 }],
+  ['grok-build-0.1', { display_name: 'Grok Build 0.1', sort: 90 }],
+]
+
+function grokContextWindow(id) {
+  const found = GROK_CONTEXT.find(([pattern]) => pattern.test(id))
+  return found ? found[1] : 500_000
+}
+
+function grokCapabilities(id, extra = {}) {
+  const window = grokContextWindow(id)
+  return {
+    context_window: window,
+    supports_1m: window >= 1_000_000,
+    thinking_mode: 'enabled_only',
+    supports_adaptive: false,
+    requires_adaptive: false,
+    supports_interleaved: false,
+    supports_effort: /^grok-4\.(?:5|6|7)(?:-|$)/i.test(id),
+    supports_context_management: false,
+    ...extra,
+  }
+}
+
+/** A stored row that still has the old 128k default gets the published window. */
+function withKnownCaps(id, capabilities) {
+  const known = grokCapabilities(id)
+  if (!capabilities || typeof capabilities !== 'object') return known
+  const window = Number(capabilities.context_window)
+  const stale = !Number.isFinite(window) || window <= 0 || window === LEGACY_CONTEXT_WINDOW
+  return {
+    ...known,
+    ...capabilities,
+    context_window: stale ? known.context_window : window,
+    supports_1m: stale ? known.supports_1m : capabilities.supports_1m === true,
+    supports_effort: capabilities.supports_effort === true || known.supports_effort,
+  }
 }
 
 function entry(id, extra = {}) {
@@ -25,19 +70,21 @@ function entry(id, extra = {}) {
     family: 'grok',
     enabled: extra.enabled !== false,
     sort: extra.sort || 80,
-    capabilities: extra.capabilities || { ...CAP_GROK },
+    capabilities: withKnownCaps(id, extra.capabilities),
     params: extra.params || { max_tokens_default: 16384, max_tokens_cap: 128000 },
     aliases: extra.aliases || [],
   }
 }
 
 export function seedGrokPolicy() {
+  const models = {}
+  for (const [id, extra] of GROK_SEED) models[id] = entry(id, extra)
   return {
     version: 1,
     updated_at: new Date().toISOString(),
     source: 'seed',
     platform: 'xai',
-    models: {},
+    models,
   }
 }
 
@@ -62,7 +109,14 @@ export function loadGrokModelPolicy({ force = false } = {}) {
         if (!isGrokSeriesId(id) || !row || typeof row !== 'object') continue
         models[id] = entry(id, row)
       }
-      policy = { ...seedGrokPolicy(), ...stored, models, platform: 'xai', source: stored.source || 'settings' }
+      const live = stored.source === 'xai' && Object.keys(models).length > 0
+      policy = {
+        ...(live
+          ? { ...seedGrokPolicy(), ...stored, models }
+          : { ...seedGrokPolicy(), ...stored, models: { ...seedGrokPolicy().models, ...models } }),
+        platform: 'xai',
+        source: stored.source || 'settings',
+      }
     } else {
       policy = seedGrokPolicy()
       persist()

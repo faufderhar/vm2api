@@ -181,6 +181,8 @@ export function createHandleProtocol(deps) {
     typeof deps.getHealthMonitor === 'function' ? deps.getHealthMonitor() : deps.healthMonitor
   const getFailoverRunner = () =>
     typeof deps.getFailoverRunner === 'function' ? deps.getFailoverRunner() : deps.failoverRunner
+  const getAttemptsRepo = () =>
+    typeof deps.getAttemptsRepo === 'function' ? deps.getAttemptsRepo() : deps.attemptsRepo
   function responseClosed(res) {
     return !!(res?.destroyed || res?.writableEnded || res?.closed)
   }
@@ -798,6 +800,7 @@ export function createHandleProtocol(deps) {
             account,
           }),
         requestStartedAt: logCtx.t0,
+        ops: { requestId: logCtx.request_id, getAttemptsRepo },
         stickyRouter,
         sessions: accountQuota?.sessions || null,
         body: ctx.body,

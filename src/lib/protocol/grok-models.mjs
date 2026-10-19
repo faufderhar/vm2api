@@ -10,6 +10,7 @@ import { ensureGrokAccessToken } from '../oauth/grok-token.mjs'
 import { grokBaseUrl } from './grok-route.mjs'
 import { isGrokSeriesId } from './grok-ids.mjs'
 import { forwardApi, readApiJson } from '../transport/api-kernel-client.mjs'
+import { grokCliIdentityHeaders } from './grok-client.mjs'
 
 const HARD_DOWN = new Set(['stopped', 'dead', 'error', 'disabled'])
 
@@ -33,7 +34,7 @@ export async function fetchGrokUpstreamModels({
       cfg,
       method: 'GET',
       url: `${root}/v1/models`,
-      headers: { authorization: `Bearer ${access}`, accept: 'application/json' },
+      headers: { authorization: `Bearer ${access}`, accept: 'application/json', ...grokCliIdentityHeaders() },
       body: '',
       proxyUrl: px,
       requireProxy: Boolean(px),

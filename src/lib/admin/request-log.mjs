@@ -544,7 +544,7 @@ export class RequestLogStore {
       output_tokens: extra.output_tokens ?? usage.output_tokens ?? null,
       error_code: extra.error_code || null,
       error_message: extra.error_message ? String(extra.error_message).slice(0, 300) : null,
-      user_agent: ctx.user_agent,
+      user_agent: String(extra.user_agent || ctx.user_agent || '').slice(0, 512),
       ip: ctx.ip,
       api_key_presented: extra.api_key_presented ? presentedApiKeyForLog(extra.api_key_presented) : null,
       has_tools: extra.has_tools ?? null,

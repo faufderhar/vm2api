@@ -3,10 +3,11 @@
  * Anthropic cache: 5m = 1.25× input, 1h = 2× input unless a published read/write differs.
  * OpenAI cache_5m = published cache_write (0 if none); cache_1h = cache_5m.
  */
-export const BUILTIN_SOURCE = 'builtin-2026-10-14'
+export const BUILTIN_SOURCE = 'builtin-2026-10-19'
 
 const WEB_SEARCH = 0.01
 const OPENAI_LONG = 272_000
+const GROK_LONG = 200_000
 
 function claude(input, output, cache_read, cache_5m, cache_1h, extra = {}) {
   return {
@@ -22,6 +23,24 @@ function claude(input, output, cache_read, cache_5m, cache_1h, extra = {}) {
 
 function tokenPrice(input, output, cache_read, cache_5m, cache_1h) {
   return { input, output, cache_read, cache_5m, cache_1h }
+}
+
+/** xAI list price. Prompt ≥ 200k tokens bills every token at the long rate. No cache-write fee. */
+function xai(input, output, cacheRead, longInput, longOutput, longCacheRead) {
+  const leaf = { input, output, cache_read: cacheRead, cache_5m: 0, cache_1h: 0 }
+  return {
+    ...leaf,
+    tiers: [
+      {
+        above: GROK_LONG,
+        input: longInput,
+        output: longOutput,
+        cache_read: longCacheRead,
+        cache_5m: 0,
+        cache_1h: 0,
+      },
+    ],
+  }
 }
 
 function openaiFrom(std, extra = {}) {
@@ -319,10 +338,23 @@ export const BUILTIN_ALIASES = {
   'o4-mini-2025-04-16': 'o4-mini',
 }
 
-export const BUILTIN_RATES = { anthropic: ANTHROPIC, openai: OPENAI, xai: {} }
+/** docs.x.ai/developers/models.md, 2026-10-19. USD / 1M tokens. */
+const XAI = {
+  'grok-4.7': xai(2, 6, 0.5, 4, 12, 1),
+  'grok-4.6': xai(2, 6, 0.5, 4, 12, 1),
+  'grok-4.5': xai(2, 6, 0.3, 4, 12, 0.6),
+  'grok-4.3': xai(1.25, 2.5, 0.2, 2.5, 5, 0.4),
+  'grok-4.20-0309-reasoning': xai(1.25, 2.5, 0.2, 2.5, 5, 0.4),
+  'grok-4.20-0309-non-reasoning': xai(1.25, 2.5, 0.2, 2.5, 5, 0.4),
+  'grok-4.20-multi-agent-0309': xai(1.25, 2.5, 0.2, 2.5, 5, 0.4),
+  'grok-build-0.1': xai(1, 2, 0.2, 2, 4, 0.4),
+}
+
+export const BUILTIN_RATES = { anthropic: ANTHROPIC, openai: OPENAI, xai: XAI }
 
 export function builtinOf(id) {
   if (ANTHROPIC[id]) return { platform: 'anthropic', id, price: ANTHROPIC[id] }
   if (OPENAI[id]) return { platform: 'openai', id, price: OPENAI[id] }
+  if (XAI[id]) return { platform: 'xai', id, price: XAI[id] }
   return null
 }

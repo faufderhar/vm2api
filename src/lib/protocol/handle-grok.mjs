@@ -36,6 +36,14 @@ import { codexFailoverBudget, codexFailureHold, isRetryableSameCodexAccount } fr
 import { CLIENT_POOL_BUSY_MESSAGE, CLIENT_POOL_UNAVAILABLE_MESSAGE, ErrorCode } from '../core/errors.mjs'
 import { applyOpenaiWashLog } from './openai-wash.mjs'
 import { redactHeaders } from '../admin/request-log.mjs'
+import { sessionIdForLog } from './log-fields.mjs'
+import {
+  grokCliIdentityHeaders,
+  grokCliRequestHeaders,
+  grokCliUserAgent,
+  grokRequestId,
+  resolveGrokOutboundSession,
+} from './grok-client.mjs'
 
 export const GROK_VIA = 'grok-api'
 
@@ -49,6 +57,10 @@ const WAIT_TIMEOUT_MIN_MS = 1000
 const WAIT_TIMEOUT_MAX_MS = 120000
 const DEFAULT_WAIT_TIMEOUT_MS = 30000
 const DEFAULT_IDLE_TIMEOUT_MS = 180000
+
+function upstreamAccept(stream) {
+  return stream ? 'text/event-stream' : 'application/json'
+}
 
 function waitTimeoutMs(routing) {
   const n = Number(routing?.pool?.fallback_wait_timeout_ms)
@@ -175,6 +187,8 @@ export async function grokUpstreamCall({ cfg, url, token, body, stream, proxyUrl
           authorization: `Bearer ${token}`,
           'content-type': 'application/json',
           accept: stream ? 'text/event-stream' : 'application/json',
+          ...grokCliIdentityHeaders(),
+          ...(ops.headers || {}),
         },
         body: JSON.stringify(body),
         proxyUrl,
@@ -318,6 +332,43 @@ function logUsage(logBag, usage, shape) {
   logBag.cache_creation_tokens = disjoint?.cache_creation_input_tokens ?? extracted?.cache_write_tokens ?? null
 }
 
+function grokAttemptsRepo(ops) {
+  if (ops?.attemptsRepo) return ops.attemptsRepo
+  return typeof ops?.getAttemptsRepo === 'function' ? ops.getAttemptsRepo() : null
+}
+
+function grokSelectionReason({ pin, sticky, ownsPin }) {
+  if (pin) return 'pin'
+  if (sticky && ownsPin) return 'sticky'
+  return 'smart'
+}
+
+/** One upstream try for the log decision chain. Missing repo must not fail the request. */
+function noteGrokAttempt(repo, requestId, attemptNo, fields) {
+  if (!repo || !requestId) return
+  try {
+    repo.begin({
+      requestId,
+      attemptNo,
+      vmId: fields.vmId,
+      accountId: fields.accountId,
+      model: fields.model,
+      selectionReason: fields.selectionReason,
+      waitMs: 0,
+    })
+    const transport = fields.result?.kernelError === true || fields.result?.transportError === true
+    repo.complete(requestId, attemptNo, {
+      upstreamStatus: Number(fields.result?.status) || null,
+      errorScope: fields.result?.ok ? null : transport ? 'transport' : 'upstream',
+      action: fields.result?.ok ? 'stop' : 'retry',
+      downstreamCommitted: !!fields.committed,
+      terminalState: fields.result?.ok ? 'verified' : transport ? 'transport_error' : 'error',
+      ttftMs: fields.result?.ttftMs ?? null,
+      latencyMs: Math.max(0, Date.now() - fields.startedAt),
+    })
+  } catch {}
+}
+
 /**
  * Candidates re-read on every admission, same contract as pickCodexCandidates: a request that
  * continues a stored response (`previous_response_id`) can only run on the slot that holds it.
@@ -444,6 +495,7 @@ export async function runGrokSlotHop({
   signal,
   onLine,
   ops = {},
+  headers = null,
 }) {
   const proxyUrl = String((ops.hostProxyUrlForVm || hostProxyUrlForVm)(vm) || '')
   // '' is 本机出口: the kernel dials api.x.ai on the slot host's own route.
@@ -460,7 +512,18 @@ export async function runGrokSlotHop({
   let tok = await ensure({ projectRoot, vm, routing, proxyUrl })
   if (!tok.ok) return tokenFailure(tok.code)
   const call = (token) =>
-    grokUpstreamCall({ cfg, url, token, body: outbound.body, stream, proxyUrl, signal, idleMs, onLine, ops })
+    grokUpstreamCall({
+      cfg,
+      url,
+      token,
+      body: outbound.body,
+      stream,
+      proxyUrl,
+      signal,
+      idleMs,
+      onLine,
+      ops: { ...ops, headers },
+    })
   let result = await call(tok.access_token)
   if (Number(result.status) === 401 && !result.emitted && !result.kernelError && !signal?.aborted) {
     tok = await ensure({ projectRoot, vm, routing, proxyUrl, force: true })
@@ -493,6 +556,10 @@ export async function handleGrokProtocol({
 }) {
   const grok = grokRoutingOf(routing)
   logBag.via = GROK_VIA
+  // The detail pane shows this as the client. xAI sees the Grok CLI, not the caller's Codex UA.
+  logBag.user_agent = grokCliUserAgent()
+  const caller = resolveGrokOutboundSession({ req, inbound, body: ctx.body || inbound, routing })
+  if (!logBag.session_id) logBag.session_id = sessionIdForLog(caller.callerSession)
   const allowed = isGrokProtocolAllowed(protocol, routing)
   if (!allowed.ok) {
     stats.errors++
@@ -530,7 +597,12 @@ export async function handleGrokProtocol({
     outboundBody: outbound.body,
   })
   if (captureOutbound) logBag.outbound_body = outbound.body
-  logBag.outbound_headers = redactHeaders({ authorization: 'Bearer ***', 'content-type': 'application/json' })
+  logBag.outbound_headers = redactHeaders({
+    authorization: 'Bearer ***',
+    'content-type': 'application/json',
+    accept: upstreamAccept(stream),
+    ...grokCliIdentityHeaders(),
+  })
   const upstreamStream = outbound.convert ? true : stream
   const shape = protocol === 'anthropic.messages' && !outbound.convert ? 'anthropic' : 'openai'
   const pickOpts = { stickyRouter, sessions, body: body || ctx.body || inbound, excluded: new Set(), routing }
@@ -592,9 +664,25 @@ export async function handleGrokProtocol({
         } catch {}
       }
       const ownsPin = !!stickyBound?.vmId && stickyBound.vmId === vm.id
-      const bindSticky = () => {
+      const attemptsRepo = grokAttemptsRepo(ops)
+      const selectionReason = grokSelectionReason({ pin: picked.pin, sticky: picked.sticky, ownsPin })
+      const outboundSession = resolveGrokOutboundSession({
+        req,
+        inbound,
+        body: outbound.body,
+        routing,
+        vmId: vm.id,
+        bound: stickyBound,
+        epoch: stickyBound?.generation ? String(stickyBound.generation) : `${requestStartedAt}:${vm.id}`,
+      })
+      const outboundSessionId = outboundSession.sessionId
+      logBag.outbound_session_id = sessionIdForLog(outboundSessionId)
+      if (!logBag.session_id) logBag.session_id = sessionIdForLog(outboundSession.callerSession)
+      const bindSticky = (sessionId = null) => {
         if (!picked.sessionKey || !stickyRouter?.bind) return
-        for (const key of stickyKeys) stickyRouter.bind(key, { accountId: vm.id, vmId: vm.id })
+        const payload = { accountId: vm.id, vmId: vm.id }
+        if (sessionId) payload.sessionId = sessionId
+        for (const key of stickyKeys) stickyRouter.bind(key, payload)
       }
       const leaveSticky = () => {
         if (!ownsPin || !picked.sessionKey) return
@@ -634,18 +722,44 @@ export async function handleGrokProtocol({
           res.write(`${line}\n`)
         }
         const runHop = () =>
-          runGrokSlotHop({
-            cfg,
-            projectRoot,
-            vm,
-            routing,
-            outbound,
-            stream: upstreamStream,
-            signal: gone.signal,
-            onLine,
-            ops,
+          {
+            const headers = grokCliRequestHeaders({
+              model: outbound.body?.model,
+              sessionId: outboundSessionId,
+              requestId: grokRequestId(),
+            })
+            logBag.outbound_headers = redactHeaders({
+              authorization: 'Bearer ***',
+              'content-type': 'application/json',
+              accept: upstreamAccept(upstreamStream),
+              ...headers,
+            })
+            return runGrokSlotHop({
+              cfg,
+              projectRoot,
+              vm,
+              routing,
+              outbound,
+              stream: upstreamStream,
+              signal: gone.signal,
+              onLine,
+              ops,
+              headers,
+            })
+          }
+        const recordAttempt = (startedAt, result) =>
+          noteGrokAttempt(attemptsRepo, ops.requestId, hops, {
+            vmId: vm.id,
+            accountId: vm.id,
+            model: outbound.body?.model,
+            selectionReason,
+            startedAt,
+            result,
+            committed: !!(result?.ok || hopEmitted),
           })
+        let attemptStarted = Date.now()
         let result = await runHop()
+        recordAttempt(attemptStarted, result)
         let sameAccountRetries = result?.refreshed ? 1 : 0
         while (
           sameAccountRetries < budget.maxSameAccountRetries &&
@@ -660,7 +774,9 @@ export async function handleGrokProtocol({
           logBag.grok_same_account_retried = sameAccountRetries
           await new Promise((resolve) => setTimeout(resolve, sameRetryDelayMs))
           hopEmitted = false
+          attemptStarted = Date.now()
           result = await runHop()
+          recordAttempt(attemptStarted, result)
         }
         if (result?.refreshed) logBag.grok_token_refreshed = true
         logBag.first_token_ms = Number.isFinite(result?.firstTokenAt)
@@ -669,7 +785,7 @@ export async function handleGrokProtocol({
         ingestGrokHop(projectRoot, vm, result)
         last = result
         if (result?.ok) {
-          bindSticky()
+          bindSticky(outboundSessionId)
           logUsage(logBag, usage.take(result.body), shape)
           grokRuntime.reportAttempt(vm.id, 'succeeded', result.ttftMs ?? null)
           logBag.final_state = 'verified'

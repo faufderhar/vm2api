@@ -236,6 +236,8 @@ export function thinkingEffortBadgeClass(effort: string): string {
 
 const SELECTION_REASON_LABELS: Record<string, string> = {
   sticky: '粘性会话',
+  pin: '指定槽位',
+  smart: '智能调度',
   'sticky-spill': '粘性溢出',
   'family-affinity': '家族亲和',
   'device-affinity': '设备亲和',
