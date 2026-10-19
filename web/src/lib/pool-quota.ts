@@ -1,6 +1,7 @@
 import type { Vm } from '@/types/panel-vm'
 import { expiresAtToMs, fableUsedOf, fableWeeklyFull } from '@/lib/fable-status'
 import { pct, usedPctOf } from '@/lib/format'
+import { grokStateOf, isGrokVm } from '@/lib/vm-kind'
 import { accountUsable, claudeTier, fablePlanDenied } from '@/lib/vm-status'
 
 /**
@@ -15,6 +16,7 @@ import { accountUsable, claudeTier, fablePlanDenied } from '@/lib/vm-status'
  *   在分段图里以虚线空段标出，不冒充「确认可用」。
  * - Fable 容量只含 Max 档且未被拒 Fable 权限、未被 Fable 封禁的凭证——
  *   Pro 号没有 Fable 窗口，计入只会稀释这个数。
+ * - Grok 不进这三扇窗口。它的额度来自 Grok Build 周用量，单独成一扇。
  */
 export type PoolQuotaSeg = {
   id: string
@@ -28,7 +30,7 @@ export type PoolQuotaSeg = {
 }
 
 export type PoolWindow = {
-  key: '5h' | '7d' | 'fable'
+  key: '5h' | '7d' | 'fable' | 'grok'
   label: string
   /** 按已用降序——最烫的凭证排最前，扫一眼就能看到风险集中在哪。 */
   segs: PoolQuotaSeg[]
@@ -40,6 +42,17 @@ export type PoolWindow = {
   remainAccounts: number
   /** 剩余占比 0-100（容量为 0 时为 0）。 */
   remainPct: number
+}
+
+export type GrokPoolSummary = {
+  /** 已导入令牌的 Grok 槽。 */
+  withToken: number
+  /** 令牌仍有效的 Grok 槽。 */
+  eligible: number
+  /** 上游 429 之后仍在停用窗口内的槽。 */
+  limited: number
+  /** 已经同步到 Grok Build 周额度的槽。 */
+  synced: number
 }
 
 function clampPct(v: unknown): number {
@@ -66,6 +79,26 @@ function buildWindow(
   }
 }
 
+function grokParked(vm: Vm, now: number): boolean {
+  const until = Number(grokStateOf(vm).limited_until || 0)
+  return Number.isFinite(until) && until > now
+}
+
+export function grokPoolSummary(vms: Vm[], now = Date.now()): GrokPoolSummary {
+  const grok = vms.filter(isGrokVm)
+  return {
+    withToken: grok.filter((vm) => vm.has_token).length,
+    eligible: grok.filter(poolEligible).length,
+    limited: grok.filter((vm) => grokParked(vm, now)).length,
+    synced: grok.filter((vm) => grokBuildProbed(vm)).length,
+  }
+}
+
+function grokBuildProbed(vm: Vm): boolean {
+  const value = grokStateOf(vm).build_usage?.credit_usage_percent
+  return value != null && Number.isFinite(Number(value))
+}
+
 /**
  * 计入额度的凭证 = `accountUsable`（凭证有效即可用，运营确认口径）：
  * 无凭证 / 无效 / 过期 / revoke 不计；off / 冷却 / 限制照计。
@@ -86,12 +119,17 @@ export function windowProbed(vm: Vm, window: '5h' | '7d'): boolean {
   )
 }
 
-export function poolQuota(vms: Vm[]): {
+export function poolQuota(
+  vms: Vm[],
+  now = Date.now()
+): {
   windows: [PoolWindow, PoolWindow, PoolWindow]
   eligible: number
   withToken: number
+  grok: GrokPoolSummary
+  grokWindow: PoolWindow | null
 } {
-  const usable = vms.filter(poolEligible)
+  const usable = vms.filter((vm) => poolEligible(vm) && !isGrokVm(vm))
   const w5: PoolQuotaSeg[] = []
   const w7: PoolQuotaSeg[] = []
   const wf: PoolQuotaSeg[] = []
@@ -131,6 +169,29 @@ export function poolQuota(vms: Vm[]): {
       buildWindow('fable', 'Fable 7d', wf),
     ],
     eligible: usable.length,
-    withToken: vms.filter((v) => v.has_token).length,
+    withToken: vms.filter((vm) => vm.has_token && !isGrokVm(vm)).length,
+    grok: grokPoolSummary(vms, now),
+    grokWindow: grokBuildWindow(vms),
   }
+}
+
+function grokBuildWindow(vms: Vm[]): PoolWindow | null {
+  const slots = vms.filter((vm) => isGrokVm(vm) && poolEligible(vm))
+  if (!vms.some((vm) => isGrokVm(vm) && vm.has_token) && slots.length === 0) {
+    return null
+  }
+  const segs = slots.map((vm) => {
+    const usage = grokStateOf(vm).build_usage
+    const probed = grokBuildProbed(vm)
+    return {
+      id: vm.id,
+      name: String(vm.name || vm.id),
+      usedPct: probed
+        ? Math.max(0, Math.min(100, Number(usage?.credit_usage_percent)))
+        : 0,
+      probed,
+      resetAt: expiresAtToMs(usage?.period_end),
+    }
+  })
+  return buildWindow('grok', 'Grok Build', segs)
 }

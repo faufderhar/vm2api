@@ -1,0 +1,142 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import {
+  grokBuildUsageFresh,
+  grokCreditUsedPercent,
+  parseGrokBuildBilling,
+  queryGrokBuildUsage,
+} from '../../src/lib/oauth/grok-build-usage.mjs'
+import { upsertGrokAccount } from '../../src/lib/vm/grok-slot.mjs'
+import { getVm } from '../../src/lib/vm/vm-registry.mjs'
+
+test('Grok Build credit percent is percent points above 1 and a fraction at or below 1', () => {
+  assert.equal(grokCreditUsedPercent(37), 37)
+  assert.equal(grokCreditUsedPercent(0.37), 37)
+  assert.equal(grokCreditUsedPercent(1), 100)
+  assert.equal(grokCreditUsedPercent(140), 100)
+  assert.equal(grokCreditUsedPercent(null), null)
+})
+
+test('billing response maps the weekly pool and the latest monthly included spend', () => {
+  const usage = parseGrokBuildBilling({
+    config: {
+      creditUsagePercent: 37,
+      currentPeriod: { start: '2026-10-12T00:00:00.000Z', end: '2026-10-19T00:00:00.000Z' },
+      monthlyLimit: 20,
+      onDemandCap: 10,
+      onDemandUsed: 1.5,
+      prepaidBalance: 4,
+      history: [
+        { includedUsed: 1, totalUsed: 1 },
+        { includedUsed: 6, totalUsed: 7.5 },
+      ],
+    },
+    on_demand_enabled: true,
+    subscription_tier: 'super',
+  })
+  assert.equal(usage.credit_usage_percent, 37)
+  assert.equal(usage.period_end, '2026-10-19T00:00:00.000Z')
+  assert.equal(usage.included_used, 6)
+  assert.equal(usage.total_used, 7.5)
+  assert.equal(usage.monthly_limit, 20)
+  assert.equal(usage.on_demand_enabled, true)
+  assert.equal(usage.subscription_tier, 'super')
+  assert.equal(parseGrokBuildBilling({}), null)
+})
+
+test('a fresh Grok Build sample is not fetched again until it is stale', () => {
+  const now = Date.parse('2026-10-19T03:00:00.000Z')
+  assert.equal(
+    grokBuildUsageFresh({ ok: true, credit_usage_percent: 10, probed_at: '2026-10-19T02:50:00.000Z' }, now),
+    true,
+  )
+  assert.equal(
+    grokBuildUsageFresh({ ok: true, credit_usage_percent: 10, probed_at: '2026-10-19T02:00:00.000Z' }, now),
+    false,
+  )
+})
+
+function writeGrokVm(root, id) {
+  fs.mkdirSync(path.join(root, 'vms'), { recursive: true })
+  fs.writeFileSync(
+    path.join(root, 'vms', `${id}.json`),
+    JSON.stringify({
+      id,
+      platform: 'xai',
+      family: 'grok',
+      proxy: { id: 'px-local', scheme: 'local' },
+      grok: { has_access: true },
+    }),
+  )
+}
+
+test('query stores Grok Build billing and keeps the last good sample after a failed hop', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'grok-build-'))
+  writeGrokVm(root, 'heavy')
+  upsertGrokAccount(root, 'heavy', {
+    access_token: 'access-1',
+    refresh_token: 'refresh-1',
+    expires_at: Date.now() + 60 * 60 * 1000,
+  })
+  const calls = []
+  const fetchImpl = async (url) => {
+    calls.push(url)
+    return {
+      status: 200,
+      json: async () => ({
+        config: {
+          creditUsagePercent: 37,
+          monthlyLimit: 20,
+          currentPeriod: { end: '2026-10-26T00:00:00.000Z' },
+          history: [{ includedUsed: 4, totalUsed: 4 }],
+        },
+        subscription_tier: 'super',
+      }),
+    }
+  }
+  const now = Date.parse('2026-10-19T03:00:00.000Z')
+  const first = await queryGrokBuildUsage({
+    projectRoot: root,
+    vmId: 'heavy',
+    proxyUrl: '',
+    fetchImpl,
+    now,
+  })
+  assert.equal(first.ok, true)
+  assert.equal(first.usage.credit_usage_percent, 37)
+  assert.equal(calls.length, 1)
+  assert.match(calls[0], /\/billing\?format=credits/)
+  const stored = getVm(root, 'heavy').grok.build_usage
+  assert.equal(stored.credit_usage_percent, 37)
+  assert.equal(stored.included_used, 4)
+  assert.equal(stored.subscription_tier, 'super')
+
+  const skipped = await queryGrokBuildUsage({
+    projectRoot: root,
+    vmId: 'heavy',
+    proxyUrl: '',
+    fetchImpl,
+    now: now + 60_000,
+  })
+  assert.equal(skipped.skipped, true)
+  assert.equal(calls.length, 1)
+
+  const failedFetch = async () => ({ status: 500, json: async () => ({}) })
+  const failed = await queryGrokBuildUsage({
+    projectRoot: root,
+    vmId: 'heavy',
+    proxyUrl: '',
+    fetchImpl: failedFetch,
+    force: true,
+    now: now + 120_000,
+  })
+  assert.equal(failed.ok, false)
+  const kept = getVm(root, 'heavy').grok.build_usage
+  assert.equal(kept.ok, false)
+  assert.equal(kept.credit_usage_percent, 37)
+  assert.equal(kept.error, 'upstream_error')
+  assert.equal(kept.message, 'Grok Build 账单返回 500')
+})

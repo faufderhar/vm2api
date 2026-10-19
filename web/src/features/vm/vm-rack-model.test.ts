@@ -186,6 +186,25 @@ describe('vmWindows', () => {
       null,
     ])
   })
+
+  it('shows Grok Build weekly and monthly usage instead of Claude windows', () => {
+    const grok = vmWindows(
+      vm({
+        platform: 'xai',
+        family: 'grok',
+        utilization_5h: 0.9,
+        grok_build: {
+          credit_usage_percent: 42,
+          period_end: '2099-01-01T00:00:00.000Z',
+          monthly_limit: 20,
+          included_used: 5,
+        },
+      })
+    )
+    expect(grok.map((row) => row.label)).toEqual(['周额', '月额'])
+    expect(grok[0].pct).toBe(42)
+    expect(grok[1].pct).toBe(25)
+  })
 })
 
 describe('bladeState', () => {

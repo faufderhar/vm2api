@@ -62,7 +62,31 @@ export function grokStateOf(vm: Vm | undefined): VmGrokState {
     auth_error: grok.auth_error ?? vm?.grok_auth_error ?? null,
     limited_until: grok.limited_until ?? vm?.grok_limited_until ?? null,
     limited_reason: grok.limited_reason ?? vm?.grok_limited_reason ?? null,
+    build_usage: grok.build_usage ?? vm?.grok_build ?? null,
   }
+}
+
+/** Grok Build 周额度，0-100。没有同步结果时为 null，不能当成 0%。 */
+export function grokWeeklyUsedPct(vm: Vm | undefined): number | null {
+  const value = Number(grokStateOf(vm).build_usage?.credit_usage_percent)
+  if (!Number.isFinite(value) || value < 0) return null
+  return Math.max(0, Math.min(100, value))
+}
+
+/** 月包含额度已用比例。缺月上限或已用金额时为 null。 */
+export function grokMonthlyUsedPct(vm: Vm | undefined): number | null {
+  const usage = grokStateOf(vm).build_usage
+  const limit = Number(usage?.monthly_limit)
+  const used = Number(usage?.included_used)
+  if (
+    !Number.isFinite(limit) ||
+    limit <= 0 ||
+    !Number.isFinite(used) ||
+    used < 0
+  ) {
+    return null
+  }
+  return Math.max(0, Math.min(100, (used / limit) * 100))
 }
 
 export function grokAuthErrorText(vm: Vm | undefined): string {

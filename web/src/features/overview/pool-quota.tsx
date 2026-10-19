@@ -3,6 +3,7 @@ import type { Vm } from '@/types/panel-vm'
 import { statusColorForPct } from '@/lib/fable-status'
 import { fmtCountdown } from '@/lib/format'
 import { poolQuota, type PoolWindow } from '@/lib/pool-quota'
+import { cn } from '@/lib/utils'
 import { useNow } from '@/hooks/use-now'
 import { PanelCard } from '@/features/overview/panel-card'
 
@@ -135,11 +136,32 @@ function WindowCell({
         </>
       ) : (
         <div className='mt-0.5 text-[11px] text-muted-foreground'>
-          无 Fable 凭证（仅 Max 档计入）
+          {win.key === 'grok'
+            ? '无 Grok Build 账号'
+            : win.key === 'fable'
+              ? '无 Fable 凭证（仅 Max 档计入）'
+              : '无可用凭证'}
         </div>
       )}
     </div>
   )
+}
+
+function quotaMeta(
+  eligible: number,
+  withToken: number,
+  grok: { eligible: number; withToken: number; limited: number; synced: number }
+): string {
+  const grokBit =
+    grok.withToken > 0
+      ? `Grok Build ${grok.synced} 个已同步 / 共 ${grok.withToken}${
+          grok.limited > 0 ? ` · ${grok.limited} 个限流` : ''
+        }`
+      : ''
+  if (withToken === 0 && grok.withToken > 0) return grokBit
+  const base = `${eligible} 张有效凭证 / 共 ${withToken} · 无效和已吊销不计`
+  if (grokBit) return `${base} · ${grokBit}`
+  return base
 }
 
 /**
@@ -150,8 +172,9 @@ function WindowCell({
  * 竖条一凭证一段、按已用降序——风险集中在最左侧，值班扫一眼即得。
  */
 export function PoolQuota({ vms }: { vms: Vm[] }) {
-  const { windows, eligible, withToken } = poolQuota(vms)
   const now = useNow()
+  const { windows, eligible, withToken, grok, grokWindow } = poolQuota(vms, now)
+  const showWindows = withToken > 0 || grok.withToken === 0
   // 首帧后再放开高度，让分段条从 0 涨到实际用量；数据刷新时同一 transition 平滑跟随。
   const [live, setLive] = useState(false)
   useEffect(() => {
@@ -159,15 +182,19 @@ export function PoolQuota({ vms }: { vms: Vm[] }) {
     return () => cancelAnimationFrame(id)
   }, [])
   return (
-    <PanelCard
-      title='号池额度'
-      meta={`${eligible} 张有效凭证 / 共 ${withToken} · 无效与 revoke 不计`}
-    >
-      <div className='grid gap-px bg-border/60 sm:grid-cols-3'>
-        {windows.map((w) => (
-          <WindowCell key={w.key} win={w} live={live} now={now} />
-        ))}
-      </div>
+    <PanelCard title='号池额度' meta={quotaMeta(eligible, withToken, grok)}>
+      {showWindows ? (
+        <div className='grid gap-px bg-border/60 sm:grid-cols-3'>
+          {windows.map((w) => (
+            <WindowCell key={w.key} win={w} live={live} now={now} />
+          ))}
+        </div>
+      ) : null}
+      {grokWindow ? (
+        <div className={cn(showWindows && 'border-t')}>
+          <WindowCell win={grokWindow} live={live} now={now} />
+        </div>
+      ) : null}
     </PanelCard>
   )
 }

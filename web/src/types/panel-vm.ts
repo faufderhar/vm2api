@@ -22,6 +22,26 @@ export type GrokAuthError = {
   at?: string | number | null
 }
 
+/** Grok Build 账单同步结果。周额度是共享用量池已用百分比，不是 5 小时窗口。 */
+export type GrokBuildUsage = {
+  probed_at?: string | null
+  ok?: boolean | null
+  credit_usage_percent?: number | null
+  period_start?: string | number | null
+  period_end?: string | number | null
+  monthly_limit?: number | null
+  included_used?: number | null
+  total_used?: number | null
+  on_demand_cap?: number | null
+  on_demand_used?: number | null
+  prepaid_balance?: number | null
+  on_demand_enabled?: boolean | null
+  subscription_tier?: string | null
+  error?: string | null
+  /** 最近一次同步失败的说明。成功后清空。 */
+  message?: string | null
+}
+
 /** xAI Grok 槽的账号状态，仅 `platform: 'xai'` 槽位带。 */
 export type VmGrokState = {
   email?: string | null
@@ -33,6 +53,7 @@ export type VmGrokState = {
   limited_until?: string | number | null
   limited_reason?: string | null
   last_refresh_at?: string | number | null
+  build_usage?: GrokBuildUsage | null
 }
 
 /** 代理出口节点的地理位置。`checked_at` 有值而 `ip` 为空即检测失败，见 `error`。 */
@@ -317,6 +338,8 @@ export type Vm = {
   grok_auth_error?: GrokAuthError | null
   grok_limited_until?: string | number | null
   grok_limited_reason?: string | null
+  /** 列表视图上的 Grok Build 用量。详情里的 `grok.build_usage` 与此相同。 */
+  grok_build?: GrokBuildUsage | null
   codex_kernel?: boolean
   inference_engine?: 'go' | 'rust' | null
   resolved_inference_engine?: 'go' | 'rust' | null

@@ -1,9 +1,14 @@
 import type { UsageAccountRow } from '@/types/panel-usage'
 import type { Vm } from '@/types/panel-vm'
-import { expiresAtToMs } from '@/lib/fable-status'
 import { usedPctOf } from '@/lib/format'
 import { windowProbed } from '@/lib/pool-quota'
-import { grokAuthErrorText, grokStateOf, isGrokVm } from '@/lib/vm-kind'
+import {
+  grokAuthErrorText,
+  grokMonthlyUsedPct,
+  grokStateOf,
+  grokWeeklyUsedPct,
+  isGrokVm,
+} from '@/lib/vm-kind'
 import { fleetGroup, type FleetGroup } from '@/lib/vm-status'
 import { vmCostLedger, type VmLedgerRow } from '@/lib/vm-usage'
 import { fableRow } from '@/features/vm/usage-meter'
@@ -131,7 +136,7 @@ export function vmWindows(vm: Vm): WindowReadout[] {
   return windows
 }
 
-/** xAI 没有 5h / 7d 用量窗口，只在授权失效或被上游限流时给一行说明。 */
+/** Grok Build 周额度 / 月额度。没有同步结果时周额显示「—」，不画成 0%。 */
 function grokWindows(vm: Vm): WindowReadout[] {
   if (!vm.has_token) return []
   if (grokAuthErrorText(vm)) {
@@ -139,19 +144,28 @@ function grokWindows(vm: Vm): WindowReadout[] {
       { key: '5h', label: '授权', pct: null, note: '授权失效', reset: null },
     ]
   }
-  const grok = grokStateOf(vm)
-  if (expiresAtToMs(grok.limited_until) > Date.now()) {
-    return [
-      {
-        key: '5h',
-        label: '限流',
-        pct: null,
-        note: grok.limited_reason || '上游限流中',
-        reset: grok.limited_until,
-      },
-    ]
+  const usage = grokStateOf(vm).build_usage
+  const weekly = grokWeeklyUsedPct(vm)
+  const monthly = grokMonthlyUsedPct(vm)
+  const windows: WindowReadout[] = [
+    {
+      key: '5h',
+      label: '周额',
+      pct: weekly,
+      note: null,
+      reset: usage?.period_end ?? null,
+    },
+  ]
+  if (monthly != null || usage?.monthly_limit != null) {
+    windows.push({
+      key: '7d',
+      label: '月额',
+      pct: monthly,
+      note: null,
+      reset: null,
+    })
   }
-  return []
+  return windows
 }
 
 /**

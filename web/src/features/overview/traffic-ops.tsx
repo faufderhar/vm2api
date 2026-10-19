@@ -1,5 +1,7 @@
 import type { OpsModelRow, OpsWindow } from '@/types/panel-overview'
+import type { Vm } from '@/types/panel-vm'
 import { fmtMs, fmtNum, fmtRate } from '@/lib/format'
+import { isCodexVm, isGrokVm } from '@/lib/vm-kind'
 import { cacheHitPct, fmtHitPct } from '@/lib/vm-usage'
 import { PanelCard, StatCell } from '@/features/overview/panel-card'
 
@@ -36,29 +38,72 @@ const TONE_TEXT: Record<OpsTone, string> = {
 }
 
 const MODEL_FAMILIES = [
-  { id: 'opus', label: 'Opus' },
-  { id: 'sonnet', label: 'Sonnet' },
-  { id: 'haiku', label: 'Haiku' },
-  { id: 'fable', label: 'Fable' },
+  { id: 'opus', label: 'Opus', platform: 'claude' },
+  { id: 'sonnet', label: 'Sonnet', platform: 'claude' },
+  { id: 'haiku', label: 'Haiku', platform: 'claude' },
+  { id: 'fable', label: 'Fable', platform: 'claude' },
+  { id: 'gpt', label: 'GPT', platform: 'gpt' },
+  { id: 'grok', label: 'Grok Build', platform: 'grok' },
 ] as const
 
 function modelFamilyOf(id: string | undefined): string {
   const s = String(id || '').toLowerCase()
+  if (s.includes('grok')) return 'grok'
   if (s.includes('haiku')) return 'haiku'
   if (s.includes('opus')) return 'opus'
   if (s.includes('fable') || s.includes('mythos')) return 'fable'
   if (s.includes('sonnet')) return 'sonnet'
+  if (s.includes('gpt') || s.includes('codex')) return 'gpt'
   return 'other'
 }
 
-/** 按模型家族聚合 `by_model`。对齐 index.html 的 `opsModelFamilyRows`。 */
-function opsModelFamilyRows(byModel: OpsModelRow[]): {
+function familyPlatform(
+  id: string
+): (typeof MODEL_FAMILIES)[number]['platform'] | null {
+  return MODEL_FAMILIES.find((family) => family.id === id)?.platform ?? null
+}
+
+/**
+ * 要画哪些平台。没传槽位时仍默认画出 Claude 四家族，避免空总览突然空白。
+ * 传了槽位就只画机群里真实存在的平台，再加上这一小时实际打过的平台。
+ * 这样只有 Grok 时不会再列出 Opus / Sonnet / Haiku / Fable。
+ */
+function visiblePlatforms(byModel: OpsModelRow[], vms?: Vm[]): Set<string> {
+  const fromTraffic = new Set<string>()
+  for (const row of byModel || []) {
+    if (!Number(row.requests || 0)) continue
+    const platform = familyPlatform(modelFamilyOf(row.model))
+    if (platform) fromTraffic.add(platform)
+  }
+  if (!vms) {
+    const show = new Set<string>(['claude'])
+    for (const platform of fromTraffic) show.add(platform)
+    return show
+  }
+  const fromVms = new Set<string>()
+  for (const vm of vms) {
+    if (isGrokVm(vm)) fromVms.add('grok')
+    else if (isCodexVm(vm)) fromVms.add('gpt')
+    else fromVms.add('claude')
+  }
+  if (fromVms.size === 0 && fromTraffic.size === 0) return new Set(['claude'])
+  return new Set([...fromVms, ...fromTraffic])
+}
+
+/** 按模型家族聚合 `by_model`。Claude 四家族仍对齐 index.html，GPT / Grok 另计。 */
+export function opsModelFamilyRows(
+  byModel: OpsModelRow[],
+  vms?: Vm[]
+): {
   model: string
   requests: number
   errors: number
   avg_first_token_ms: number | null
   avg_duration_ms: number | null
 }[] {
+  const families = MODEL_FAMILIES.filter((family) =>
+    visiblePlatforms(byModel, vms).has(family.platform)
+  )
   const bag: Record<
     string,
     {
@@ -70,7 +115,7 @@ function opsModelFamilyRows(byModel: OpsModelRow[]): {
       durN: number
     }
   > = Object.fromEntries(
-    MODEL_FAMILIES.map((f) => [
+    families.map((f) => [
       f.id,
       { requests: 0, errors: 0, ttftSum: 0, ttftN: 0, durSum: 0, durN: 0 },
     ])
@@ -93,7 +138,7 @@ function opsModelFamilyRows(byModel: OpsModelRow[]): {
       b.durN += samples
     }
   }
-  return MODEL_FAMILIES.map((f) => {
+  return families.map((f) => {
     const b = bag[f.id]
     return {
       model: f.label,
@@ -109,16 +154,18 @@ function opsModelFamilyRows(byModel: OpsModelRow[]): {
 export function TrafficOps({
   ops,
   showModels = false,
+  vms,
 }: {
   ops: OpsWindow | undefined
   showModels?: boolean
+  vms?: Vm[]
 }) {
   const o = ops && !ops.error ? ops : {}
   const sla = o.sla != null ? o.sla * 100 : null
   const err = o.error_rate != null ? o.error_rate * 100 : null
   const ttft = o.ttft || {}
   const dur = o.duration || {}
-  const models = showModels ? opsModelFamilyRows(o.by_model || []) : []
+  const models = showModels ? opsModelFamilyRows(o.by_model || [], vms) : []
   const streamPct = o.requests
     ? (((o.stream_requests || 0) / o.requests) * 100).toFixed(0)
     : null

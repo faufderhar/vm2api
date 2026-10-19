@@ -30,6 +30,7 @@ import {
 } from '../vm/slot-engine.mjs'
 import { probeAccount } from '../oauth/usage-probe.mjs'
 import { queryOpenaiQuota, resetOpenaiQuota } from '../oauth/openai-quota.mjs'
+import { queryGrokBuildUsage } from '../oauth/grok-build-usage.mjs'
 import { queryClaudeResetCredits, redeemClaudeResetCredit } from '../oauth/claude-reset-credits.mjs'
 import { canOfficialUsage, credentialModeOfVm, isSetupTokenMode } from '../oauth/credential-mode.mjs'
 import { getUsageCache } from '../oauth/usage-cache.mjs'
@@ -68,6 +69,7 @@ import {
 } from '../oauth/crs-usage-probe.mjs'
 import { proxyHasVm } from '../vm/proxy-pool.mjs'
 import { isLocalEgressId, isLocalEgressProxy } from '../vm/egress.mjs'
+import { isGrokVm } from '../vm/vm-kind.mjs'
 import { canRevealClusterNodes, localProxyNodeFields, nodeNameOf } from '../vm/local-proxy-nodes.mjs'
 import { collectLivePanelCredentials } from './panel-live-credentials.mjs'
 import { officialCcHome, readOfficialCcStatus, normalizeOfficialCcConfig } from '../oauth/official-cc-bootstrap.mjs'
@@ -1075,6 +1077,22 @@ export async function buildProbeOne({
       credits: result.credits || null,
       windows: result.windows || [],
       probed_at: result.fetched_at || new Date().toISOString(),
+      ok: true,
+    })
+  }
+  if (isGrokVm(vm)) {
+    const result = await queryGrokBuildUsage({
+      projectRoot: cfg.paths.project,
+      vmId: id,
+      routing: routingConfig,
+      force: force === true,
+    })
+    if (!result.ok) return gptQuotaFail(result)
+    return ok({
+      vm_id: id,
+      source: 'grok-build',
+      usage: result.usage || null,
+      probed_at: result.usage?.probed_at || new Date().toISOString(),
       ok: true,
     })
   }

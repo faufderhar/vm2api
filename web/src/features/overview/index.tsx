@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 import { fmtNum, pct } from '@/lib/format'
 import { opsSince } from '@/lib/ops-window'
+import { grokWeeklyUsedPct, isClaudeVm, isGrokVm } from '@/lib/vm-kind'
 import {
   accountStatus,
   accountUsable,
@@ -119,8 +120,18 @@ export function OverviewPage() {
   const serverMuted = stats.data?.muted_error_classes
 
   const fableCool = vms.filter(
-    (v) => v.fable_cooldown_until && Number(v.fable_cooldown_until) > Date.now()
+    (v) =>
+      isClaudeVm(v) &&
+      v.fable_cooldown_until &&
+      Number(v.fable_cooldown_until) > Date.now()
   ).length
+  const hasWindowAccount = vms.some((vm) => vm.has_token && !isGrokVm(vm))
+  const grokSlots = vms.filter(isGrokVm)
+  const grokWithToken = grokSlots.filter((vm) => vm.has_token).length
+  const grokPeaks = grokSlots
+    .map((vm) => grokWeeklyUsedPct(vm))
+    .filter((value): value is number => value != null)
+  const grokPeak = grokPeaks.length ? Math.max(...grokPeaks) : null
   const alerts: {
     t: string
     to: '/import' | '/cluster' | '/overview' | '/logs' | '/vm'
@@ -216,19 +227,45 @@ export function OverviewPage() {
               ringPct={vms.length ? (running / vms.length) * 100 : 0}
               tone='good'
             />
-            <KpiCard
-              icon={Gauge}
-              label='5h 峰值'
-              value={
-                <>
-                  {peak5.toFixed(0)}
-                  <small className='ml-1 text-[13px] font-medium text-muted-foreground'>
-                    %
-                  </small>
-                </>
-              }
-              ringPct={peak5}
-            />
+            {hasWindowAccount || grokSlots.length === 0 ? (
+              <KpiCard
+                icon={Gauge}
+                label='5h 峰值'
+                value={
+                  <>
+                    {peak5.toFixed(0)}
+                    <small className='ml-1 text-[13px] font-medium text-muted-foreground'>
+                      %
+                    </small>
+                  </>
+                }
+                ringPct={peak5}
+              />
+            ) : (
+              <KpiCard
+                icon={Gauge}
+                label='Grok Build'
+                value={
+                  grokPeak == null ? (
+                    '—'
+                  ) : (
+                    <>
+                      {grokPeak.toFixed(0)}
+                      <small className='ml-1 text-[13px] font-medium text-muted-foreground'>
+                        %
+                      </small>
+                    </>
+                  )
+                }
+                hint={
+                  grokPeak == null
+                    ? '尚未从 Grok Build 同步周额度'
+                    : `周额度已用峰值 · ${grokWithToken} 个账号`
+                }
+                ringPct={grokPeak ?? 0}
+                tone='good'
+              />
+            )}
             <KpiCard
               icon={Activity}
               label={`请求 · 缓存 ${cachePct == null ? '—' : `${cachePct.toFixed(0)}%`}`}
@@ -239,7 +276,7 @@ export function OverviewPage() {
             />
           </div>
 
-          <TrafficOps ops={ops} showModels />
+          <TrafficOps ops={ops} showModels vms={vms} />
 
           <ErrorCollectionSummary
             collection={ops?.error_collection}

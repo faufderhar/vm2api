@@ -80,7 +80,8 @@ function rejectForeignSecret(text) {
 export function parseGrokCredentialInput(input, mode = 'json') {
   if (mode === 'access_token' || mode === 'refresh_token') {
     const text = str(typeof input === 'string' ? input : input?.[mode])
-    if (!text) throw fail('credential_required', mode === 'access_token' ? '请粘贴 access_token' : '请粘贴 refresh_token')
+    if (!text)
+      throw fail('credential_required', mode === 'access_token' ? '请粘贴 access_token' : '请粘贴 refresh_token')
     rejectForeignSecret(text)
     return mode === 'access_token'
       ? { access_token: text, refresh_token: '', id_token: '', expires_at: null }
@@ -172,6 +173,62 @@ export function persistGrokRateLimit(projectRoot, vmId, { until = null, reason =
   })
 }
 
+function finiteOrNull(value) {
+  const amount = Number(value)
+  return Number.isFinite(amount) ? amount : null
+}
+
+/** Panel fields for a Grok Build billing sample. Never includes a token. */
+export function publicGrokBuildUsage(bag = {}) {
+  const usage = bag.build_usage
+  if (!usage || typeof usage !== 'object') return null
+  return {
+    probed_at: typeof usage.probed_at === 'string' ? usage.probed_at : null,
+    ok: usage.ok !== false,
+    credit_usage_percent: finiteOrNull(usage.credit_usage_percent),
+    period_start: usage.period_start || null,
+    period_end: usage.period_end || null,
+    monthly_limit: finiteOrNull(usage.monthly_limit),
+    included_used: finiteOrNull(usage.included_used),
+    total_used: finiteOrNull(usage.total_used),
+    on_demand_cap: finiteOrNull(usage.on_demand_cap),
+    on_demand_used: finiteOrNull(usage.on_demand_used),
+    prepaid_balance: finiteOrNull(usage.prepaid_balance),
+    on_demand_enabled: usage.on_demand_enabled === true ? true : usage.on_demand_enabled === false ? false : null,
+    subscription_tier: str(usage.subscription_tier) || null,
+    error: str(usage.error) || null,
+    message: str(usage.message) || null,
+  }
+}
+
+const BUILD_USAGE_KEEP = [
+  'credit_usage_percent',
+  'period_start',
+  'period_end',
+  'monthly_limit',
+  'included_used',
+  'total_used',
+  'on_demand_cap',
+  'on_demand_used',
+  'prepaid_balance',
+  'on_demand_enabled',
+  'subscription_tier',
+]
+
+/** Store a Grok Build billing sample. A failed hop keeps the last good numbers. */
+export function persistGrokBuildUsage(projectRoot, vmId, usage = {}) {
+  return patchGrokBag(projectRoot, vmId, (bag) => {
+    const previous = bag.build_usage && typeof bag.build_usage === 'object' ? bag.build_usage : {}
+    const next = { ...previous, ...usage }
+    if (usage.ok === false) {
+      for (const key of BUILD_USAGE_KEEP) {
+        if (previous[key] != null) next[key] = previous[key]
+      }
+    }
+    return { ...bag, build_usage: next }
+  })
+}
+
 export function summarizeGrokSlot(projectRoot, vm = {}, now = Date.now()) {
   const account = projectRoot && vm?.id ? readGrokAccount(projectRoot, vm.id) : null
   const bag = vm.grok && typeof vm.grok === 'object' ? vm.grok : {}
@@ -191,5 +248,6 @@ export function summarizeGrokSlot(projectRoot, vm = {}, now = Date.now()) {
     limited_until: limitedUntil,
     limited_reason: limitedUntil ? bag.limited_reason || null : null,
     last_refresh_at: bag.last_refresh_at || null,
+    build_usage: publicGrokBuildUsage(bag),
   }
 }
