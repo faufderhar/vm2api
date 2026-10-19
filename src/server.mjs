@@ -878,6 +878,7 @@ const { handleProtocol, handleSearch } = createHandleProtocol({
   get failoverRunner() {
     return failoverRunner
   },
+  getAttemptsRepo: () => attemptsRepo,
   getPoolScheduler: () => poolScheduler,
   get poolScheduler() {
     return poolScheduler
