@@ -75,6 +75,8 @@ export function getPanelAdmin() {
 }
 
 const SESSION_TTL_MS = 7 * 24 * 3600 * 1000
+/** Sliding renewal cannot extend a stolen token forever. */
+const SESSION_ABSOLUTE_MS = 30 * 24 * 3600 * 1000
 const panelSessions = new Map() // sha256(token) -> { user, role, exp }
 let _authenticateUser = null
 let _lookupRole = null
@@ -116,8 +118,12 @@ function loadSessions() {
     const now = Date.now()
     for (const [storedKey, s] of Object.entries(raw || {})) {
       if (s && s.exp > now) {
+        const storedAbs = Number(s.abs)
+        // Sessions written before the cap existed stop at their current exp.
+        const abs = Number.isFinite(storedAbs) && storedAbs > 0 ? storedAbs : s.exp
+        if (abs <= now) continue
         const key = storedKey.startsWith('kin-panel-') ? panelSessionKey(storedKey) : storedKey
-        panelSessions.set(key, { user: s.user, role: s.role || null, exp: s.exp })
+        panelSessions.set(key, { user: s.user, role: s.role || null, exp: s.exp, abs })
       }
     }
   } catch (err) {
@@ -149,13 +155,21 @@ export function createPanelSession(username, ttlMs = SESSION_TTL_MS, extra = {})
   }
   const token = 'kin-panel-' + crypto.randomBytes(24).toString('hex')
   const role = extra.role || (_lookupRole && _lookupRole(username)) || 'admin'
+  const now = Date.now()
   panelSessions.set(panelSessionKey(token), {
     user: username,
     role,
-    exp: Date.now() + ttlMs,
+    exp: now + ttlMs,
+    abs: now + SESSION_ABSOLUTE_MS,
   })
   saveSessions()
   return token
+}
+
+function absoluteExpiry(session) {
+  const abs = Number(session?.abs)
+  if (Number.isFinite(abs) && abs > 0) return abs
+  return Number(session?.exp) || 0
 }
 
 export function verifyPanelSession(token) {
@@ -168,7 +182,8 @@ export function verifyPanelSession(token) {
     s = panelSessions.get(key)
   }
   if (!s) return null
-  if (Date.now() > s.exp) {
+  const now = Date.now()
+  if (now > s.exp || now > absoluteExpiry(s)) {
     panelSessions.delete(key)
     saveSessions()
     return null
@@ -180,11 +195,15 @@ export function verifyPanelSession(token) {
     const admin = getPanelAdmin()
     s.role = admin.username && s.user === admin.username ? 'admin' : 'user'
   }
-  const now = Date.now()
   const remaining = s.exp - now
   if (remaining > 0 && remaining < SESSION_TTL_MS / 2) {
-    s.exp = now + SESSION_TTL_MS
-    saveSessions()
+    const cap = absoluteExpiry(s)
+    const nextExp = Math.min(now + SESSION_TTL_MS, cap)
+    if (nextExp > s.exp) {
+      s.exp = nextExp
+      s.abs = cap
+      saveSessions()
+    }
   }
   return s
 }

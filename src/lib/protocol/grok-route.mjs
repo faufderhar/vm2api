@@ -79,6 +79,27 @@ function isLoopbackHttp(value) {
   }
 }
 
+function isLoopbackHost(hostname) {
+  const host = String(hostname || '').toLowerCase()
+  return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1'
+}
+
+/**
+ * Operator token and authorize URLs. Discovery results stay on https x.ai.
+ * Loopback is allowed so a local mock IdP can run without sending tokens to the internet.
+ */
+export function isGrokOauthEndpoint(value) {
+  try {
+    const url = new URL(String(value || ''))
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return false
+    if (isLoopbackHost(url.hostname)) return true
+    const host = url.hostname.toLowerCase()
+    return url.protocol === 'https:' && (host === 'x.ai' || host.endsWith('.x.ai'))
+  } catch {
+    return false
+  }
+}
+
 function normalizeExtraParams(raw) {
   const src = asObject(raw) || {}
   const out = {}
@@ -146,7 +167,9 @@ export function validateGrokRoutingPatch(body = {}) {
     if (!asObject(oauth)) throw typedError('grok.oauth 必须是对象', 'invalid_grok_oauth')
     for (const key of ['authorize_url', 'token_url']) {
       const value = str(oauth[key])
-      if (value && !isHttpsUrl(value)) throw typedError(`grok.oauth.${key} 必须是 https 地址`, 'invalid_grok_oauth')
+      if (value && !isGrokOauthEndpoint(value)) {
+        throw typedError(`grok.oauth.${key} 必须是 https://*.x.ai 或本机回环地址`, 'invalid_grok_oauth')
+      }
     }
     const redirect = str(oauth.redirect_uri)
     if (redirect && !isHttpsUrl(redirect) && !isLoopbackHttp(redirect)) {
@@ -182,13 +205,13 @@ export function grokRoutingOf(routing = {}) {
 /**
  * Official client plus any operator overrides.
  * An empty token_url means "discover it"; that is not a configuration error.
- * !ok only when an override is present but not https (redirect may be loopback).
+ * An override is invalid unless it is https on x.ai (or a loopback mock). Redirect may be any https or loopback URL.
  */
 export function grokOauthConfig(routing = {}) {
   const oauth = grokRoutingOf(routing).oauth
   const invalid = []
-  if (oauth.authorize_url && !isHttpsUrl(oauth.authorize_url)) invalid.push('authorize_url')
-  if (oauth.token_url && !isHttpsUrl(oauth.token_url)) invalid.push('token_url')
+  if (oauth.authorize_url && !isGrokOauthEndpoint(oauth.authorize_url)) invalid.push('authorize_url')
+  if (oauth.token_url && !isGrokOauthEndpoint(oauth.token_url)) invalid.push('token_url')
   if (oauth.redirect_uri && !isHttpsUrl(oauth.redirect_uri) && !isLoopbackHttp(oauth.redirect_uri)) {
     invalid.push('redirect_uri')
   }

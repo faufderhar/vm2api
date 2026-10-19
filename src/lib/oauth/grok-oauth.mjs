@@ -7,11 +7,15 @@
  * null means the slot has no exit.
  */
 import crypto from 'node:crypto'
+import fs from 'node:fs'
+import path from 'node:path'
 import {
   GROK_OAUTH_DEVICE_GRANT,
   GROK_OAUTH_DISCOVERY_URL,
   grokOauthConfig,
+  isGrokOauthEndpoint,
 } from '../protocol/grok-route.mjs'
+import { atomicWriteJson } from '../vm/vm-file.mjs'
 
 export const GROK_OAUTH_SESSION_TTL_MS = 10 * 60 * 1000
 const DISCOVERY_TTL_MS = 10 * 60 * 1000
@@ -21,6 +25,8 @@ const DEVICE_POLL_CAP_SEC = 30 * 60
 const sessions = new Map()
 const deviceSessions = new Map()
 let discoveryCache = null
+const DEVICE_LOCK_STALE_MS = 15_000
+const DEVICE_LOCK_WAIT_MS = 5_000
 
 function b64url(buf) {
   return Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
@@ -40,6 +46,130 @@ function sweepExpired(now = Date.now()) {
   for (const [id, session] of deviceSessions) {
     if (now > session.expiresAt) deviceSessions.delete(id)
   }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function deviceSessionPath(projectRoot) {
+  return path.join(projectRoot, 'data', 'run', 'grok-device-sessions.json')
+}
+
+function readDeviceFile(projectRoot) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(deviceSessionPath(projectRoot), 'utf8'))
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    return parsed
+  } catch {
+    return {}
+  }
+}
+
+async function withDeviceFileLock(projectRoot, fn) {
+  const file = `${deviceSessionPath(projectRoot)}.lock`
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  const deadline = Date.now() + DEVICE_LOCK_WAIT_MS
+  for (;;) {
+    try {
+      fs.writeFileSync(file, String(process.pid), { flag: 'wx', mode: 0o600 })
+      break
+    } catch (err) {
+      if (err?.code !== 'EEXIST') throw err
+      let age = 0
+      try {
+        age = Date.now() - fs.statSync(file).mtimeMs
+      } catch {
+        continue
+      }
+      if (age > DEVICE_LOCK_STALE_MS) {
+        fs.rmSync(file, { force: true })
+        continue
+      }
+      if (Date.now() > deadline) {
+        const busy = new Error('grok device session lock busy')
+        busy.code = 'grok_device_session_busy'
+        throw busy
+      }
+      await sleep(50)
+    }
+  }
+  try {
+    return await fn()
+  } finally {
+    fs.rmSync(file, { force: true })
+  }
+}
+
+function storedDeviceSession(session) {
+  return {
+    deviceCode: session.deviceCode,
+    tokenUrl: session.tokenUrl,
+    clientId: session.clientId,
+    proxyUrl: session.proxyUrl,
+    vmId: session.vmId,
+    interval: session.interval,
+    createdAt: session.createdAt,
+    expiresAt: session.expiresAt,
+  }
+}
+
+function hydrateDeviceSession(row) {
+  if (!row || typeof row !== 'object') return null
+  const expiresAt = Number(row.expiresAt)
+  if (!Number.isFinite(expiresAt) || Date.now() > expiresAt) return null
+  if (!isGrokOauthEndpoint(row.tokenUrl) || !row.deviceCode || !row.vmId) return null
+  return {
+    deviceCode: String(row.deviceCode),
+    tokenUrl: String(row.tokenUrl),
+    clientId: String(row.clientId || ''),
+    proxyUrl: row.proxyUrl ? String(row.proxyUrl) : '',
+    vmId: String(row.vmId),
+    interval: Number(row.interval) || DEVICE_POLL_FLOOR_SEC,
+    createdAt: Number(row.createdAt) || Date.now(),
+    expiresAt,
+  }
+}
+
+/** Device codes survive a restart. Without projectRoot the session stays in this process only. */
+async function rememberDeviceSession(projectRoot, sessionId, session) {
+  deviceSessions.set(sessionId, session)
+  if (!projectRoot) return
+  await withDeviceFileLock(projectRoot, async () => {
+    const all = readDeviceFile(projectRoot)
+    const now = Date.now()
+    for (const [id, row] of Object.entries(all)) {
+      if (!row || !(Number(row.expiresAt) > now)) delete all[id]
+    }
+    all[sessionId] = storedDeviceSession(session)
+    atomicWriteJson(deviceSessionPath(projectRoot), all, { mode: 0o600 })
+  })
+}
+
+async function forgetDeviceSession(projectRoot, sessionId) {
+  deviceSessions.delete(sessionId)
+  if (!projectRoot) return
+  await withDeviceFileLock(projectRoot, async () => {
+    const all = readDeviceFile(projectRoot)
+    if (!Object.hasOwn(all, sessionId)) return
+    delete all[sessionId]
+    atomicWriteJson(deviceSessionPath(projectRoot), all, { mode: 0o600 })
+  })
+}
+
+async function loadDeviceSession(projectRoot, sessionId) {
+  sweepExpired()
+  const cached = deviceSessions.get(sessionId)
+  if (cached) return cached
+  if (!projectRoot || !sessionId) return null
+  const raw = readDeviceFile(projectRoot)[sessionId]
+  const session = hydrateDeviceSession(raw)
+  if (!session) {
+    if (raw) await forgetDeviceSession(projectRoot, sessionId)
+    return null
+  }
+  deviceSessions.set(sessionId, session)
+  return session
 }
 
 function requireConfig(routing) {
@@ -209,7 +339,14 @@ export function generateGrokAuthUrl({ routing, vmId, proxyUrl } = {}) {
 /**
  * Start a device-code login. The device_code stays on the server; the panel only gets the user code.
  */
-export async function startGrokDeviceLogin({ routing, vmId, proxyUrl, fetchImpl, timeoutMs } = {}) {
+export async function startGrokDeviceLogin({
+  routing,
+  vmId,
+  proxyUrl,
+  fetchImpl,
+  timeoutMs,
+  projectRoot,
+} = {}) {
   sweepExpired()
   if (!vmId) throw fail('vm_required', 'vm_id required (先创建虚拟机)')
   if (egressMissing(proxyUrl, fetchImpl)) {
@@ -248,7 +385,7 @@ export async function startGrokDeviceLogin({ routing, vmId, proxyUrl, fetchImpl,
   )
   const createdAt = Date.now()
   const sessionId = crypto.randomBytes(16).toString('hex')
-  deviceSessions.set(sessionId, {
+  await rememberDeviceSession(projectRoot, sessionId, {
     deviceCode,
     tokenUrl: config.token_url || discovered.token_endpoint,
     clientId: config.client_id,
@@ -273,11 +410,22 @@ export async function startGrokDeviceLogin({ routing, vmId, proxyUrl, fetchImpl,
 }
 
 /** One device-code poll. Pending is not an error; the panel calls this again. */
-export async function pollGrokDeviceLogin({ sessionId, vmId, proxyUrl, fetchImpl, timeoutMs } = {}) {
+export async function pollGrokDeviceLogin({
+  sessionId,
+  vmId,
+  proxyUrl,
+  fetchImpl,
+  timeoutMs,
+  projectRoot,
+} = {}) {
   sweepExpired()
-  const session = deviceSessions.get(sessionId)
+  const session = await loadDeviceSession(projectRoot, sessionId)
   if (!session) return { ok: false, error: 'session_expired', status: 'expired' }
   if (vmId && session.vmId !== String(vmId)) return { ok: false, error: 'session_vm_mismatch', status: 'failed' }
+  if (!isGrokOauthEndpoint(session.tokenUrl)) {
+    await forgetDeviceSession(projectRoot, sessionId)
+    return { ok: false, error: 'grok_oauth_not_configured', status: 'failed' }
+  }
   const px = proxyUrl ?? session.proxyUrl
   if (egressMissing(px, fetchImpl)) return { ok: false, error: 'proxy_required', status: 'failed' }
   const res = await postToken({
@@ -298,18 +446,19 @@ export async function pollGrokDeviceLogin({ sessionId, vmId, proxyUrl, fetchImpl
   }
   if (oauthError === 'slow_down') {
     session.interval += DEVICE_POLL_FLOOR_SEC
+    await rememberDeviceSession(projectRoot, sessionId, session)
     return { ok: false, error: 'slow_down', status: 'pending', interval_sec: session.interval }
   }
   if (oauthError === 'expired_token') {
-    deviceSessions.delete(sessionId)
+    await forgetDeviceSession(projectRoot, sessionId)
     return { ok: false, error: 'expired', status: 'expired' }
   }
   if (oauthError === 'access_denied') {
-    deviceSessions.delete(sessionId)
+    await forgetDeviceSession(projectRoot, sessionId)
     return { ok: false, error: 'access_denied', status: 'denied' }
   }
   if (oauthError) {
-    deviceSessions.delete(sessionId)
+    await forgetDeviceSession(projectRoot, sessionId)
     return { ok: false, error: oauthError, status: 'failed', upstream_status: res.status }
   }
   if ((res.status || 0) >= 400) {
@@ -317,11 +466,14 @@ export async function pollGrokDeviceLogin({ sessionId, vmId, proxyUrl, fetchImpl
   }
   const tok = tokenResult(res.payload)
   if (!tok.access_token) return { ok: false, error: 'exchange_empty', status: 'failed' }
-  deviceSessions.delete(sessionId)
+  await forgetDeviceSession(projectRoot, sessionId)
   return { ok: true, status: 'authorized', ...tok, flavor: 'grok', source: 'grok-device' }
 }
 
 async function postToken({ tokenUrl, form, proxyUrl, fetchImpl, timeoutMs }) {
+  if (!isGrokOauthEndpoint(tokenUrl)) {
+    return { status: 0, payload: null, error: 'grok_oauth_not_configured' }
+  }
   const fetchFn = fetchImpl || (await fetchWithProxy(proxyUrl, timeoutMs))
   try {
     const res = await fetchFn(tokenUrl, {

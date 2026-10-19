@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 const PANEL_SESSION_TTL_MS = 7 * 24 * 3600 * 1000
+const PANEL_SESSION_ABSOLUTE_MS = 30 * 24 * 3600 * 1000
 
 test('panel admin has no hard-coded password fallback', async () => {
   const previous = process.env.KIN_ADMIN_PASSWORD
@@ -46,6 +47,9 @@ test('panel session persistence stores only token hashes', async () => {
     assert.doesNotMatch(stored, /kin-panel-/)
     assert.doesNotMatch(stored, new RegExp(token))
     assert.equal(fs.statSync(file).mode & 0o777, 0o600)
+    const storedRow = Object.values(JSON.parse(stored))[0]
+    assert.ok(storedRow.abs >= Date.now() + PANEL_SESSION_ABSOLUTE_MS - 5_000)
+    assert.ok(storedRow.abs <= Date.now() + PANEL_SESSION_ABSOLUTE_MS + 1_000)
     assert.deepEqual(
       fs.readdirSync(dir).filter((name) => name.includes('.tmp')),
       [],
@@ -78,6 +82,56 @@ test('verifyPanelSession sliding-renews exp when remaining TTL is under half', a
     assert.ok(expBeforeVerify <= Date.now() + 61_000)
     assert.ok(expAfterVerify >= Date.now() + PANEL_SESSION_TTL_MS - 5_000)
     assert.ok(expAfterVerify <= Date.now() + PANEL_SESSION_TTL_MS + 1_000)
+  } finally {
+    if (previous == null) delete process.env.KIN_DATA_DIR
+    else process.env.KIN_DATA_DIR = previous
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('verifyPanelSession does not slide past the absolute cap', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-panel-security-'))
+  const previous = process.env.KIN_DATA_DIR
+  process.env.KIN_DATA_DIR = dir
+  try {
+    const security = await import(`../../src/lib/core/security.mjs?cap=${Date.now()}`)
+    const token = security.createPanelSession('admin', 60_000)
+    const file = path.join(dir, 'panel-sessions.json')
+    const before = JSON.parse(fs.readFileSync(file, 'utf8'))
+    const storedKey = Object.keys(before)[0]
+    const cap = Date.now() + 120_000
+    before[storedKey].exp = Date.now() + 1_000
+    before[storedKey].abs = cap
+    fs.writeFileSync(file, JSON.stringify(before))
+
+    const security2 = await import(`../../src/lib/core/security.mjs?cap2=${Date.now()}`)
+    assert.equal(security2.verifyPanelSession(token)?.user, 'admin')
+    const after = JSON.parse(fs.readFileSync(file, 'utf8'))
+    assert.equal(after[storedKey].exp, cap)
+    assert.equal(after[storedKey].abs, cap)
+  } finally {
+    if (previous == null) delete process.env.KIN_DATA_DIR
+    else process.env.KIN_DATA_DIR = previous
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('verifyPanelSession rejects a session past its absolute cap', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-panel-security-'))
+  const previous = process.env.KIN_DATA_DIR
+  process.env.KIN_DATA_DIR = dir
+  try {
+    const security = await import(`../../src/lib/core/security.mjs?abs=${Date.now()}`)
+    const token = security.createPanelSession('admin')
+    const file = path.join(dir, 'panel-sessions.json')
+    const before = JSON.parse(fs.readFileSync(file, 'utf8'))
+    const storedKey = Object.keys(before)[0]
+    before[storedKey].exp = Date.now() + 60_000
+    before[storedKey].abs = Date.now() - 1_000
+    fs.writeFileSync(file, JSON.stringify(before))
+
+    const security2 = await import(`../../src/lib/core/security.mjs?abs2=${Date.now()}`)
+    assert.equal(security2.verifyPanelSession(token), null)
   } finally {
     if (previous == null) delete process.env.KIN_DATA_DIR
     else process.env.KIN_DATA_DIR = previous

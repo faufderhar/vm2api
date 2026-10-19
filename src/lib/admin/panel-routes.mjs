@@ -4427,6 +4427,7 @@ export function createPanelHandler(ctx) {
               routing: ctx.routingConfig,
               vmId: id,
               proxyUrl: slotProxy.proxyUrl,
+              projectRoot: cfg.paths.project,
             })
             const px = existing.proxy || {}
             return json(res, 200, panel.ok({ ...generated, proxy_hint: slotProxyHint(px, proxyPool?.labelOf(px.id)) }))
@@ -4498,6 +4499,7 @@ export function createPanelHandler(ctx) {
           sessionId: body.session_id || body.sessionId,
           vmId: id,
           proxyUrl: slotProxy.proxyUrl,
+          projectRoot: cfg.paths.project,
         })
         if (polled.status === 'pending') {
           return json(

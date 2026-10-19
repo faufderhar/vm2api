@@ -31,8 +31,8 @@ import {
 import { ensureGrokAccessToken, resetGrokTokenInflight } from '../../src/lib/oauth/grok-token.mjs'
 
 const OAUTH = {
-  authorize_url: 'https://auth.example.test/authorize',
-  token_url: 'https://auth.example.test/token',
+  authorize_url: 'https://auth.x.ai/oauth2/authorize',
+  token_url: 'https://auth.x.ai/oauth2/token',
   client_id: 'client-1',
   redirect_uri: 'http://127.0.0.1:56121/callback',
   scope: 'openid offline_access',
@@ -75,6 +75,17 @@ test('routing defaults are disabled and fail closed without OAuth config', () =>
 test('routing rejects non-https endpoints and unsupported protocol modes', () => {
   assert.equal(grokOauthConfig({ grok: { oauth: { ...OAUTH, token_url: 'http://x.test/t' } } }).ok, false)
   assert.throws(() => validateGrokRoutingPatch({ grok: { oauth: { token_url: 'http://x.test/t' } } }), /https/)
+  assert.equal(
+    grokOauthConfig({ grok: { oauth: { token_url: 'https://auth.example.test/token' } } }).ok,
+    false,
+  )
+  assert.throws(
+    () => validateGrokRoutingPatch({ grok: { oauth: { authorize_url: 'https://evil.example/authorize' } } }),
+    /x\.ai/,
+  )
+  assert.doesNotThrow(() =>
+    validateGrokRoutingPatch({ grok: { oauth: { token_url: 'http://127.0.0.1:9/token' } } }),
+  )
   assert.throws(
     () => validateGrokRoutingPatch({ grok: { protocols: { 'openai.completions': { mode: 'native' } } } }),
     /reject/,
@@ -206,6 +217,59 @@ test('device login uses discovery and never returns the device code', async () =
   const grant = calls.find((call) => call.body?.get('grant_type') === 'urn:ietf:params:oauth:grant-type:device_code')
   assert.equal(grant.body.get('device_code'), 'secret-device')
   assert.equal(grant.url, 'https://auth.x.ai/oauth2/token')
+})
+
+test('device login reloads the device code after the in-memory map is cleared', async () => {
+  resetGrokAuthUrlSessions()
+  const root = tempProject()
+  try {
+    let polls = 0
+    const fetchImpl = async (url, init) => {
+      if (String(url).includes('openid-configuration')) {
+        return tokenResponse(200, {
+          device_authorization_endpoint: 'https://auth.x.ai/oauth2/device',
+          token_endpoint: 'https://auth.x.ai/oauth2/token',
+        })
+      }
+      const body = init?.body ? new URLSearchParams(init.body) : null
+      if (!body?.get('grant_type')) {
+        return tokenResponse(200, {
+          device_code: 'secret-device',
+          user_code: 'ABCD-EFGH',
+          verification_uri: 'https://auth.x.ai/device',
+          expires_in: 600,
+          interval: 5,
+        })
+      }
+      polls += 1
+      assert.equal(body.get('device_code'), 'secret-device')
+      return tokenResponse(200, { access_token: 'at-disk', refresh_token: 'rt-disk', expires_in: 60 })
+    }
+    const started = await startGrokDeviceLogin({
+      routing: {},
+      vmId: 'vm-g1',
+      fetchImpl,
+      projectRoot: root,
+    })
+    const file = path.join(root, 'data', 'run', 'grok-device-sessions.json')
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600)
+    assert.match(fs.readFileSync(file, 'utf8'), /secret-device/)
+    assert.equal(JSON.stringify(started).includes('secret-device'), false)
+    resetGrokAuthUrlSessions()
+    const done = await pollGrokDeviceLogin({
+      sessionId: started.session_id,
+      vmId: 'vm-g1',
+      fetchImpl,
+      projectRoot: root,
+    })
+    assert.equal(polls, 1)
+    assert.equal(done.ok, true)
+    assert.equal(done.access_token, 'at-disk')
+    assert.equal(fs.readFileSync(file, 'utf8').includes('secret-device'), false)
+    assert.equal(fs.existsSync(`${file}.lock`), false)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test('empty proxy url is the slot route, not an unbound SOCKS5', async () => {
