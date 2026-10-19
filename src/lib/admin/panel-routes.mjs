@@ -14,6 +14,8 @@ import {
   revokePanelSession,
   revokePanelSessionsForUser,
   getPanelAdmin,
+  createAttemptLimiter,
+  masterMayAdminister,
 } from '../core/security.mjs'
 import { loadDistillRules, saveDistillRules, validateDistillPatch } from '../core/distill-detect.mjs'
 import { applyRefusalGuardPatch, refusalGuardPolicy } from '../core/refusal-guard.mjs'
@@ -292,6 +294,8 @@ import {
   normalizeRange,
 } from '../db/repos/statistics-repo.mjs'
 
+const loginAttempts = createAttemptLimiter({ limit: 30, windowMs: 60_000 })
+
 /** Tenants always see their own rows; other roles may narrow by `user_id`. */
 function logsOwner(req, u) {
   return panelIdentity(req).role === 'user' ? req.panelUserId : u.searchParams.get('user_id') || null
@@ -466,7 +470,7 @@ async function commitImportedCodexVm({
     platform: 'openai',
     catalog: catalog && catalog.ok ? { synced: catalog.synced, ids: catalog.ids } : catalog,
   }
-  }
+}
 
 async function commitImportedGrokVm({ cfg, existing, account, routingConfig = {} }) {
   const wasGrok = isGrokVm(existing)
@@ -1342,9 +1346,12 @@ export function createPanelHandler(ctx) {
     // ========== Panel login (public) ==========
     if (req.method === 'POST' && p === '/api/panel/login') {
       const body = await readBody(req, 4096)
+      if (loginAttempts(req.socket?.remoteAddress || 'unknown')) {
+        return json(res, 429, { ok: false, error: { message: '登录太频繁，请稍后再试', type: 'rate_limit' } })
+      }
       const username = body.username || body.user || body.u || ''
       const password = body.password || body.pass || body.p || ''
-      const authed = verifyPanelLogin(username, password)
+      const authed = await verifyPanelLogin(username, password)
       if (!authed) {
         return json(res, 401, { ok: false, error: { message: '用户名或密码错误', type: 'auth' } })
       }
@@ -1378,8 +1385,8 @@ export function createPanelHandler(ctx) {
     if (p.startsWith('/api/panel')) {
       if (!requireAuth(req, res)) return
       // Managed client keys may only call protocol endpoints — never panel/admin.
-      // Only panel session or master KIN_API_KEY may administer.
-      const isPanelOperator = !!req.panelUser || req.apiKeyKind === 'master'
+      // A panel session always may. The master key may only from this machine.
+      const isPanelOperator = (!!req.panelUser && req.apiKeyKind !== 'master') || masterMayAdminister(req)
       if (!isPanelOperator) {
         return json(
           res,
@@ -1387,7 +1394,7 @@ export function createPanelHandler(ctx) {
           makeError({
             type: ErrorType.PERMISSION,
             code: 'forbidden',
-            message: 'Panel requires admin login or master API key',
+            message: 'Panel requires a panel login. The master API key only works from this machine.',
             status: 403,
           }).body,
         )

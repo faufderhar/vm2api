@@ -16,7 +16,7 @@ flowchart LR
 
 | 密钥 | 来源 | 能调 |
 |------|------|------|
-| Master `VM2API_API_KEY` | 环境变量 | `/v1/*` + `/api/panel/*` + `/admin/*` |
+| Master `VM2API_API_KEY` | 环境变量 | `/v1/*`；面板只接受来自本机的调用 |
 | `sk-vm-…` | 控制台签发 | **只** `/v1/*` |
 | 面板会话 | 面板登录 | **只** `/api/panel/*` |
 
@@ -41,7 +41,8 @@ x-api-key: sk-vm-…
 | `POST` | `/v1/responses` 或 `/responses` | OpenAI Responses | OpenAI Responses |
 | `GET` + Upgrade | `/v1/responses` 或 `/responses` | Responses WebSocket | JSON `response.*` 帧，不包 SSE |
 | `GET` | `/v1/models` | — | 本地模型策略目录 |
-| `GET` | `/health` · `/` · `/v1/meta` | 无鉴权 | 能力 / 限制 / 计数 |
+| `GET` | `/health` · `/` | 无鉴权 | 探活、能力、限制 |
+| `GET` | `/v1/meta` | 要密钥 | 能力 / 端点，不含邮箱 |
 
 上游 hop **永远** `stream: true`。客户端 `stream: true` 收 SSE；`stream: false` 或 `x-kin-delivery: verified` 由网关聚合成 JSON。
 
@@ -244,7 +245,7 @@ curl -sS http://127.0.0.1:8787/v1/usage -H "Authorization: Bearer $KEY"
 curl -sS http://127.0.0.1:8787/health
 ```
 
-无鉴权。含 `features`、`limitations`、`stats`。能力字面量：`passthrough`、`stream`、`verified-stream`、`protocol-convert`、`go-slot-worker`、`account-pool-failover`、`tools`、`client-workspace`、`count_tokens`、`account_usage`。
+无鉴权。含 `features`、`capabilities`、`limitations`，不含探测正文、计数和内核详情。能力字面量：`passthrough`、`stream`、`verified-stream`、`protocol-convert`、`go-slot-worker`、`account-pool-failover`、`tools`、`client-workspace`、`count_tokens`、`account_usage`。
 
 ## 错误
 

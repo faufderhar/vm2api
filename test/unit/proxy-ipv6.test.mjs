@@ -6,6 +6,7 @@ import { ProxyPool, parseSocks5Fields, parseSocks5Line } from '../../src/lib/vm/
 import { openDatabase, closeDatabase } from '../../src/lib/db/database.mjs'
 import { socksProxyUrl } from '../../src/lib/vm/socks-address.mjs'
 import { boundProxyUrl } from '../../src/lib/vm/egress.mjs'
+import { proxyBlockedReason } from '../../src/lib/vm/proxy-policy.mjs'
 import { resolveImportProxy } from '../../src/lib/vm/proxy-resolve.mjs'
 import { evaluateSlotGate } from '../../src/lib/pool/schedule-eligibility.mjs'
 import { isCodexSlotReady, pickCodexSlots } from '../../src/lib/pool/codex-slot-pool.mjs'
@@ -82,6 +83,13 @@ test('malformed historical IPv6 hosts cannot silently probe localhost', async (t
   const result = await pool.probeById(proxy.id)
   assert.equal(result.probe.error, 'invalid_proxy_host')
   assert.equal(connections, 0)
+})
+
+test('link-local and cloud metadata proxies are refused; loopback stays usable', () => {
+  assert.equal(proxyBlockedReason({ host: '169.254.169.254', port: 80 }, true), 'proxy_host_blocked')
+  assert.equal(proxyBlockedReason({ url: 'socks5://metadata.google.internal:80' }, true), 'proxy_host_blocked')
+  assert.equal(proxyBlockedReason({ host: 'fe80::1', port: 1080 }, true), 'proxy_host_blocked')
+  assert.equal(proxyBlockedReason({ host: '127.0.0.1', port: 1080 }, true), null)
 })
 
 test('IPv6 policy survives reload and preserves binding and health instead of reallocating', async (t) => {

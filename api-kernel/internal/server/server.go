@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -53,15 +54,20 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) authorize(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if token := strings.TrimSpace(s.Token); token != "" {
-			got := r.Header.Get("X-Kin-Internal-Token")
-			if subtle.ConstantTimeCompare([]byte(token), []byte(got)) != 1 {
-				kernelError(w, http.StatusUnauthorized, `{"ok":false,"error":{"code":"internal_auth_failed"}}`)
-				return
-			}
+		token := strings.TrimSpace(s.Token)
+		got := strings.TrimSpace(r.Header.Get("X-Kin-Internal-Token"))
+		if token == "" || !sameSecret(token, got) {
+			kernelError(w, http.StatusUnauthorized, `{"ok":false,"error":{"code":"internal_auth_failed"}}`)
+			return
 		}
 		next(w, r)
 	}
+}
+
+func sameSecret(left, right string) bool {
+	a := sha256.Sum256([]byte(left))
+	b := sha256.Sum256([]byte(right))
+	return subtle.ConstantTimeCompare(a[:], b[:]) == 1
 }
 
 func kernelError(w http.ResponseWriter, status int, body string) {

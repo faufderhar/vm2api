@@ -8,11 +8,20 @@ import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { startGateway, api } from '../harness.mjs'
+import { decryptString, isEncrypted } from '../../src/lib/db/secure.mjs'
 
 const MODEL = 'claude-haiku-4-5-20251001'
 
 function openDb(gw) {
   return new DatabaseSync(path.join(gw.project, 'data', 'kin.db'), { readOnly: true })
+}
+
+/** Boot writes data/db.secret, so vm_json is ciphertext unless an env secret overrides it. */
+function readVmJson(gw, row) {
+  assert.equal(row.encrypted, 1)
+  assert.equal(isEncrypted(row.vm_json), true)
+  const secret = fs.readFileSync(path.join(gw.project, 'data', 'db.secret'), 'utf8').trim()
+  return JSON.parse(decryptString(row.vm_json, secret))
 }
 
 test('data survives a full gateway restart on the same data dir', async () => {
@@ -77,7 +86,7 @@ test('vm credentials are mirrored into the vms table (入库)', async () => {
       assert.equal(row.access_token, null)
       assert.equal(row.refresh_token, null)
       assert.equal(row.email, 'seed@kin.test')
-      const vmJson = JSON.parse(row.vm_json)
+      const vmJson = readVmJson(gw, row)
       assert.equal(vmJson.claude.access_token, undefined)
       assert.equal(vmJson.claude.has_access, true)
       assert.equal(vmJson.claude.has_refresh, true)
@@ -94,10 +103,12 @@ test('vm credentials are mirrored into the vms table (入库)', async () => {
     assert.equal(imp.status, 200, imp.text)
     const db2 = openDb(gw)
     try {
-      const row = db2.prepare('SELECT access_token, session_key, vm_json FROM vms WHERE id = ?').get('vm-sim-01')
+      const row = db2
+        .prepare('SELECT access_token, session_key, vm_json, encrypted FROM vms WHERE id = ?')
+        .get('vm-sim-01')
       assert.equal(row.access_token, null)
       assert.equal(row.session_key, null)
-      const vmJson = JSON.parse(row.vm_json)
+      const vmJson = readVmJson(gw, row)
       assert.equal(vmJson.claude.session_key, undefined)
       assert.equal(vmJson.claude.has_access, true)
     } finally {

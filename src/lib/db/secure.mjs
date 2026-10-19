@@ -9,11 +9,28 @@
  */
 
 import crypto from 'node:crypto'
+import fs from 'node:fs'
+import path from 'node:path'
 
 const PREFIX = 'enc:v1:'
+let persistedSecret
 
 function dbSecret() {
-  return process.env.VM2API_DB_SECRET || process.env.KIN_DB_SECRET
+  return process.env.VM2API_DB_SECRET || process.env.KIN_DB_SECRET || readPersistedDbSecret()
+}
+
+/** data/db.secret is written at boot when no env secret was set. Env always wins. */
+function readPersistedDbSecret() {
+  if (persistedSecret) return persistedSecret
+  const dir = process.env.KIN_DATA_DIR || process.env.VM2API_DATA_DIR || ''
+  if (!dir) return ''
+  try {
+    const secret = fs.readFileSync(path.join(dir, 'db.secret'), 'utf8').trim()
+    if (secret) persistedSecret = secret
+    return secret
+  } catch {
+    return ''
+  }
 }
 
 export function encryptionEnabled() {

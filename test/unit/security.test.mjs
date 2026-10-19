@@ -24,13 +24,21 @@ test('panelCookieSecure follows PUBLIC_SCHEME then the request', async () => {
   const { panelCookieSecure, panelSessionCookie } = await import(`../../src/lib/core/security.mjs?cookie=${Date.now()}`)
   assert.equal(panelCookieSecure({}, { PUBLIC_SCHEME: 'http' }), false)
   assert.equal(panelCookieSecure({}, { PUBLIC_SCHEME: 'https' }), true)
-  assert.equal(panelCookieSecure({ headers: { 'x-forwarded-proto': 'http' } }, {}), false)
-  assert.equal(panelCookieSecure({ headers: { 'x-forwarded-proto': 'https' } }, {}), true)
+  assert.equal(panelCookieSecure({ headers: { 'x-forwarded-proto': 'https' } }, {}), false)
+  assert.equal(panelCookieSecure({ headers: { 'x-forwarded-proto': 'https' } }, { TRUST_PROXY: '1' }), true)
+  assert.equal(panelCookieSecure({ headers: { 'x-forwarded-proto': 'http' } }, { TRUST_PROXY: '1' }), false)
   assert.equal(panelCookieSecure({ headers: {}, socket: {} }, {}), false)
   const httpCookie = panelSessionCookie('kin-panel-test', { secure: false })
   assert.doesNotMatch(httpCookie, /Secure/)
   const httpsCookie = panelSessionCookie('kin-panel-test', { secure: true })
   assert.match(httpsCookie, /Secure/)
+})
+
+test('master API key administers the panel only from loopback', async () => {
+  const { masterMayAdminister } = await import(`../../src/lib/core/security.mjs?master=${Date.now()}`)
+  assert.equal(masterMayAdminister({ apiKeyKind: 'master', panelRole: 'admin' }), true)
+  assert.equal(masterMayAdminister({ apiKeyKind: 'master', socket: { remoteAddress: '127.0.0.1' } }), true)
+  assert.equal(masterMayAdminister({ apiKeyKind: 'master', socket: { remoteAddress: '203.0.113.8' } }), false)
 })
 
 test('panel session persistence stores only token hashes', async () => {

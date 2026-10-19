@@ -8,10 +8,15 @@ export function hashKey(key) {
 }
 
 export function timingSafeEqualStr(a, b) {
-  const ba = Buffer.from(String(a))
-  const bb = Buffer.from(String(b))
-  if (ba.length !== bb.length) return false
-  return crypto.timingSafeEqual(ba, bb)
+  const left = crypto
+    .createHash('sha256')
+    .update(String(a ?? ''), 'utf8')
+    .digest()
+  const right = crypto
+    .createHash('sha256')
+    .update(String(b ?? ''), 'utf8')
+    .digest()
+  return crypto.timingSafeEqual(left, right)
 }
 
 export function redactSecrets(obj) {
@@ -35,22 +40,62 @@ export function extractApiKey(req) {
 }
 
 /** Simple token bucket per key */
-export function createRateLimiter({ capacity = 60, refillPerSec = 1 } = {}) {
+export function createRateLimiter({ capacity = 60, refillPerSec = 1, maxKeys = 10000 } = {}) {
   const buckets = new Map()
   return function allow(key) {
     const now = Date.now()
-    let b = buckets.get(key)
-    if (!b) {
-      b = { tokens: capacity, updated: now }
-      buckets.set(key, b)
+    let bucket = buckets.get(key)
+    if (bucket) buckets.delete(key)
+    if (!bucket) {
+      while (buckets.size >= maxKeys) buckets.delete(buckets.keys().next().value)
+      bucket = { tokens: capacity, updated: now }
     }
-    const elapsed = (now - b.updated) / 1000
-    b.tokens = Math.min(capacity, b.tokens + elapsed * refillPerSec)
-    b.updated = now
-    if (b.tokens < 1) return false
-    b.tokens -= 1
+    buckets.set(key, bucket)
+    const elapsed = (now - bucket.updated) / 1000
+    bucket.tokens = Math.min(capacity, bucket.tokens + elapsed * refillPerSec)
+    bucket.updated = now
+    if (bucket.tokens < 1) return false
+    bucket.tokens -= 1
     return true
   }
+}
+
+/** Fixed window counter. Used for login, which sits in front of the API-key limiter. */
+export function createAttemptLimiter({ limit = 30, windowMs = 60_000, maxKeys = 10000 } = {}) {
+  const buckets = new Map()
+  return function tooMany(key) {
+    const now = Date.now()
+    const id = String(key || 'unknown')
+    let bucket = buckets.get(id)
+    if (!bucket || now - bucket.started > windowMs) {
+      while (buckets.size >= maxKeys) buckets.delete(buckets.keys().next().value)
+      bucket = { started: now, count: 0 }
+      buckets.set(id, bucket)
+    }
+    bucket.count += 1
+    return bucket.count > limit
+  }
+}
+
+export function isLoopbackAddress(address) {
+  const raw = String(address || '')
+    .trim()
+    .toLowerCase()
+  return raw === '127.0.0.1' || raw === '::1' || raw === '::ffff:127.0.0.1'
+}
+
+export function isLoopbackRequest(req) {
+  return isLoopbackAddress(req?.socket?.remoteAddress)
+}
+
+/**
+ * The master API key may call panel routes only from this machine.
+ * In-process tests set panelRole and have no socket; a real HTTP request always has one.
+ */
+export function masterMayAdminister(req) {
+  if (req?.apiKeyKind !== 'master') return false
+  if (!req.socket) return !!req.panelRole
+  return isLoopbackRequest(req)
 }
 
 export const HOP_BY_HOP = new Set([
@@ -232,9 +277,9 @@ export function revokePanelSessionsForUser(username, { exceptToken } = {}) {
 /**
  * @returns {{ username: string, role: string, id?: string } | null}
  */
-export function verifyPanelLogin(username, password) {
+export async function verifyPanelLogin(username, password) {
   if (_authenticateUser) {
-    const rec = _authenticateUser(username, password)
+    const rec = await _authenticateUser(username, password)
     if (rec) return { username: rec.username, role: rec.role || 'user', id: rec.id }
     // Existing DB user (including disabled) must not fall through to env password.
     if (_lookupRole && _lookupRole(username)) return null
@@ -283,12 +328,16 @@ export function panelCookieSecure(req, env = process.env) {
     .toLowerCase()
   if (scheme === 'https') return true
   if (scheme === 'http') return false
-  const xf = String(req?.headers?.['x-forwarded-proto'] || '')
-    .split(',')[0]
-    .trim()
-    .toLowerCase()
-  if (xf === 'https') return true
-  if (xf === 'http') return false
+  // A client can send this header. Trust it only when an operator said a proxy sits in front.
+  const trustProxy = String(env.TRUST_PROXY || env.VM2API_TRUST_PROXY || '').trim() === '1'
+  if (trustProxy) {
+    const xf = String(req?.headers?.['x-forwarded-proto'] || '')
+      .split(',')[0]
+      .trim()
+      .toLowerCase()
+    if (xf === 'https') return true
+    if (xf === 'http') return false
+  }
   if (req?.socket?.encrypted) return true
   return false
 }

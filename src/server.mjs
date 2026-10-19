@@ -10,6 +10,7 @@
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
+import crypto from 'node:crypto'
 import { loadConfig, reloadActiveVm, routingConfigFile } from './lib/core/config.mjs'
 import {
   extractApiKey,
@@ -19,6 +20,7 @@ import {
   extractPanelToken,
   attachPanelAuth,
   getPanelAdmin,
+  isLoopbackRequest,
 } from './lib/core/security.mjs'
 import { loadModelPolicy } from './lib/protocol/model-policy.mjs'
 import { gatewayModelCatalog } from './lib/protocol/models.mjs'
@@ -137,6 +139,9 @@ const cfg = loadConfig()
 if (!getPanelAdmin().password) {
   throw new Error('VM2API_ADMIN_PASSWORD must be set; insecure default panel credentials are disabled')
 }
+if (getPanelAdmin().password === '123456') {
+  console.warn('[panel] VM2API_ADMIN_PASSWORD is still the public default 123456. Change it before exposing the panel.')
+}
 fs.mkdirSync(cfg.paths.captures, { recursive: true })
 
 const allowRate = createRateLimiter({
@@ -146,7 +151,27 @@ const allowRate = createRateLimiter({
 
 // --- Persistent store (SQLite, sub2api-inspired) ---
 const dataDir = cfg.paths.data || path.join(cfg.paths.root, 'data')
+ensureDbSecretFile(dataDir)
 openDatabase({ dataDir })
+
+function ensureDbSecretFile(dir) {
+  if (process.env.VM2API_DB_SECRET || process.env.KIN_DB_SECRET) return
+  const file = path.join(dir, 'db.secret')
+  try {
+    if (fs.readFileSync(file, 'utf8').trim()) return
+  } catch {
+    // Missing file: generate one below.
+  }
+  const secret = crypto.randomBytes(32).toString('hex')
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(file, `${secret}\n`, { mode: 0o600 })
+  try {
+    fs.chmodSync(file, 0o600)
+  } catch {
+    // mode on writeFile already asked for 0600.
+  }
+  console.warn('[db] wrote data/db.secret; credential columns are encrypted at rest')
+}
 try {
   loadModelPolicy()
 } catch (e) {
@@ -324,7 +349,7 @@ try {
   console.warn('[panel-users] bootstrap failed', e?.message || e)
 }
 attachPanelAuth({
-  authenticate: (username, password) => panelUsers.authenticate(username, password),
+  authenticate: (username, password) => panelUsers.authenticateAsync(username, password),
   lookupRole: (username) => panelUsers.getByUsername(username)?.role || null,
 })
 requestLog = new RequestLogStore({
@@ -775,8 +800,10 @@ function requireAuth(req, res) {
       )
     }
     req.apiKeyKind = 'master'
-    req.panelRole = 'admin'
-    req.panelUser = 'master'
+    if (isLoopbackRequest(req)) {
+      req.panelRole = 'admin'
+      req.panelUser = 'master'
+    }
     return true
   }
 
@@ -1096,23 +1123,15 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, {
         status: 'ok',
         service: 'vm2api',
-        base_url: cfg.base_url,
-        rewrite: cfg.rewrite.enabled ? 'on' : 'off',
-        intercept_rules: cfg.intercept.rules.length,
         active_vm: getActiveVmId(cfg.paths.project),
         features: FEATURES,
         capabilities: GATEWAY_CAPABILITIES,
         limitations: LIMITATIONS,
-        stats,
-        health_probe: healthMonitor?.getSnapshot?.() || null,
-        api_kernel: {
-          ...apiKernelSnapshot(cfg),
-          endpoints: apiEndpointStore.listRaw().filter((ep) => !ep.disabled).length,
-        },
       })
     }
 
     if (req.method === 'GET' && p === '/v1/meta') {
+      if (!requireAuth(req, res)) return
       return json(res, 200, {
         base_url: cfg.base_url,
         rewrite_default: cfg.rewrite.enabled,
@@ -1128,7 +1147,7 @@ const server = http.createServer(async (req, res) => {
           models: '/v1/models',
           intercept_rules: '/admin/intercept/rules',
         },
-        vm: { id: cfg.vm.id, email: cfg.vm.email },
+        vm: { id: cfg.vm.id },
       })
     }
 

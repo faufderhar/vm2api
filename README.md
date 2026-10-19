@@ -216,7 +216,7 @@ docker compose pull && docker compose up -d
 
 服务启动后，系统暴露统一服务端口（默认 `8787`）：
 
-- **可视化管理面板**：`http://<您的IP>:8787/console`（默认账号：`admin` / 密码：`123456` 或自定义环境变量）
+- **可视化管理面板**：`http://<您的IP>:8787/console`（账号 `admin`，密码在首次启动日志或 `.env` 的 `VM2API_ADMIN_PASSWORD`）
 - **服务健康探活**：`GET http://<您的IP>:8787/health`
 - **Anthropic 协议调用**：`POST http://<您的IP>:8787/v1/messages`
 - **OpenAI 兼容协议**：`POST http://<您的IP>:8787/v1/chat/completions`

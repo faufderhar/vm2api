@@ -48,6 +48,12 @@ function codexBody(text, extra = {}) {
   }
 }
 
+test('a nested quantifier is dropped instead of compiled', () => {
+  const saved = normalizeJevConfig({ patterns: ['(a+)+', '[a-z]++', String.raw`\w+\w+`, 'plain-word'] })
+  // (a+)+ and [a-z]++ can hang the event loop. \w+\w+ backtracks linearly, so it stays.
+  assert.deepEqual(saved.patterns, [String.raw`\w+\w+`, 'plain-word'])
+})
+
 test('decision URL and default model follow the selected backend', () => {
   assert.equal(decisionUrl('https://api.typesafe.ai'), 'https://api.typesafe.ai/v1/systemone')
   assert.equal(decisionUrl('http://127.0.0.1:8000/v1'), 'http://127.0.0.1:8000/v1/systemone')

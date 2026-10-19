@@ -380,6 +380,8 @@ export function builtinHardRules() {
 function cleanPattern(source) {
   const text = String(source || '').trim()
   if (!text || text.length > PATTERN_LEN) return ''
+  // (a+)+ and [a-z]++ can hang the event loop. Drop them like a syntax error.
+  if (/(?:\((?:[^()\\]|\\.)*[*+?](?:[^()\\]|\\.)*\)|\[[^\]]*\][*+?]?|\\[dDwWsS][*+?])[*+{]/.test(text)) return ''
   try {
     new RegExp(text, 'i')
   } catch {

@@ -18,6 +18,8 @@
 import { keyScopeFromRecord, normalizeKeyScope } from './key-scope.mjs'
 import { VmPoolsRepo } from '../db/repos/vm-pools-repo.mjs'
 import crypto from 'node:crypto'
+import fs from 'node:fs'
+import path from 'node:path'
 import { resolveStoreDb } from '../db/database.mjs'
 import { ApiKeysRepo } from '../db/repos/api-keys-repo.mjs'
 import { maybeEncrypt, maybeDecrypt } from '../db/secure.mjs'
@@ -26,6 +28,27 @@ import { UsersRepo } from '../db/repos/users-repo.mjs'
 
 const KEY_PREFIX = 'sk-vm-'
 const HASH_MARKER = 'hmac:'
+const LEGACY_HASH_PEPPER = 'kin-development-api-key-hash-secret'
+
+function persistedPepper(dataDir) {
+  if (!dataDir) return crypto.randomBytes(32).toString('hex')
+  const file = path.join(dataDir, 'api-key-pepper')
+  try {
+    const existing = fs.readFileSync(file, 'utf8').trim()
+    if (existing) return existing
+  } catch {
+    // First store in this data dir creates the pepper.
+  }
+  const pepper = crypto.randomBytes(32).toString('hex')
+  fs.mkdirSync(dataDir, { recursive: true })
+  fs.writeFileSync(file, `${pepper}\n`, { mode: 0o600 })
+  try {
+    fs.chmodSync(file, 0o600)
+  } catch {
+    // The write mode already asked for 0600.
+  }
+  return pepper
+}
 
 function clampInt(n, min, max, fallback) {
   const v = Number(n)
@@ -113,10 +136,15 @@ export function publicKeyView(rec, { reveal = false } = {}) {
 }
 
 function timingSafeEqualStr(a, b) {
-  const x = Buffer.from(String(a || ''))
-  const y = Buffer.from(String(b || ''))
-  if (x.length !== y.length) return false
-  return crypto.timingSafeEqual(x, y)
+  const left = crypto
+    .createHash('sha256')
+    .update(String(a ?? ''), 'utf8')
+    .digest()
+  const right = crypto
+    .createHash('sha256')
+    .update(String(b ?? ''), 'utf8')
+    .digest()
+  return crypto.timingSafeEqual(left, right)
 }
 
 export class ApiKeyStore {
@@ -131,7 +159,7 @@ export class ApiKeyStore {
         process.env.KIN_DB_SECRET ||
         process.env.VM2API_API_KEY ||
         process.env.KIN_API_KEY ||
-        'kin-development-api-key-hash-secret',
+        persistedPepper(dataDir),
     )
     this.inflight = new Map() // id → count
     this.rpmBuckets = new Map() // id → number[] timestamps ms
@@ -182,7 +210,16 @@ export class ApiKeyStore {
   authenticate(token) {
     if (!token) return { ok: false, reason: 'missing' }
     const hash = this._hash(token)
-    const indexed = this.repo.getByHash(hash)
+    let indexed = this.repo.getByHash(hash)
+    if (!indexed && this.hashSecret !== LEGACY_HASH_PEPPER) {
+      const legacy = this.repo.getByHash(this._hashWith(token, LEGACY_HASH_PEPPER))
+      if (legacy) {
+        if (!this._ownerActive(legacy)) return { ok: false, reason: 'user_disabled' }
+        legacy.key_hash = hash
+        if (String(legacy.key || '').startsWith(HASH_MARKER)) legacy.key = HASH_MARKER + hash
+        return { ok: true, record: this.repo.update(legacy) }
+      }
+    }
     if (indexed) {
       if (!this._ownerActive(indexed)) return { ok: false, reason: 'user_disabled' }
       return { ok: true, record: indexed }
@@ -525,8 +562,12 @@ export class ApiKeyStore {
   }
 
   _hash(token) {
+    return this._hashWith(token, this.hashSecret)
+  }
+
+  _hashWith(token, secret) {
     return crypto
-      .createHmac('sha256', this.hashSecret)
+      .createHmac('sha256', String(secret || ''))
       .update(String(token || ''))
       .digest('hex')
   }

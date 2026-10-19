@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -23,15 +24,20 @@ func main() {
 	if *socket == "" {
 		log.Fatal(" -socket is required")
 	}
-	if err := os.MkdirAll(filepath.Dir(*socket), 0o770); err != nil {
+	if strings.TrimSpace(*token) == "" {
+		log.Fatal(" -token is required")
+	}
+	socketDir := filepath.Dir(*socket)
+	if err := os.MkdirAll(socketDir, 0o700); err != nil {
 		log.Fatalf("socket dir: %v", err)
 	}
+	_ = os.Chmod(socketDir, 0o700)
 	_ = os.Remove(*socket)
 	ln, err := net.Listen("unix", *socket)
 	if err != nil {
 		log.Fatalf("listen: %v", err)
 	}
-	_ = os.Chmod(*socket, 0o660)
+	_ = os.Chmod(*socket, 0o600)
 
 	srv := &http.Server{
 		Handler:           (&server.Server{Token: *token, Pool: pool.NewManager()}).Handler(),

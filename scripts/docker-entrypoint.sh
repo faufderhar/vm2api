@@ -132,10 +132,23 @@ if [ -z "${VM2API_ADMIN_USER:-}" ]; then
   env_upsert_if_empty VM2API_ADMIN_USER admin "$ENVF"
 fi
 if [ -z "${VM2API_ADMIN_PASSWORD:-}" ]; then
-  VM2API_ADMIN_PASSWORD=123456
+  VM2API_ADMIN_PASSWORD="$(rand_hex)"
   export VM2API_ADMIN_PASSWORD
-  env_upsert_if_empty VM2API_ADMIN_PASSWORD 123456 "$ENVF"
-  echo "vm2api: VM2API_ADMIN_PASSWORD was empty; using default admin / 123456 (change after login)." >&2
+  env_upsert_if_empty VM2API_ADMIN_PASSWORD "$VM2API_ADMIN_PASSWORD" "$ENVF"
+  echo "vm2api: generated VM2API_ADMIN_PASSWORD for ${VM2API_ADMIN_USER:-admin}: ${VM2API_ADMIN_PASSWORD}" >&2
+  echo "vm2api: this password is printed once. Change it after login." >&2
+elif [ "${VM2API_ADMIN_PASSWORD}" = "123456" ]; then
+  VM2API_ADMIN_PASSWORD="$(rand_hex)"
+  export VM2API_ADMIN_PASSWORD
+  if [ -f "$ENVF" ]; then
+    if grep -qE '^VM2API_ADMIN_PASSWORD=' "$ENVF"; then
+      sed -i "s|^VM2API_ADMIN_PASSWORD=.*|VM2API_ADMIN_PASSWORD=${VM2API_ADMIN_PASSWORD}|" "$ENVF"
+    else
+      printf '%s=%s\n' VM2API_ADMIN_PASSWORD "$VM2API_ADMIN_PASSWORD" >>"$ENVF"
+    fi
+  fi
+  echo "vm2api: replaced public default password 123456 for ${VM2API_ADMIN_USER:-admin}: ${VM2API_ADMIN_PASSWORD}" >&2
+  echo "vm2api: this password is printed once. Change it after login." >&2
 fi
 if [ -z "${VM2API_API_KEY:-}" ] && [ -z "${KIN_API_KEY:-}" ]; then
   VM2API_API_KEY="$(rand_hex)"

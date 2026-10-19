@@ -50,6 +50,16 @@ func TestForwardCopiesUpstream(t *testing.T) {
 	}
 }
 
+func TestEmptyTokenIsRejected(t *testing.T) {
+	h := (&Server{Token: "", Pool: pool.NewManager()}).Handler()
+	req := httptest.NewRequest(http.MethodGet, "/internal/health", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status %d", rec.Code)
+	}
+}
+
 func forwardRequest(t *testing.T, ctx context.Context, base string, env forwardEnv) *http.Response {
 	t.Helper()
 	raw, _ := json.Marshal(env)

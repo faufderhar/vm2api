@@ -44,7 +44,7 @@ KVM 槽需要宿主 `/dev/kvm` 可读写（控制面在容器内时，用一次 
 curl -sSL https://raw.githubusercontent.com/dofastted/vm2api/main/deploy/install.sh | sudo bash
 ```
 
-脚本只下载 `docker-compose.yml` / `.env.example` / `VERSION`（不 clone 仓库），补全 `.env`（`chmod 600`），然后 `docker compose pull && up -d`。`.env` 缺失或 `VM2API_ADMIN_PASSWORD` 为空时写入默认管理台 **`admin` / `123456`**（已有密码不覆盖）。空的 `VM2API_API_KEY` / `VM2API_DB_SECRET` 会生成随机值。登录：`http://<ip>:8787/cc#/login`。以后：
+脚本只下载 `docker-compose.yml` / `.env.example` / `VERSION`（不 clone 仓库），补全 `.env`（`chmod 600`），然后 `docker compose pull && up -d`。`.env` 缺失、`VM2API_ADMIN_PASSWORD` 为空、或仍是旧的 `123456` 时，写入随机管理台密码（账号 `admin`，已有其他密码不覆盖）。空的 `VM2API_API_KEY` / `VM2API_DB_SECRET` 会生成随机值。登录：`http://<ip>:8787/cc#/login`。以后：
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/dofastted/vm2api/main/deploy/install.sh | sudo bash -s -- upgrade
@@ -65,7 +65,7 @@ mkdir -p /opt/vm2api && cd /opt/vm2api
 curl -sSLO https://raw.githubusercontent.com/dofastted/vm2api/main/docker-compose.yml
 curl -sSL -o .env https://raw.githubusercontent.com/dofastted/vm2api/main/.env.example
 chmod 600 .env
-# 空密码默认 admin / 123456；API key / DB secret 为空时入口会生成
+# 密码为空时入口生成随机值；API key / DB secret 为空时也会生成
 
 docker compose pull
 docker compose up -d
@@ -152,7 +152,7 @@ docker exec kin-<槽> curl -sS -o /dev/null -w '%{http_code}\n' --max-time 10 ht
 
 ## 上线后
 
-1. 打开 `/cc` 是欢迎页，右上角「登录」进入登录页 `/cc#/login`（未配置时为 `admin` / `123456`）。首次登录回到欢迎页，下方首配清单按真实状态列出改密码、出口、槽位账号、可调度、密钥、首个请求，每步可跳面板或文档；点「跳过引导」后再登录直接进总览，用户菜单「欢迎与引导」可重新打开。
+1. 打开 `/cc` 是欢迎页，右上角「登录」进入登录页 `/cc#/login`。账号是 `admin`，密码看安装输出或 `.env` 里的 `VM2API_ADMIN_PASSWORD`。首次登录回到欢迎页，下方首配清单按真实状态列出改密码、出口、槽位账号、可调度、密钥、首个请求，每步可跳面板或文档；点「跳过引导」后再登录直接进总览，用户菜单「欢迎与引导」可重新打开。
 2. 代理池：添加本地出口，或导入 SOCKS5。
 3. 建槽、绑出口、启动。没出口会停在 `stopped`。
 4. 在槽里导入凭证，再用 `sk-vm-…` 或 master key 打 `POST /v1/messages`。
@@ -224,7 +224,7 @@ docker compose up -d --build
 
 **2. 管理台「Missing credentials」/「鉴权失效，请重新登录」**
 
-打开登录页 `http://<ip>:8787/cc#/login`。未配置时账密是 `admin` / `123456`。已有密码：`grep '^VM2API_ADMIN_PASSWORD=' /opt/vm2api/.env`。
+打开登录页 `http://<ip>:8787/cc#/login`。密码：`grep '^VM2API_ADMIN_PASSWORD=' /opt/vm2api/.env`。
 
 ```bash
 # 安装

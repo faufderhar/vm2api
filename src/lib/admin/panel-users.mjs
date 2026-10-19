@@ -50,22 +50,44 @@ export function hashPassword(password) {
   return `scrypt$${SCRYPT_N}$${SCRYPT_R}$${SCRYPT_P}$${salt.toString('hex')}$${hash.toString('hex')}`
 }
 
-export function verifyPassword(password, stored) {
+function scryptParts(stored) {
   const parts = String(stored || '').split('$')
-  if (parts[0] !== 'scrypt' || parts.length !== 6) return false
+  if (parts[0] !== 'scrypt' || parts.length !== 6) return null
   const N = Number(parts[1])
   const r = Number(parts[2])
   const p = Number(parts[3])
-  if (!Number.isFinite(N) || !Number.isFinite(r) || !Number.isFinite(p)) return false
+  // Reject other costs. A rewritten hash must not be able to pin the event loop.
+  if (N !== SCRYPT_N || r !== SCRYPT_R || p !== SCRYPT_P) return null
+  const salt = Buffer.from(parts[4], 'hex')
+  const expected = Buffer.from(parts[5], 'hex')
+  if (!salt.length || expected.length !== KEYLEN) return null
+  return { N, r, p, salt, expected }
+}
+
+export function verifyPassword(password, stored) {
+  const parsed = scryptParts(stored)
+  if (!parsed) return false
   try {
-    const salt = Buffer.from(parts[4], 'hex')
-    const expected = Buffer.from(parts[5], 'hex')
-    if (!salt.length || !expected.length) return false
-    const actual = crypto.scryptSync(String(password), salt, expected.length, { N, r, p })
-    return actual.length === expected.length && crypto.timingSafeEqual(actual, expected)
+    const actual = crypto.scryptSync(String(password), parsed.salt, KEYLEN, {
+      N: parsed.N,
+      r: parsed.r,
+      p: parsed.p,
+    })
+    return crypto.timingSafeEqual(actual, parsed.expected)
   } catch {
     return false
   }
+}
+
+export function verifyPasswordAsync(password, stored) {
+  const parsed = scryptParts(stored)
+  if (!parsed) return Promise.resolve(false)
+  return new Promise((resolve) => {
+    crypto.scrypt(String(password), parsed.salt, KEYLEN, { N: parsed.N, r: parsed.r, p: parsed.p }, (err, actual) => {
+      if (err || !actual) return resolve(false)
+      resolve(crypto.timingSafeEqual(actual, parsed.expected))
+    })
+  })
 }
 
 function assertUsername(username) {
@@ -170,6 +192,15 @@ export class PanelUserStore {
     const rec = this.repo.getByUsername(username)
     if (!rec || rec.enabled === false) return null
     if (!verifyPassword(password, rec.password_hash)) return null
+    const next = { ...rec, last_login_at: nowIso(), updated_at: rec.updated_at }
+    this.repo.update(next)
+    return publicUserView(next)
+  }
+
+  async authenticateAsync(username, password) {
+    const rec = this.repo.getByUsername(username)
+    if (!rec || rec.enabled === false) return null
+    if (!(await verifyPasswordAsync(password, rec.password_hash))) return null
     const next = { ...rec, last_login_at: nowIso(), updated_at: rec.updated_at }
     this.repo.update(next)
     return publicUserView(next)
