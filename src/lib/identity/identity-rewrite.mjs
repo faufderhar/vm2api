@@ -102,6 +102,23 @@ export function isSystemReminderOnly(text) {
   return t !== '' && t.replace(SYSTEM_REMINDER_BLOCK_RE, '').trim() === ''
 }
 
+/** Text of one message part. Responses items use `input_text` / `output_text`, not only `text`. */
+export function messagePartText(part) {
+  if (typeof part === 'string') return part
+  if (!part || typeof part !== 'object') return ''
+  const type = String(part.type || '')
+  if (type !== 'text' && type !== 'input_text' && type !== 'output_text') return ''
+  return typeof part.text === 'string' ? part.text : ''
+}
+
+/** Drop client reminder blocks so a date or cwd injection does not look like a new conversation. */
+export function stripSystemReminders(text) {
+  return String(text || '')
+    .replace(SYSTEM_REMINDER_BLOCK_RE, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 /**
  * Session identity of the first user message, from its ordered text blocks:
  * the first block that is not pure <system-reminder>. Clients that lead with a
@@ -122,11 +139,7 @@ export function extractFirstUserIdentity(messages) {
   const content = user?.content
   if (typeof content === 'string') return firstUserIdentityText([content])
   if (!Array.isArray(content)) return ''
-  return firstUserIdentityText(
-    content.map((block) =>
-      typeof block === 'string' ? block : block?.type === 'text' && typeof block.text === 'string' ? block.text : '',
-    ),
-  )
+  return firstUserIdentityText(content.map((block) => messagePartText(block)))
 }
 
 /**

@@ -11,7 +11,9 @@ import {
   claudeCodeAgentRootSession,
   extractCallerSession,
   firstUserIdentityText,
+  messagePartText,
   parseUserId,
+  stripSystemReminders,
 } from '../identity/identity-rewrite.mjs'
 
 export const DEFAULT_STICKY_HEADER_KEYS = [
@@ -97,21 +99,20 @@ export function firstUserFingerprint(body = {}) {
     const c = user.content ?? user.text ?? user.input
     if (typeof c === 'string') text = c
     else if (Array.isArray(c)) {
-      text = firstUserIdentityText(
-        c.map((part) =>
-          typeof part === 'string' ? part : part?.type === 'text' && typeof part.text === 'string' ? part.text : '',
-        ),
-      )
+      text = firstUserIdentityText(c.map((part) => messagePartText(part)))
     }
   } else if (typeof body?.input === 'string') {
     text = body.input
   } else if (typeof body?.prompt === 'string') {
     text = body.prompt
   }
-  text = String(text || '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 4000)
+  const stable = stripSystemReminders(text).slice(0, 4000)
+  text =
+    stable ||
+    String(text || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 4000)
   if (!text) return ''
   return crypto.createHash('sha256').update(text).digest('hex').slice(0, 24)
 }

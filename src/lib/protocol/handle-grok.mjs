@@ -29,6 +29,7 @@ import {
   grokSlotAllowsModel,
   isGrokFailoverError,
   orderGrokSessionSlots,
+  pinGrokConversation,
   parkUntilFromHeaders,
 } from '../pool/grok-slot-pool.mjs'
 import { grokRuntime } from '../pool/openai-account-runtime.mjs'
@@ -433,14 +434,25 @@ async function admitGrokCandidate(projectRoot, req, opts, { deadline, signal }) 
     const picked = pickGrokCandidates(projectRoot, req, opts)
     const livePolicy = grokRoutingOf(opts.routing).quota
     if (picked.error && picked.error !== 'capacity_unavailable') return { picked }
-    for (const candidate of picked.candidates || []) {
+    const holdHome = picked.affinity === 'wait' || !!(picked.sticky && picked.home)
+    const queue = holdHome ? (picked.candidates || []).slice(0, 1) : picked.candidates || []
+    let followClaim = false
+    for (const candidate of queue) {
       const lease = grokRuntime.tryAcquire(candidate.id, {
         concurrency: candidate.concurrency,
         maxRpm: candidate.maxRpm,
         quotaPolicy: livePolicy,
       })
-      if (lease) return { picked, vmId: candidate.id, lease }
+      if (!lease) continue
+      const pinned = pinGrokConversation(opts.stickyRouter, picked, candidate.id)
+      if (pinned && pinned !== candidate.id) {
+        lease.release()
+        followClaim = true
+        break
+      }
+      return { picked, vmId: candidate.id, lease }
     }
+    if (followClaim) continue
     if (woken) grokRuntime.wakeWaiter()
     const now = Date.now()
     if (now >= deadline) return { picked: { ...picked, error: 'capacity_unavailable', ids: [] } }

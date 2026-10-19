@@ -185,7 +185,8 @@ export function orderGrokSessionSlots(
     return { ...picked, sticky: false, boundState: boundResting ? 'resting' : undefined, candidates: [] }
   }
   const pool = picked.ids.filter((id) => !excluded?.has(id))
-  if (!pool.length) return { error: 'candidates_exhausted', ids: [], ready: [], parked: [], sticky: false, candidates: [] }
+  if (!pool.length)
+    return { error: 'candidates_exhausted', ids: [], ready: [], parked: [], sticky: false, candidates: [] }
   if (pin) {
     return {
       ...picked,
@@ -226,6 +227,29 @@ export function orderGrokSessionSlots(
     preferredOverridesWeight: true,
     roundRobinCursor: cursor,
   })
+  // A live home that is only out of seats stays the only candidate. Sending the
+  // same conversation to another subscription rewrites the prompt cache there.
+  const homeWaiting =
+    !!home &&
+    ordered.preferred === 'blocked' &&
+    (ordered.blocker === 'concurrency_limit' ||
+      ordered.blocker === 'rpm_limit' ||
+      ordered.blocker === 'request_interval')
+  if (homeWaiting) {
+    const homeCandidate = candidates.find((candidate) => candidate.id === home)
+    return {
+      ...picked,
+      ids: [home],
+      ready: (picked.ready || []).includes(home) ? [home] : [],
+      parked: (picked.parked || []).filter((id) => id === home),
+      sticky: true,
+      affinity: 'wait',
+      strategy,
+      boundState,
+      home,
+      candidates: homeCandidate ? [homeCandidate] : [],
+    }
+  }
   if (!ordered.ids.length) {
     const statuses = ids.map((id) => grokAccountStatus(byId.get(id), now))
     const quotaExhausted = statuses.length > 0 && statuses.every((status) => status === 'quota_exhausted')
@@ -257,6 +281,23 @@ export function orderGrokSessionSlots(
     home,
     candidates: ordered.ids.map((id) => candidates.find((candidate) => candidate.id === id)),
   }
+}
+
+/**
+ * Claim the conversation on the account this attempt just took.
+ * A key another in-flight request already claimed wins; the caller must follow it.
+ * @returns {string} account id the conversation has to use
+ */
+export function pinGrokConversation(stickyRouter, { sessionKey = null, stickyKeys = null } = {}, vmId) {
+  if (!stickyRouter?.bind || !sessionKey || !vmId) return vmId || ''
+  const keys = stickyKeys?.length ? stickyKeys : [sessionKey]
+  for (const key of keys) {
+    const hit = stickyRouter.resolve?.(key)
+    if (hit?.vmId) return hit.vmId
+  }
+  const payload = { accountId: vmId, vmId }
+  for (const key of keys) stickyRouter.bind(key, payload, { countHit: false })
+  return vmId
 }
 
 /** Replayable on another seat: transport, auth, 429, and uncommitted server errors. */
