@@ -8,6 +8,8 @@ import { isGrokSeriesId } from './grok-ids.mjs'
 const SETTINGS_KEY = 'grok_model_policy'
 
 const LEGACY_CONTEXT_WINDOW = 131072
+/** 200k is the long-context price threshold, not a Grok chat window. */
+const STALE_CONTEXT_WINDOWS = new Set([LEGACY_CONTEXT_WINDOW, 200_000])
 
 /** Published context windows (docs.x.ai/developers/models.md). Unknown chat ids stay at 500k. */
 const GROK_CONTEXT = [
@@ -53,7 +55,8 @@ function withKnownCaps(id, capabilities) {
   const known = grokCapabilities(id)
   if (!capabilities || typeof capabilities !== 'object') return known
   const window = Number(capabilities.context_window)
-  const stale = !Number.isFinite(window) || window <= 0 || window === LEGACY_CONTEXT_WINDOW
+  const stale =
+    !Number.isFinite(window) || window <= 0 || (STALE_CONTEXT_WINDOWS.has(window) && window !== known.context_window)
   return {
     ...known,
     ...capabilities,
@@ -105,9 +108,12 @@ export function loadGrokModelPolicy({ force = false } = {}) {
     const stored = new SettingsRepo().get(SETTINGS_KEY, null)
     if (stored && typeof stored === 'object' && stored.models && typeof stored.models === 'object') {
       const models = {}
+      let repaired = false
       for (const [id, row] of Object.entries(stored.models)) {
         if (!isGrokSeriesId(id) || !row || typeof row !== 'object') continue
         models[id] = entry(id, row)
+        const storedWindow = Number(row.capabilities?.context_window)
+        if (models[id].capabilities.context_window !== storedWindow) repaired = true
       }
       const live = stored.source === 'xai' && Object.keys(models).length > 0
       policy = {
@@ -117,6 +123,7 @@ export function loadGrokModelPolicy({ force = false } = {}) {
         platform: 'xai',
         source: stored.source || 'settings',
       }
+      if (repaired) persist()
     } else {
       policy = seedGrokPolicy()
       persist()
@@ -160,6 +167,14 @@ export function listGrokPolicyModels() {
     .filter(([id, cfg]) => isGrokSeriesId(id) && cfg?.enabled !== false)
     .map(([id, cfg]) => ({ id, ...cfg, family: 'grok' }))
     .sort((a, b) => (a.sort || 80) - (b.sort || 80) || String(a.id).localeCompare(String(b.id)))
+}
+
+/** Ids the price catalog should attach, including models that are turned off. */
+export function getGrokPolicyCatalogIds({ enabledOnly = false } = {}) {
+  if (!loaded) loadGrokModelPolicy()
+  return Object.entries(policy.models || {})
+    .filter(([id, cfg]) => isGrokSeriesId(id) && (!enabledOnly || cfg?.enabled !== false))
+    .map(([id]) => id)
 }
 
 /** True when this id may be scheduled. An empty seed allows any grok chat id until a live sync. */

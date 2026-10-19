@@ -1,11 +1,12 @@
 /** Panel `计费` tab payload: effective prices, sources, overrides and catalog health. */
 import { getPolicyCatalogIds } from '../protocol/model-policy.mjs'
 import { getGptPolicyCatalogIds } from '../protocol/gpt-model-policy.mjs'
+import { getGrokPolicyCatalogIds } from '../protocol/grok-model-policy.mjs'
 import { readCatalogSync } from './catalog-monitor.mjs'
 import { getModelsDevStatus, listPriceCatalog, listPriceOverrides, resolvePrice } from './price-catalog.mjs'
 
 function policyPrices() {
-  const ids = [...getPolicyCatalogIds(), ...getGptPolicyCatalogIds()]
+  const ids = [...getPolicyCatalogIds(), ...getGptPolicyCatalogIds(), ...getGrokPolicyCatalogIds()]
   const out = {}
   for (const id of ids) {
     const hit = resolvePrice(id)

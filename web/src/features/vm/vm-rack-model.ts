@@ -156,7 +156,8 @@ function grokWindows(vm: Vm): WindowReadout[] {
       reset: usage?.period_end ?? null,
     },
   ]
-  if (monthly != null || usage?.monthly_limit != null) {
+  // 月上限是 0 或没有时不画月额。Grok Build 经常把月上限报成 0。
+  if (Number(usage?.monthly_limit) > 0) {
     windows.push({
       key: '7d',
       label: '月额',

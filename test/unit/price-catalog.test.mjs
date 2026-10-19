@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  catalogIdCandidates,
   getModelsDevStatus,
   invalidatePriceCatalog,
   listPriceCatalog,
@@ -187,6 +188,37 @@ test('claude-fable-5.1 resolves to claude-fable-5-1 with $0.25 read', () => {
   assert.equal(r.id, 'claude-fable-5-1')
   assert.equal(r.price.cache_read, 0.25)
   assert.equal(resolvePrice('anthropic/claude-fable-5.1[1m]').id, 'claude-fable-5-1')
+})
+
+test('models.dev keeps xAI prices and a Grok build alias uses the chat price', async () => {
+  await syncModelsDev({
+    fetchImpl: async () =>
+      jsonResponse({
+        xai: {
+          models: {
+            'grok-4.7': {
+              name: 'Grok 4.7',
+              limit: { context: 500000 },
+              cost: {
+                input: 2,
+                output: 6,
+                cache_read: 0.5,
+                tiers: [{ input: 4, output: 12, cache_read: 1, tier: { type: 'context', size: 200000 } }],
+              },
+            },
+          },
+        },
+      }),
+  })
+  const priced = resolvePrice('grok-4.7')
+  assert.equal(priced.source, 'models.dev')
+  assert.equal(priced.price.input, 2)
+  assert.equal(priced.price.tiers[0].above, 200000)
+  assert.equal(priced.price.tiers[0].input, 4)
+  const alias = resolvePrice('grok-4.7-build-fast')
+  assert.equal(alias.id, 'grok-4.7')
+  assert.equal(alias.source, 'models.dev')
+  assert.deepEqual(catalogIdCandidates('grok-4.7-build-fast'), ['grok-4.7-build-fast', 'grok-4.7', 'grok-4.7-build'])
 })
 
 test('claude-sonnet-5-5 does not fall through to claude-sonnet-5', () => {

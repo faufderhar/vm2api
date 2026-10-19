@@ -93,16 +93,27 @@ export async function syncGptCatalog({ projectRoot, vmId = '', catalogClientVers
 }
 
 /** Live xAI /v1/models → grok_model_policy. */
-export async function syncGrokCatalog({ projectRoot, cfg, routing, vmId = '' } = {}) {
+export async function syncGrokCatalog({ projectRoot, cfg, routing, vmId = '', refreshPrices = false } = {}) {
   const live = await probeGrokModels({ projectRoot, routing, cfg, vmId })
   if (!live.ok) {
-    const skipped = live.error === 'no_grok_slot' || live.error === 'proxy_required' || live.error === 'grok_oauth_not_configured' || live.error === 'grok_oauth_discovery_failed'
+    const skipped =
+      live.error === 'no_grok_slot' ||
+      live.error === 'proxy_required' ||
+      live.error === 'grok_oauth_not_configured' ||
+      live.error === 'grok_oauth_discovery_failed'
     writeCatalogSync('xai', syncStatus(skipped ? 'skipped' : 'error', { error: live.error }))
     return live
   }
   const { added } = syncGrokIdsIntoPolicy(live.models?.length ? live.models : live.ids, {
     displayNameOf: (id) => modelsDevMeta('xai', id)?.name,
   })
+  if (refreshPrices) {
+    try {
+      await syncModelsDev()
+    } catch {
+      // Model ids are already saved. Builtin prices still show if models.dev is down.
+    }
+  }
   writeCatalogSync('xai', syncStatus('ok', { added }))
   return { ...live, added, policy: getGrokModelPolicy(), models: listGrokPolicyModels() }
 }

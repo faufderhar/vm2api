@@ -15,6 +15,7 @@ import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
 import { QueryGate } from '@/components/query-gate'
 import {
+  invalidatePricing,
   modelPolicyQueryOptions,
   pricingQueryOptions,
 } from '@/features/models/queries'
@@ -170,9 +171,7 @@ export function ModelsPage() {
       }),
     onSuccess: async (data) => {
       toast.success(`已同步 Grok 目录 (${data.synced || 0})`)
-      await qc.invalidateQueries({
-        queryKey: modelPolicyQueryOptions('xai').queryKey,
-      })
+      await invalidatePricing(qc)
     },
     onError: (error: Error) => toast.error(error.message),
   })

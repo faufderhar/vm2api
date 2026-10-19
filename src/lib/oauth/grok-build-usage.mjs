@@ -1,10 +1,11 @@
 /**
  * Grok Build account allowance.
  *
- * The installed Grok CLI 1.0.62 loads this from grok.com, not from api.x.ai
- * rate-limit headers. `GET /billing?format=credits` returns the shared weekly
- * pool (`creditUsagePercent`) plus the monthly included dollars. xAI still
- * does not publish Claude-style 5h / 7d windows.
+ * The installed Grok CLI 1.0.62 loads this from the chat proxy, not from
+ * grok.com or api.x.ai. `GET /v1/billing?format=credits` is the shared weekly
+ * pool (`creditUsagePercent`). `GET /v1/billing` is the monthly ledger.
+ * grok.com/billing is the website and returns 404. xAI still does not publish
+ * Claude-style 5h / 7d windows.
  */
 import { grokCliIdentityHeaders } from '../protocol/grok-client.mjs'
 import { ensureGrokAccessToken } from './grok-token.mjs'
@@ -15,7 +16,10 @@ import { getVm } from '../vm/vm-registry.mjs'
 import { isGrokVm } from '../vm/vm-kind.mjs'
 import { makeProxyFetch, readFetchBody } from '../transport/proxy-fetch.mjs'
 
-export const GROK_BUILD_BILLING_URL = 'https://grok.com/billing?format=credits'
+export const GROK_BUILD_CREDITS_URL = 'https://cli-chat-proxy.grok.com/v1/billing?format=credits'
+export const GROK_BUILD_LEDGER_URL = 'https://cli-chat-proxy.grok.com/v1/billing'
+/** Weekly credits document. Kept under the old name for callers and tests. */
+export const GROK_BUILD_BILLING_URL = GROK_BUILD_CREDITS_URL
 export const GROK_BUILD_USAGE_STALE_MS = 15 * 60 * 1000
 
 function fail(error, message, status = 400) {
@@ -27,6 +31,9 @@ function text(value) {
 }
 
 function money(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    if ('val' in value || 'value' in value) return money(value.val ?? value.value)
+  }
   const amount = Number(value)
   return Number.isFinite(amount) ? amount : null
 }
@@ -60,17 +67,42 @@ function flag(value) {
 
 function latestHistory(history) {
   if (!Array.isArray(history) || history.length === 0) return null
-  return history[history.length - 1] || null
+  let best = null
+  let bestScore = null
+  for (const row of history) {
+    const cycle = row?.billingCycle || row?.billing_cycle
+    const year = Number(cycle?.year)
+    const month = Number(cycle?.month)
+    if (!Number.isFinite(year) || !Number.isFinite(month)) continue
+    const score = year * 12 + month
+    if (bestScore == null || score >= bestScore) {
+      best = row
+      bestScore = score
+    }
+  }
+  return best || history[history.length - 1] || null
 }
 
-/** Normalize a BillingConfigResponse. Returns null when nothing usable is present. */
-export function parseGrokBuildBilling(payload) {
+function configOf(payload) {
   const root = payload && typeof payload === 'object' ? payload : {}
-  const config = root.config && typeof root.config === 'object' ? root.config : root
+  return root.config && typeof root.config === 'object' ? root.config : root
+}
+
+/**
+ * Normalize a BillingConfigResponse. `ledger` is the `/v1/billing` document,
+ * which carries the monthly limit the credits document does not.
+ * Returns null when nothing usable is present.
+ */
+export function parseGrokBuildBilling(payload, ledger = null) {
+  const root = payload && typeof payload === 'object' ? payload : {}
+  const config = configOf(payload)
+  const ledgerConfig = ledger ? configOf(ledger) : null
   const period = config.currentPeriod || config.current_period || {}
-  const history = latestHistory(config.history)
+  const history = latestHistory(config.history) || latestHistory(ledgerConfig?.history)
   const credit = grokCreditUsedPercent(config.creditUsagePercent ?? config.credit_usage_percent)
-  const monthly = money(config.monthlyLimit ?? config.monthly_limit)
+  const monthly = money(
+    config.monthlyLimit ?? config.monthly_limit ?? ledgerConfig?.monthlyLimit ?? ledgerConfig?.monthly_limit,
+  )
   if (credit == null && monthly == null) return null
   return {
     ok: true,
@@ -80,9 +112,9 @@ export function parseGrokBuildBilling(payload) {
     monthly_limit: monthly,
     included_used: money(history?.includedUsed ?? history?.included_used),
     total_used: money(history?.totalUsed ?? history?.total_used),
-    on_demand_cap: money(config.onDemandCap ?? config.on_demand_cap),
-    on_demand_used: money(config.onDemandUsed ?? config.on_demand_used),
-    prepaid_balance: money(config.prepaidBalance ?? config.prepaid_balance),
+    on_demand_cap: money(config.onDemandCap ?? config.on_demand_cap ?? ledgerConfig?.onDemandCap),
+    on_demand_used: money(config.onDemandUsed ?? config.on_demand_used ?? ledgerConfig?.onDemandUsed),
+    prepaid_balance: money(config.prepaidBalance ?? config.prepaid_balance ?? ledgerConfig?.prepaidBalance),
     on_demand_enabled: flag(root.on_demand_enabled ?? root.onDemandEnabled ?? config.onDemandEnabled),
     subscription_tier: text(root.subscription_tier || root.subscriptionTier) || null,
     error: null,
@@ -91,16 +123,18 @@ export function parseGrokBuildBilling(payload) {
 
 export function grokBuildUsageFresh(usage, now = Date.now(), staleMs = GROK_BUILD_USAGE_STALE_MS) {
   if (!usage) return false
+  // A 404 with no numbers is not a usable sample. Retry on the next pass.
+  if (usage.ok === false && grokCreditUsedPercent(usage.credit_usage_percent) == null) return false
   const probedAt = Date.parse(usage.probed_at || '')
   // A failed hop is also a sample: retry on the same 15 minute cadence.
   return Number.isFinite(probedAt) && now - probedAt < staleMs
 }
 
-async function fetchGrokBuildBilling({ accessToken, proxyUrl, fetchImpl }) {
+async function fetchGrokBuildDocument({ url, accessToken, proxyUrl, fetchImpl }) {
   const fetchFn = fetchImpl || makeProxyFetch(proxyUrl, 20_000)
   let response
   try {
-    response = await fetchFn(GROK_BUILD_BILLING_URL, {
+    response = await fetchFn(url, {
       method: 'GET',
       headers: {
         authorization: `Bearer ${accessToken}`,
@@ -124,9 +158,7 @@ async function fetchGrokBuildBilling({ accessToken, proxyUrl, fetchImpl }) {
   if (status < 200 || status >= 300) {
     return fail('upstream_error', `Grok Build 账单返回 ${status || 0}`, status >= 400 && status < 500 ? status : 502)
   }
-  const usage = parseGrokBuildBilling(payload)
-  if (!usage) return fail('billing_unparsed', 'Grok Build 账单里没有用量', 502)
-  return { ok: true, usage }
+  return { ok: true, payload }
 }
 
 function usableAccess(projectRoot, vmId, now) {
@@ -172,18 +204,39 @@ export async function queryGrokBuildUsage({
   if (!access) {
     return fail(token.code || 'grok_no_credential', 'Grok 凭证不可用，请重新导入', 401)
   }
-  const fetched = await fetchGrokBuildBilling({ accessToken: access, proxyUrl: exitUrl, fetchImpl })
+  const credits = await fetchGrokBuildDocument({
+    url: GROK_BUILD_CREDITS_URL,
+    accessToken: access,
+    proxyUrl: exitUrl,
+    fetchImpl,
+  })
   const probedAt = new Date(now).toISOString()
-  if (!fetched.ok) {
+  if (!credits.ok) {
     persistGrokBuildUsage(projectRoot, vmId, {
       ok: false,
-      error: fetched.error,
-      message: fetched.message,
+      error: credits.error,
+      message: credits.message,
       probed_at: probedAt,
     })
-    return fetched
+    return credits
   }
-  const usage = { ...fetched.usage, ok: true, error: null, message: null, probed_at: probedAt }
+  const ledger = await fetchGrokBuildDocument({
+    url: GROK_BUILD_LEDGER_URL,
+    accessToken: access,
+    proxyUrl: exitUrl,
+    fetchImpl,
+  })
+  const parsed = parseGrokBuildBilling(credits.payload, ledger.ok ? ledger.payload : null)
+  if (!parsed) {
+    persistGrokBuildUsage(projectRoot, vmId, {
+      ok: false,
+      error: 'billing_unparsed',
+      message: 'Grok Build 账单里没有用量',
+      probed_at: probedAt,
+    })
+    return fail('billing_unparsed', 'Grok Build 账单里没有用量', 502)
+  }
+  const usage = { ...parsed, ok: true, error: null, message: null, probed_at: probedAt }
   persistGrokBuildUsage(projectRoot, vmId, usage)
   return { ok: true, usage, source: 'grok-build' }
 }

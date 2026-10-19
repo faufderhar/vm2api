@@ -5,14 +5,24 @@ import { opsModelFamilyRows } from '@/features/overview/traffic-ops'
 const grok: Vm = { id: 'heavy', platform: 'xai', family: 'grok' }
 
 describe('opsModelFamilyRows', () => {
-  it('shows only Grok when the fleet and the hour are Grok', () => {
+  it('splits Grok traffic by model instead of one Grok row', () => {
     const rows = opsModelFamilyRows(
-      [{ model: 'grok-4.7', requests: 3, errors: 1 }],
+      [
+        { model: 'grok-4.7', requests: 3, errors: 1 },
+        { model: 'grok-4.6', requests: 1, errors: 0 },
+        {
+          model: 'grok-4.7',
+          requests: 1,
+          errors: 0,
+          avg_first_token_ms: 100,
+          ttft_samples: 1,
+        },
+      ],
       [grok]
     )
-    expect(rows.map((row) => row.model)).toEqual(['Grok'])
-    expect(rows[0]?.requests).toBe(3)
-    expect(rows[0]?.errors).toBe(1)
+    expect(rows.map((row) => row.model)).toEqual(['grok-4.7', 'grok-4.6'])
+    expect(rows[0]).toMatchObject({ requests: 4, errors: 1 })
+    expect(rows[1]).toMatchObject({ requests: 1, errors: 0 })
   })
 
   it('still shows the Claude matrix when no slots are passed', () => {
@@ -22,7 +32,7 @@ describe('opsModelFamilyRows', () => {
       'Sonnet',
       'Haiku',
       'Fable',
-      'Grok',
+      'grok-4.6',
     ])
   })
 })

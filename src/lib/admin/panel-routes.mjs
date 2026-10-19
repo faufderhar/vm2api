@@ -5166,6 +5166,7 @@ export function createPanelHandler(ctx) {
           cfg,
           routing: ctx.routingConfig,
           vmId: body?.vm_id || body?.vmId || url.searchParams.get('vm_id') || '',
+          refreshPrices: true,
         })
         if (!result.ok) {
           const status =

@@ -43,7 +43,6 @@ const MODEL_FAMILIES = [
   { id: 'haiku', label: 'Haiku', platform: 'claude' },
   { id: 'fable', label: 'Fable', platform: 'claude' },
   { id: 'gpt', label: 'GPT', platform: 'gpt' },
-  { id: 'grok', label: 'Grok', platform: 'grok' },
 ] as const
 
 function modelFamilyOf(id: string | undefined): string {
@@ -57,10 +56,10 @@ function modelFamilyOf(id: string | undefined): string {
   return 'other'
 }
 
-function familyPlatform(
-  id: string
-): (typeof MODEL_FAMILIES)[number]['platform'] | null {
-  return MODEL_FAMILIES.find((family) => family.id === id)?.platform ?? null
+function rowPlatform(id: string | undefined): 'claude' | 'gpt' | 'grok' | null {
+  const family = modelFamilyOf(id)
+  if (family === 'grok') return 'grok'
+  return MODEL_FAMILIES.find((item) => item.id === family)?.platform ?? null
 }
 
 /**
@@ -72,7 +71,7 @@ function visiblePlatforms(byModel: OpsModelRow[], vms?: Vm[]): Set<string> {
   const fromTraffic = new Set<string>()
   for (const row of byModel || []) {
     if (!Number(row.requests || 0)) continue
-    const platform = familyPlatform(modelFamilyOf(row.model))
+    const platform = rowPlatform(row.model)
     if (platform) fromTraffic.add(platform)
   }
   if (!vms) {
@@ -90,7 +89,49 @@ function visiblePlatforms(byModel: OpsModelRow[], vms?: Vm[]): Set<string> {
   return new Set([...fromVms, ...fromTraffic])
 }
 
-/** 按模型家族聚合 `by_model`。Claude 四家族仍对齐 index.html，GPT / Grok 另计。 */
+type FamilyBag = {
+  requests: number
+  errors: number
+  ttftSum: number
+  ttftN: number
+  durSum: number
+  durN: number
+}
+
+function emptyBag(): FamilyBag {
+  return { requests: 0, errors: 0, ttftSum: 0, ttftN: 0, durSum: 0, durN: 0 }
+}
+
+function addModelRow(bag: FamilyBag, row: OpsModelRow) {
+  const n = Number(row.requests || 0)
+  bag.requests += n
+  bag.errors += Number(row.errors || 0)
+  if (row.avg_first_token_ms != null) {
+    const samples = Number(row.ttft_samples || n) || 0
+    bag.ttftSum += Number(row.avg_first_token_ms) * samples
+    bag.ttftN += samples
+  }
+  if (row.avg_duration_ms != null) {
+    const samples = Number(row.ttft_samples || n) || n
+    bag.durSum += Number(row.avg_duration_ms) * samples
+    bag.durN += samples
+  }
+}
+
+function bagToRow(model: string, bag: FamilyBag) {
+  return {
+    model,
+    requests: bag.requests,
+    errors: bag.errors,
+    avg_first_token_ms: bag.ttftN ? Math.round(bag.ttftSum / bag.ttftN) : null,
+    avg_duration_ms: bag.durN ? Math.round(bag.durSum / bag.durN) : null,
+  }
+}
+
+/**
+ * Claude 仍按 Opus / Sonnet / Haiku / Fable 聚合，GPT 仍是一行。
+ * Grok 不合并：这一小时打过的每个模型各一行。
+ */
 export function opsModelFamilyRows(
   byModel: OpsModelRow[],
   vms?: Vm[]
@@ -101,53 +142,39 @@ export function opsModelFamilyRows(
   avg_first_token_ms: number | null
   avg_duration_ms: number | null
 }[] {
+  const platforms = visiblePlatforms(byModel, vms)
   const families = MODEL_FAMILIES.filter((family) =>
-    visiblePlatforms(byModel, vms).has(family.platform)
+    platforms.has(family.platform)
   )
-  const bag: Record<
-    string,
-    {
-      requests: number
-      errors: number
-      ttftSum: number
-      ttftN: number
-      durSum: number
-      durN: number
-    }
-  > = Object.fromEntries(
-    families.map((f) => [
-      f.id,
-      { requests: 0, errors: 0, ttftSum: 0, ttftN: 0, durSum: 0, durN: 0 },
-    ])
+  const bag: Record<string, FamilyBag> = Object.fromEntries(
+    families.map((family) => [family.id, emptyBag()])
   )
+  const grokBags = new Map<string, FamilyBag>()
   for (const row of byModel || []) {
-    const key = modelFamilyOf(row.model)
-    const b = bag[key]
-    if (!b) continue
-    const n = Number(row.requests || 0)
-    b.requests += n
-    b.errors += Number(row.errors || 0)
-    if (row.avg_first_token_ms != null) {
-      const samples = Number(row.ttft_samples || n) || 0
-      b.ttftSum += Number(row.avg_first_token_ms) * samples
-      b.ttftN += samples
+    if (modelFamilyOf(row.model) === 'grok') {
+      if (!platforms.has('grok')) continue
+      const modelId = String(row.model || '').trim()
+      if (!modelId) continue
+      const current = grokBags.get(modelId) || emptyBag()
+      addModelRow(current, row)
+      grokBags.set(modelId, current)
+      continue
     }
-    if (row.avg_duration_ms != null) {
-      const samples = Number(row.ttft_samples || n) || n
-      b.durSum += Number(row.avg_duration_ms) * samples
-      b.durN += samples
-    }
+    const current = bag[modelFamilyOf(row.model)]
+    if (!current) continue
+    addModelRow(current, row)
   }
-  return families.map((f) => {
-    const b = bag[f.id]
-    return {
-      model: f.label,
-      requests: b.requests,
-      errors: b.errors,
-      avg_first_token_ms: b.ttftN ? Math.round(b.ttftSum / b.ttftN) : null,
-      avg_duration_ms: b.durN ? Math.round(b.durSum / b.durN) : null,
-    }
-  })
+  const grokRows = [...grokBags.entries()]
+    .map(([modelId, item]) => bagToRow(modelId, item))
+    .filter((row) => row.requests > 0 || row.errors > 0)
+    .sort(
+      (left, right) =>
+        right.requests - left.requests || left.model.localeCompare(right.model)
+    )
+  return [
+    ...families.map((family) => bagToRow(family.label, bag[family.id])),
+    ...grokRows,
+  ]
 }
 
 /** 流量 · 首字延迟 + 模型分布。对齐 index.html 的 `renderTrafficOps(ops, {showModels})`. */

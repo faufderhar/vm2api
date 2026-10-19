@@ -47,6 +47,35 @@ test('billing response maps the weekly pool and the latest monthly included spen
   assert.equal(parseGrokBuildBilling({}), null)
 })
 
+test('wrapped billing amounts and the ledger fill the monthly window', () => {
+  const usage = parseGrokBuildBilling(
+    {
+      config: {
+        creditUsagePercent: 12,
+        currentPeriod: { end: '2026-10-23T14:03:01.773Z' },
+        onDemandCap: { val: 0 },
+        prepaidBalance: { val: 0 },
+      },
+    },
+    {
+      config: {
+        monthlyLimit: { val: 0 },
+        history: [
+          { billingCycle: { year: 2026, month: 7 }, includedUsed: { val: 0 }, totalUsed: { val: 0 } },
+          { billingCycle: { year: 2026, month: 10 }, includedUsed: { val: 6 }, totalUsed: { val: 7.5 } },
+          { billingCycle: { year: 2026, month: 8 }, includedUsed: { val: 1 }, totalUsed: { val: 1 } },
+        ],
+      },
+    },
+  )
+  assert.equal(usage.credit_usage_percent, 12)
+  assert.equal(usage.monthly_limit, 0)
+  assert.equal(usage.included_used, 6)
+  assert.equal(usage.total_used, 7.5)
+  assert.equal(usage.on_demand_cap, 0)
+  assert.equal(usage.period_end, '2026-10-23T14:03:01.773Z')
+})
+
 test('a fresh Grok Build sample is not fetched again until it is stale', () => {
   const now = Date.parse('2026-10-19T03:00:00.000Z')
   assert.equal(
@@ -55,6 +84,10 @@ test('a fresh Grok Build sample is not fetched again until it is stale', () => {
   )
   assert.equal(
     grokBuildUsageFresh({ ok: true, credit_usage_percent: 10, probed_at: '2026-10-19T02:00:00.000Z' }, now),
+    false,
+  )
+  assert.equal(
+    grokBuildUsageFresh({ ok: false, credit_usage_percent: null, probed_at: '2026-10-19T02:50:00.000Z' }, now),
     false,
   )
 })
@@ -84,6 +117,17 @@ test('query stores Grok Build billing and keeps the last good sample after a fai
   const calls = []
   const fetchImpl = async (url) => {
     calls.push(url)
+    if (String(url).includes('/v1/billing') && !String(url).includes('format=credits')) {
+      return {
+        status: 200,
+        json: async () => ({
+          config: {
+            monthlyLimit: { val: 20 },
+            history: [{ billingCycle: { year: 2026, month: 10 }, includedUsed: { val: 4 }, totalUsed: { val: 4 } }],
+          },
+        }),
+      }
+    }
     return {
       status: 200,
       json: async () => ({
@@ -107,8 +151,10 @@ test('query stores Grok Build billing and keeps the last good sample after a fai
   })
   assert.equal(first.ok, true)
   assert.equal(first.usage.credit_usage_percent, 37)
-  assert.equal(calls.length, 1)
+  assert.equal(calls.length, 2)
   assert.match(calls[0], /\/billing\?format=credits/)
+  assert.match(calls[0], /cli-chat-proxy\.grok\.com/)
+  assert.match(calls[1], /\/v1\/billing$/)
   const stored = getVm(root, 'heavy').grok.build_usage
   assert.equal(stored.credit_usage_percent, 37)
   assert.equal(stored.included_used, 4)
@@ -122,7 +168,7 @@ test('query stores Grok Build billing and keeps the last good sample after a fai
     now: now + 60_000,
   })
   assert.equal(skipped.skipped, true)
-  assert.equal(calls.length, 1)
+  assert.equal(calls.length, 2)
 
   const failedFetch = async () => ({ status: 500, json: async () => ({}) })
   const failed = await queryGrokBuildUsage({

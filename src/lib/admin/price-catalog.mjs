@@ -101,6 +101,26 @@ function addCandidate(out, id) {
   if (id && !out.includes(id)) out.push(id)
 }
 
+function bareModelId(raw) {
+  return (
+    String(raw || '')
+      .split('/')
+      .filter(Boolean)
+      .pop()
+      ?.replace(/\[[^\]]*\]$/g, '')
+      .trim()
+      .toLowerCase() || ''
+  )
+}
+
+/** `grok-4.7-build-fast` has no separate list price; the base chat id does. */
+function expandGrok(out, id) {
+  addCandidate(out, id)
+  addCandidate(out, id.replace(/-build-fast$/i, ''))
+  addCandidate(out, id.replace(/-fast$/i, ''))
+  addCandidate(out, id.replace(/-build$/i, ''))
+}
+
 function expandClaude(out, id) {
   const dashed = id.replaceAll('.', '-')
   addCandidate(out, dashed)
@@ -113,7 +133,8 @@ export function catalogIdCandidates(raw, platform = null) {
   if (!id) return []
   const plat = platform || platformOfModel(id)
   const out = []
-  addCandidate(out, id)
+  if (plat === 'xai') expandGrok(out, bareModelId(raw) || id)
+  else addCandidate(out, id)
   if (plat !== 'openai' && plat !== 'xai') expandClaude(out, id)
   const extras = []
   for (const c of out) {
@@ -367,6 +388,7 @@ export async function syncModelsDev({ fetchImpl } = {}) {
       error: null,
       anthropic: parsed.anthropic,
       openai: parsed.openai,
+      xai: parsed.xai,
     }
     persistSnapshot(snap)
     invalidatePriceCatalog()
@@ -378,6 +400,7 @@ export async function syncModelsDev({ fetchImpl } = {}) {
       error: String(e?.message || e),
       anthropic: prev.anthropic || {},
       openai: prev.openai || {},
+      xai: prev.xai || {},
     }
     persistSnapshot(snap)
     invalidatePriceCatalog()
