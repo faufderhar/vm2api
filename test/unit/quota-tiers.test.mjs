@@ -86,6 +86,19 @@ test('buildRouting returns normalized vm defaults', () => {
   assert.equal(data.vm.allow_tcg, false)
 })
 
+test('buildRouting defaults a missing thinking display to summarized', () => {
+  const data = buildRouting({
+    routingConfig: { sticky: {}, quota: {}, concurrency: {} },
+    stickyRouter: { stats: () => ({ active_sessions: 0 }) },
+  }).data
+  assert.equal(data.compatibility.thinking_display, 'summarized')
+  const pinned = buildRouting({
+    routingConfig: { compatibility: { thinking_display: 'passthrough' } },
+    stickyRouter: { stats: () => ({ active_sessions: 0 }) },
+  }).data
+  assert.equal(pinned.compatibility.thinking_display, 'passthrough')
+})
+
 test('buildRouting exposes effective Codex routing to the panel', () => {
   const data = buildRouting({
     routingConfig: { codex: { clients: { official_codex: 'allow' } } },

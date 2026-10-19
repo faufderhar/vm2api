@@ -121,17 +121,19 @@ Rikka / 客户端 `search_web`、`scrape_web` **不是** Anthropic 自带搜索�
 1. `thinking` 即使文本为空，只要有完整签名也保留；这是 `display: omitted` 的正常响应形态。
 2. Opus / Sonnet / Haiku 5.5 按 sub2api：非空且非 dummy 的签名都算有效，不看长度；`redacted_thinking` 有 `data` 就留，没有 `data` 时再看签名。历史里只要有一块无效，整段 thinking / `redacted_thinking` 都拆掉，只留正文；拆完没有内容的轮删掉。全部有效时不拆。
 3. 更早的型号仍逐块过滤：签名短于 24、空签名、dummy 签名删掉，合法签名块留下。`redacted_thinking` 不看 `data`，只在签名达到 24 字符时留。
-4. 保留路径（cli-hop 首跳，以及默认 HTTP hop）不走上面的拆链。缺少 `signature` 字段的 `thinking` 补空字段，已有字段不改写。
+4. 保留路径（cli-hop 首跳，以及默认 HTTP hop）不走上面的拆链，只在 `stripInvalidThinkingBlocks` 的这一支里处理：`redacted_thinking` 不看 `data` 和签名，原样留。`thinking` 只有签名可用（非空、不少于 24、非 dummy）才留，空正文也留；缺失、空、短于 24、dummy 的删掉，不再补 `signature: ""`。不走保留路径时，`redacted_thinking` 仍按上面第 2、3 条删。当前没有按账号归属过滤签名的步骤。
 
-HTTP hop 与 cli-hop（`prepareCliHopBody`）共用内容预过滤，但缓存职责不同。cli-hop 首跳保留 thinking 指纹，缺失签名补 `signature: ""`；签名修复重试才清除。官方家族开启 `official_cc_passthrough` 时，Node 保留 system/tools/messages 的 caller marker、显式 TTL、缺失 TTL 和位置，不添点、不裁剪；超过四点、thinking marker、非法 TTL 或 5m（含缺失）后出现 1h，在调度前返回 `400 invalid_cache_control`。
+HTTP hop 与 cli-hop（`prepareCliHopBody`）共用内容预过滤，但缓存职责不同。cli-hop 首跳保留签名可用的 thinking 指纹，没有可用签名的删掉；签名修复重试才清除其余块。官方家族开启 `official_cc_passthrough` 时，Node 保留 system/tools/messages 的 caller marker、显式 TTL、缺失 TTL 和位置，不添点、不裁剪；超过四点、thinking marker、非法 TTL 或 5m（含缺失）后出现 1h，在调度前返回 `400 invalid_cache_control`。
 
 关闭透传或非官方请求仍走 Node rewrite：清除 caller marker，生成最后消息及 `messages.length>=4` 时倒数第二 user 的点，TTL 用入站会话 pin 值。应用 persona 后，模板显式 TTL 保留，只补自产缺失 TTL；超额时优先删 tools、system 尾部的自产点。非法模板返回 request-scoped 400，零上游执行，不换号、不冷却。
 
 native CLI `2.1.296` 保留带 billing 的 wire system（含官方 CLI / 子代理布局）、wire tools 和 wire messages，不自动给最后一个 tool 加点；caller tool 的缺失 TTL 也保持缺失。仅对 CLI 自有 marker 补 TTL，优先请求显式 TTL（混合时 5m）→ slot `kernel.json.default_cache_ttl` → 1h，并按保留内容占用后的剩余预算裁剪。Rust kernel 不增删 marker、不重打 last、不自动降级 TTL。Node native envelope 不用菜单 TTL 重分类上游 usage，日志/计费保留真实 5m/1h 分桶。Node 对象不等于最终 wire；HTTP hop 原有独立缓存整流不变。
 
-长度够的签名原样转发，由 Anthropic 验。5.5 的非 dummy 签名也原样转发，不按 24 字符预过滤。签名是 opaque 加密内容，当前模型 / 账户 / 会话前缀不匹配时可能被丢弃或返回 400 `Invalid \`signature\` in \`thinking\` block`。网关不伪造真实签名，只在面板 / cli-hop 保留路径补齐缺失字段。切换账号时不改写已有签名；`cli-node` 仍按现有登录 / fallback 逻辑清理签名块。
+长度够的签名原样转发，由 Anthropic 验。5.5 的非 dummy 签名在非保留路径原样转发，不按 24 字符预过滤；保留路径仍要求不少于 24。签名是 opaque 加密内容，当前模型 / 账户 / 会话前缀不匹配时可能被丢弃或返回 400 `Invalid \`signature\` in \`thinking\` block`。网关不伪造真实签名，也不给缺签名的块补空字段。切换账号时不改写已有签名；`cli-node` 仍按现有登录 / fallback 逻辑清理签名块。
 
 `routing.failover.signature_repair=true`（设置页「探测 → 签名修复」）才走 `signature_repairable` 的 `repair-and-retry`（剥 thinking 历史 + 删 `body.thinking` 后重试一次），客户端只看到 200。关闭时包括 cli-hop 在内都原样透传 400；`cli-node` 自身行为不受该面板开关改变。
+
+`routing.compatibility.thinking_display` 默认 `summarized`（设置 → 协议 → thinking 显示；缺省即开，显式 `passthrough` 关闭）。只改已经打开的 thinking（`adaptive` / `enabled`）：`omitted`、`updates`，以及 Opus 4.7+、5 系列、Haiku 5.5、Fable、Mythos 上没写 display 的请求，出站改成 `summarized`。其它值、`disabled`、没开 thinking 不动。改写在 beta 计算之前，所以被改掉的 `updates` 不再带 `thinking-display-updates-2026-08-18`。`passthrough` 时 `updates` 仍只在出站 beta 声明该 token 时保留，否则降成 `omitted`。分类器请求不经过这条出站改写。
 
 ## 健康探测缓存
 

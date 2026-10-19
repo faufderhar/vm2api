@@ -159,6 +159,106 @@ test('empty usage windows keep a null cache hit rate', () => {
   }
 })
 
+test('billingStats reuses identical panel snapshots but separates account windows', () => {
+  const { db, repo } = freshDb()
+  try {
+    let computes = 0
+    const compute = repo._computeBillingStats.bind(repo)
+    repo._computeBillingStats = (opts) => {
+      computes++
+      return compute(opts)
+    }
+
+    const winA = [{ account_id: 'acc-1', vm_id: 'vm-a', reset_5h: '2026-10-19T05:00:00.000Z' }]
+    const winAReordered = [{ vm_id: 'vm-a', reset_5h: '2026-10-19T05:00:00.000Z', account_id: 'acc-1' }]
+    const winB = [{ account_id: 'acc-1', vm_id: 'vm-a', reset_5h: '2026-10-19T06:00:00.000Z' }]
+
+    assert.equal(repo.billingStats({ accountWindows: winA }), repo.billingStats({ accountWindows: winAReordered }))
+    assert.equal(computes, 1)
+    repo.billingStats({ accountWindows: winB })
+    assert.equal(computes, 2)
+
+    // Explicit historical snapshots are deterministic test/report calls and must
+    // not be served from the live panel cache.
+    repo.billingStats({ accountWindows: winA, now: Date.parse('2026-10-19T00:00:00.000Z') })
+    repo.billingStats({ accountWindows: winA, now: Date.parse('2026-10-19T00:00:00.000Z') })
+    assert.equal(computes, 4)
+  } finally {
+    db.close()
+  }
+})
+
+test('billingStats TTL starts after a slow aggregation finishes', () => {
+  const { db, repo } = freshDb()
+  const realNow = Date.now
+  try {
+    let clock = 1_000_000
+    Date.now = () => clock
+    let computes = 0
+    const compute = repo._computeBillingStats.bind(repo)
+    repo._computeBillingStats = (opts) => {
+      computes++
+      clock += 20_000 // Simulate a scan slower than the 10-second cache TTL.
+      return compute(opts)
+    }
+    const first = repo.billingStats()
+    assert.equal(repo.billingStats(), first)
+    assert.equal(computes, 1)
+    clock += 10_001
+    repo.billingStats()
+    assert.equal(computes, 2)
+  } finally {
+    Date.now = realNow
+    db.close()
+  }
+})
+
+test('billingStats rate-limits maintenance backfill independently of cache keys', () => {
+  const { db, repo } = freshDb()
+  try {
+    let backfills = 0
+    repo.backfillMissingCosts = () => {
+      backfills++
+      return 0
+    }
+    repo.billingStats()
+    repo.billingStats({ accountWindows: [{ account_id: 'acc-1', vm_id: 'vm-a' }] })
+    repo.billingStats({ accountWindows: [{ account_id: 'acc-2', vm_id: 'vm-a' }] })
+    assert.equal(backfills, 1)
+  } finally {
+    db.close()
+  }
+})
+
+test('billingStats derives global totals from account aggregates without duplicate full scans', () => {
+  const { db, repo } = freshDb()
+  try {
+    seed(repo, [
+      { account_id: 'acc-1', vm_id: 'vm-a', input_tokens: 20, cache_read_tokens: 80, total_cost: 1 },
+      { account_id: 'acc-2', vm_id: null, input_tokens: 40, output_tokens: 5, total_cost: 2 },
+    ])
+    const costSelect = repo._costSelect.bind(repo)
+    let fullScans = 0
+    repo._costSelect = (cond, params) => {
+      if (!cond) fullScans++
+      return costSelect(cond, params)
+    }
+    const bill = repo.billingStats({ now: Date.now() })
+    assert.equal(fullScans, 0)
+    assert.equal(bill.total.requests, 2)
+    assert.equal(bill.total.input_tokens, 60)
+    assert.equal(bill.total.output_tokens, 5)
+    assert.equal(bill.total.cache_read_tokens, 80)
+    assert.ok(bill.total.total_cost > 0)
+    assert.equal(
+      bill.total.total_cost,
+      bill.accounts.reduce((sum, row) => sum + row.total_cost, 0),
+    )
+  } finally {
+    db.close()
+  }
+})
+
 test('aligned account windows re-sum per-row prompt tokens instead of mixed Anthropic formula', () => {
   const { db, repo } = freshDb()
   try {

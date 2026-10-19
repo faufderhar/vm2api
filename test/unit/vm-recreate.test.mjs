@@ -137,6 +137,43 @@ test('recreateVmFiles wipes home leftover and reseeds settings', () => {
   fs.rmSync(root, { recursive: true, force: true })
 })
 
+test('keep rebuild retains the account, fingerprint and credential file', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-recreate-keep-'))
+  const id = 'vm-11'
+  const cred = path.join(root, 'vms', id, 'cli-home', '.claude', 'credentials.json')
+  const computer = path.join(root, 'vms', id, 'kvm', 'fingerprint', 'identity.json')
+  fs.mkdirSync(path.dirname(cred), { recursive: true })
+  fs.mkdirSync(path.dirname(computer), { recursive: true })
+  fs.writeFileSync(cred, '{"claudeAiOauth":{"accessToken":"keep"}}')
+  fs.writeFileSync(computer, '{"hostname":"kept-host"}')
+  fs.writeFileSync(path.join(root, 'vms', id, 'cli-home', '.claude', 'projects'), 'session')
+  const prev = {
+    id,
+    name: '11',
+    kernel: 'ubuntu-24.04',
+    node_id: 'node-a',
+    claude: { email: 'keep@kin.test', has_access: true, access_token: 'secret' },
+    fingerprint: { hostname: 'kept-host', device_id: 'a'.repeat(64), guest_machine_id: 'b'.repeat(32) },
+    stats: { calls: 4 },
+    schedulable: true,
+    created_at: '2026-03-01T00:00:00.000Z',
+  }
+  const { vm, mode } = recreateVmFiles(root, prev, { mode: 'keep' })
+  assert.equal(mode, 'keep')
+  assert.equal(vm.claude.email, 'keep@kin.test')
+  assert.equal(vm.claude.has_access, true)
+  assert.equal(vm.claude.access_token, undefined)
+  assert.equal(vm.fingerprint.hostname, 'kept-host')
+  assert.equal(vm.fingerprint.device_id, 'a'.repeat(64))
+  assert.equal(vm.stats.calls, 4)
+  assert.equal(vm.node_id, 'node-a')
+  assert.equal(vm.schedulable, true)
+  assert.equal(fs.readFileSync(cred, 'utf8'), '{"claudeAiOauth":{"accessToken":"keep"}}')
+  assert.equal(fs.readFileSync(computer, 'utf8'), '{"hostname":"kept-host"}')
+  assert.equal(fs.existsSync(path.join(root, 'vms', id, 'cli-home', '.claude', 'projects')), false)
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
 test('destroy missing container is a no-op', () => {
   const r = destroyVmRuntime({ id: 'vm-missing-slot' })
   assert.equal(r.ok, true)

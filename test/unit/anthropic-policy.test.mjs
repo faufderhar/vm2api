@@ -258,7 +258,7 @@ test('5.5 keeps a lone redacted block and a short non-dummy signature', () => {
   }
 })
 
-test('5.5 preserve path still keeps an invalid signed chain', () => {
+test('preserve path drops thinking without a usable signature and keeps the rest', () => {
   const body = stripInvalidThinkingBlocks(
     {
       model: 'claude-opus-5-5',
@@ -277,10 +277,11 @@ test('5.5 preserve path still keeps an invalid signed chain', () => {
     },
     { preserveThinkingBlocks: true },
   )
-  assert.deepEqual(
-    body.messages[0].content.map((block) => block.type),
-    ['thinking', 'thinking', 'redacted_thinking', 'text'],
-  )
+  assert.deepEqual(body.messages[0].content, [
+    { type: 'thinking', thinking: 'later', signature: 'sig_real_1234567890abcdef' },
+    { type: 'redacted_thinking', data: 'encrypted' },
+    { type: 'text', text: 'answer' },
+  ])
 })
 test('an untyped thinking block breaks a valid 5.5 chain and is dropped on older models', () => {
   const messages = [
@@ -310,7 +311,7 @@ test('an untyped thinking block breaks a valid 5.5 chain and is dropped on older
   )
 })
 
-test('panel preservation creates a missing thinking signature field', () => {
+test('panel preservation drops a thinking block that has no signature field', () => {
   const body = prepareAnthropicRequest(
     {
       model: 'claude-opus-5',
@@ -327,10 +328,7 @@ test('panel preservation creates a missing thinking signature field', () => {
     },
     { preserveThinkingBlocks: true },
   )
-  assert.deepEqual(body.messages[0].content, [
-    { type: 'thinking', thinking: 'opaque', signature: '' },
-    { type: 'text', text: 'answer' },
-  ])
+  assert.deepEqual(body.messages[0].content, [{ type: 'text', text: 'answer' }])
 })
 
 test('existing context_management is not overwritten', () => {

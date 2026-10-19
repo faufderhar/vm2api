@@ -11,6 +11,16 @@ import { anthropicContentIsEmpty, mergeConsecutiveAnthropicMessages, messageHasT
 
 export { clampEnabledThinkingBudget, MIN_THINKING_BUDGET }
 
+/** `routing.compatibility.thinking_display`：缺省 summarized，显式 passthrough 才保留调用方的值。 */
+export const THINKING_DISPLAY_MODES = ['summarized', 'passthrough']
+
+export function thinkingDisplayMode(routing) {
+  const raw = String(routing?.compatibility?.thinking_display ?? '')
+    .trim()
+    .toLowerCase()
+  return raw === 'passthrough' ? 'passthrough' : 'summarized'
+}
+
 /**
  * OpenAI reasoning <-> Claude thinking mapping + model-aware normalize.
  * Official (Aug 2026):
@@ -152,6 +162,53 @@ export function downgradeUngatedThinkingDisplay(body = {}, anthropicBetaHeader =
     return body
   if (betaHeaderHas(anthropicBetaHeader, BETA_THINKING_DISPLAY_UPDATES)) return body
   return { ...body, thinking: { ...thinking, display: OFFICIAL_THINKING_DISPLAY } }
+}
+
+const HIDDEN_THINKING_DISPLAYS = new Set(['omitted', 'updates'])
+
+function bareModel(model) {
+  return (
+    String(model || '')
+      .toLowerCase()
+      .split('[')[0]
+      .split('/')
+      .filter(Boolean)
+      .pop() || ''
+  )
+}
+
+/** Opus 4.7+, the 5 series, Haiku 5.5, Fable and Mythos return empty thinking unless asked. */
+export function modelHidesThinkingByDefault(model) {
+  const m = bareModel(model)
+  if (!m) return false
+  if (/^claude-haiku-5(?:[-.]|$)/.test(m)) return true
+  if (/^claude-opus-4[-.][7-9](?:[-.]|$)/.test(m)) return true
+  if (/^claude-(?:opus|sonnet|fable|mythos)-5(?:[-.]|$)/.test(m)) return true
+  return /(?:^|-)(?:fable|mythos)(?:-|$)/.test(m)
+}
+
+/**
+ * `summarized` (the default) asks for a readable summary whenever the caller
+ * turned thinking on but hid it: explicit `omitted` or `updates`, or no display
+ * on a model whose default is `omitted`. Other values, `disabled`, and requests
+ * without thinking stay untouched, so a later fill can still write `omitted`.
+ * `passthrough` sends the caller's choice. Never mutates the input.
+ */
+export function applyThinkingDisplay(body, mode) {
+  if (mode !== 'summarized' || !body || typeof body !== 'object') return body
+  const thinking = body.thinking
+  if (!thinking || typeof thinking !== 'object') return body
+  const type = String(thinking.type || '')
+    .trim()
+    .toLowerCase()
+  if (type !== 'adaptive' && type !== 'enabled') return body
+  const display = String(thinking.display ?? '')
+    .trim()
+    .toLowerCase()
+  const hidden = HIDDEN_THINKING_DISPLAYS.has(display)
+  const unset = !display && modelHidesThinkingByDefault(body.model)
+  if (!hidden && !unset) return body
+  return { ...body, thinking: { ...thinking, display: 'summarized' } }
 }
 
 function thinkingNeedsOfficialDisplay(thinking) {

@@ -21,6 +21,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
+import { ChoiceTiles } from '@/components/choice-tiles'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
@@ -116,18 +117,19 @@ export function VmListPage() {
   const [sort, setSort] = useState<VmSortKey>('status')
   const [dir, setDir] = useState<'asc' | 'desc'>('asc')
   const [resetTarget, setResetTarget] = useState<Vm | null>(null)
+  const [resetMode, setResetMode] = useState<'keep' | 'traits'>('keep')
   const [resetInput, setResetInput] = useState('')
   const [deleteTarget, setDeleteTarget] = useState<Vm | null>(null)
   const [deleteInput, setDeleteInput] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
   const resetVm = useMutation({
-    mutationFn: (id: string) =>
+    mutationFn: ({ id, mode }: { id: string; mode: 'keep' | 'traits' }) =>
       api(`/api/panel/vms/${encodeURIComponent(id)}/reset`, {
         method: 'POST',
-        body: JSON.stringify({}),
+        body: JSON.stringify({ mode }),
       }),
-    onSuccess: async () => {
-      toast.success('已销毁并重建')
+    onSuccess: async (_data, { mode }) => {
+      toast.success(mode === 'keep' ? '已保留原数据重建' : '已按新特征重建')
       setResetTarget(null)
       setResetInput('')
       await qc.invalidateQueries({ queryKey: vmsListQueryOptions().queryKey })
@@ -330,7 +332,7 @@ export function VmListPage() {
             setResetInput('')
           }
         }}
-        title='重置'
+        title='重建槽位'
         desc={
           resetTarget ? (
             <>
@@ -340,25 +342,42 @@ export function VmListPage() {
                   · {resetTarget.id}
                 </span>
               </p>
-              <p className='mt-2 text-destructive'>
-                销毁容器与家目录，再按原槽位重新创建。保留
-                ID、名称、内核、时区、代理和种子策略。凭证、指纹、统计和 guest
-                家目录会清空。
+              <p className='mt-2'>
+                本地槽和集群槽都换当前 kernel、cli-node 与 Go 遥测后的容器。
               </p>
             </>
           ) : (
             ''
           )
         }
-        confirmText='销毁并重建'
+        confirmText={resetMode === 'keep' ? '保留原数据重建' : '重建新特征'}
         cancelBtnText='取消'
-        destructive
+        destructive={resetMode === 'traits'}
         disabled={resetInput.trim() !== resetTarget?.id}
         isLoading={resetVm.isPending}
         handleConfirm={() => {
-          if (resetTarget) resetVm.mutate(resetTarget.id)
+          if (resetTarget)
+            resetVm.mutate({ id: resetTarget.id, mode: resetMode })
         }}
       >
+        <ChoiceTiles
+          label='重建方式'
+          value={resetMode}
+          onChange={setResetMode}
+          choices={[
+            {
+              value: 'keep',
+              title: '保留原数据重建',
+              detail: '留下凭证、指纹、主机名和统计，只换容器里的服务。',
+            },
+            {
+              value: 'traits',
+              title: '重建新特征',
+              detail:
+                '清掉凭证和家目录，重新生成主机名、machine-id 和设备特征。',
+            },
+          ]}
+        />
         <Input
           autoFocus
           autoComplete='off'
@@ -371,9 +390,10 @@ export function VmListPage() {
             if (
               e.key === 'Enter' &&
               resetInput.trim() === resetTarget?.id &&
-              !resetVm.isPending
+              !resetVm.isPending &&
+              resetTarget
             ) {
-              resetVm.mutate(resetTarget.id)
+              resetVm.mutate({ id: resetTarget.id, mode: resetMode })
             }
           }}
         />

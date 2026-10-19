@@ -3,7 +3,7 @@ import {
   SESSION_IDLE_TTL_SECONDS_MAX,
   SESSION_IDLE_TTL_SECONDS_MIN,
 } from '@/types/panel-routing'
-import { Check, Clock3, Database, Hash, ShieldCheck } from 'lucide-react'
+import { Brain, Check, Clock3, Database, Hash, ShieldCheck } from 'lucide-react'
 import {
   cacheTtlFromCompat,
   detectProxiedOfficialCcFromCompat,
@@ -15,6 +15,7 @@ import { SettingRow } from '@/components/setting-row'
 import {
   cchEnabledFromCompat,
   sessionIdleTtlFromInference,
+  thinkingDisplayFromCompat,
 } from './protocol-authority'
 import { ChipGroup, PaneSection, StepperSetting } from './scheduler-controls'
 
@@ -160,6 +161,31 @@ export function ProtocolPane({
           保存后作为新会话和自有缺省标记的
           TTL。已有会话锁定值不变，官方透传仍保留调用方断点及缺失 TTL。
         </p>
+      </PaneSection>
+      <PaneSection
+        icon={Brain}
+        title='thinking 显示'
+        desc='调用方打开 thinking 却要求隐藏时，出站改成返回摘要。计费不变。'
+      >
+        <SettingRow
+          label='隐藏的 thinking 改为返回摘要'
+          desc={
+            thinkingDisplayFromCompat(compat) === 'summarized'
+              ? '开：omitted、updates，以及默认隐藏的模型上没写 display 的请求，出站改成 summarized。'
+              : '关：保留调用方的 display。updates 仍只在出站 beta 声明时保留，否则降成 omitted。'
+          }
+        >
+          <Switch
+            checked={thinkingDisplayFromCompat(compat) === 'summarized'}
+            onCheckedChange={(on) =>
+              onCompatChange({
+                ...compat,
+                thinking_display: on ? 'summarized' : 'passthrough',
+              })
+            }
+            aria-label='隐藏的 thinking 改为返回摘要'
+          />
+        </SettingRow>
       </PaneSection>
       <PaneSection
         icon={Hash}

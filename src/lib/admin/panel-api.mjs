@@ -6,6 +6,7 @@
  *   { ok: false, error: { type, code, message, ... } }
  */
 
+import { THINKING_DISPLAY_MODES } from '../protocol/thinking.mjs'
 import { readSlotProcessStatus } from '../vm/slot-process-status.mjs'
 import os from 'node:os'
 import path from 'node:path'
@@ -475,6 +476,13 @@ export function validatePersonaRoutingPatch(body = {}) {
   }
   if (Object.prototype.hasOwnProperty.call(compat, 'cch_enabled') && typeof compat.cch_enabled !== 'boolean') {
     problems.push('cch_enabled 必须是布尔')
+  }
+  if (
+    compat.thinking_display != null &&
+    compat.thinking_display !== '' &&
+    !THINKING_DISPLAY_MODES.includes(String(compat.thinking_display).trim().toLowerCase())
+  ) {
+    problems.push(`thinking_display 必须是 ${THINKING_DISPLAY_MODES.join(' / ')}，收到 ${compat.thinking_display}`)
   }
   if (compat.cache_breakpoints != null) {
     const bp = compat.cache_breakpoints
@@ -1412,6 +1420,10 @@ export function buildUsage({ accountQuota, cfg, requestLog = null }) {
 function presentCompatibility(compat) {
   const out = compat && typeof compat === 'object' && !Array.isArray(compat) ? { ...compat } : {}
   out.cch_enabled = out.cch_enabled !== false
+  const display = String(out.thinking_display ?? '')
+    .trim()
+    .toLowerCase()
+  out.thinking_display = display === 'passthrough' ? 'passthrough' : 'summarized'
   return out
 }
 

@@ -62,6 +62,8 @@ test('unofficial outbound envelope matches official 2.1.281 capture keys', () =>
     stream: true,
     reqHeaders: headersIn,
     homeDir: dir,
+    // 2.1.281 wire used omitted; passthrough keeps this snapshot off the gateway summarized default.
+    routing: { compatibility: { thinking_display: 'passthrough' } },
   })
   const { headers, body } = envelope
   assert.equal(headers['user-agent'], 'claude-cli/2.1.281 (external, sdk-cli)')

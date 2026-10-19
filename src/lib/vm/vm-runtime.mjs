@@ -708,6 +708,10 @@ function readFingerprintSmbios(kvmDir) {
  * exist only inside it and the host would mount an empty one into the slot. Entries are hard
  * links (copies across mounts): a symlink to the host path dangles inside the slot.
  */
+function fileDigest(file) {
+  return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')
+}
+
 export function slotGuestBinDir(projectRoot) {
   return path.join(projectRoot, 'data', 'run', 'slot-guest-bin')
 }
@@ -716,31 +720,33 @@ export function ensureSlotGuestBinDir(projectRoot, { workerBin, kernelBin } = {}
   if (!projectRoot) throw new Error('projectRoot required')
   const dir = slotGuestBinDir(projectRoot)
   fs.mkdirSync(dir, { recursive: true, mode: 0o755 })
-  const link = (name, target) => {
+  const link = (name, binPath) => {
     // The dir is shared by every slot: a slot that does not mount a binary must not remove it.
-    if (!target) return
+    if (!binPath) return
     const dest = path.join(dir, name)
-    const src = fs.statSync(target, { throwIfNoEntry: false })
+    const src = fs.statSync(binPath, { throwIfNoEntry: false })
     if (!src?.isFile()) {
       try {
         fs.unlinkSync(dest)
       } catch {}
       return
     }
+    // link(2) does not follow symlinks, and a symlink to a host path dangles inside the slot.
+    const target = fs.realpathSync(binPath)
     try {
       const cur = fs.lstatSync(dest)
       if (cur.isFile() && cur.dev === src.dev && cur.ino === src.ino) return
-      if (cur.isFile() && cur.dev !== src.dev && cur.size === src.size && cur.mtimeMs === src.mtimeMs) return
+      // bin/ and data/ are separate bind mounts in the control container, so this is usually a copy.
+      if (cur.isFile() && cur.size === src.size && fileDigest(dest) === fileDigest(target)) return
     } catch {}
     const tmp = `${dest}.${process.pid}.tmp`
     fs.rmSync(tmp, { force: true })
     try {
       fs.linkSync(target, tmp)
-    } catch (err) {
-      if (err?.code !== 'EXDEV') throw err
+    } catch {
+      // EXDEV across mounts, or EPERM under fs.protected_hardlinks: a copy works for both.
       fs.copyFileSync(target, tmp)
       fs.chmodSync(tmp, src.mode & 0o777)
-      fs.utimesSync(tmp, src.atime, src.mtime)
     }
     // rename swaps the entry inside the mounted dir, so running slots see the new file.
     fs.renameSync(tmp, dest)

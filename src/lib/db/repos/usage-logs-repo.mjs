@@ -33,6 +33,24 @@ import { collapseBlockKeywords, foldInterceptRows } from '../../protocol/interce
 
 /** settings key: ISO instant before which usage_logs rows may have been pruned. Monotonic. */
 const PRUNED_THROUGH_KEY = 'usage_logs_pruned_through'
+const BILLING_STATS_CACHE_TTL_MS = 10_000
+const BILLING_BACKFILL_INTERVAL_MS = 60_000
+
+function billingStatsCacheKey(accountWindows) {
+  if (!Array.isArray(accountWindows) || accountWindows.length === 0) return 'rolling'
+  const normalized = accountWindows
+    .map((win) => ({
+      account_id: win?.account_id || '',
+      vm_id: win?.vm_id || '',
+      reset_5h: win?.reset_5h || null,
+      reset_7d: win?.reset_7d || null,
+      reset_7d_oi: win?.reset_7d_oi || null,
+    }))
+    .sort((a, b) =>
+      `${a.account_id}\0${a.vm_id}`.localeCompare(`${b.account_id}\0${b.vm_id}`, 'en', { sensitivity: 'case' }),
+    )
+  return JSON.stringify(normalized)
+}
 
 // Preserve per-row prompt denominators when aligning account quota windows.
 // Do not re-apply a single Anthropic formula on the mixed SUM (homepage/usage
@@ -262,6 +280,11 @@ export function summarizeLatency(values) {
 export class UsageLogsRepo {
   constructor(db = getDb()) {
     this.db = db
+    // Panel endpoints request the same expensive billing snapshot several times
+    // during one refresh. Keep this cache repository-local so it never affects
+    // request accounting or persists across processes.
+    this._billingStatsCache = new Map()
+    this._billingBackfillAt = 0
     this._insert = db.prepare(`
       INSERT INTO usage_logs (${SUMMARY_COLUMNS.join(', ')})
       VALUES (${SUMMARY_COLUMNS.map(() => '?').join(', ')})
@@ -1012,17 +1035,52 @@ export class UsageLogsRepo {
   }
 
   /** Official-standard totals: all-time + Shanghai calendar today + per account. */
-  billingStats({ accountWindows = null, now = Date.now() } = {}) {
-    try {
-      this.backfillMissingCosts()
-    } catch {}
+  billingStats(opts = {}) {
+    const { accountWindows = null, now = Date.now() } = opts
+    const cacheable = !Object.hasOwn(opts, 'now')
+    const cacheNow = Date.now()
+    const key = billingStatsCacheKey(accountWindows)
+    const cached = cacheable ? this._billingStatsCache.get(key) : null
+    if (cached && cached.expires_at > cacheNow) return cached.value
+
+    // Historical cost repair is maintenance, not part of rendering a panel.
+    // Limit it independently so several panel endpoints cannot repeat the same
+    // synchronous scan in a single refresh.
+    if (cacheNow - this._billingBackfillAt >= BILLING_BACKFILL_INTERVAL_MS) {
+      this._billingBackfillAt = cacheNow
+      try {
+        this.backfillMissingCosts()
+      } catch {}
+    }
+
+    const value = this._computeBillingStats({ accountWindows, now })
+    if (this._billingStatsCache.size > 32) {
+      for (const [cacheKey, entry] of this._billingStatsCache) {
+        if (entry.expires_at <= cacheNow) this._billingStatsCache.delete(cacheKey)
+      }
+    }
+    // Start the TTL after the expensive synchronous aggregation completes. On
+    // large databases the computation itself can exceed the TTL; anchoring the
+    // expiry at cache lookup time would make a freshly computed entry already
+    // stale and every refresh would scan the table again.
+    if (cacheable) this._billingStatsCache.set(key, { value, expires_at: Date.now() + BILLING_STATS_CACHE_TTL_MS })
+    return value
+  }
+
+  _computeBillingStats({ accountWindows = null, now = Date.now() } = {}) {
     const todayStart = shanghaiDayStartIso()
-    const total = this._costSelect('', [])
-    const today = this._costSelect('WHERE created_at >= ?', [todayStart])
     const fiveHStart = new Date(now - WINDOW_5H_MS).toISOString()
     const sevenDStart = new Date(now - WINDOW_7D_MS).toISOString()
     const accountsTotal = this.costByAccount()
     const accountsToday = this.costByAccount({ since: todayStart })
+    // The per-account queries already cover every row. Re-sum them for the
+    // global buckets instead of scanning the entire usage table two more times.
+    // This matters on multi-GB databases where each synchronous full scan also
+    // blocks unrelated HTTP requests on the Node event loop.
+    const totalBucket = sumCostBuckets(accountsTotal)
+    const todayBucket = sumCostBuckets(accountsToday)
+    const total = { ...totalBucket, ...cacheHitStats(totalBucket) }
+    const today = { ...todayBucket, ...cacheHitStats(todayBucket) }
     const keyOf = (a) => a.account_id + '\0' + (a.vm_id || '')
     const todayById = new Map(accountsToday.map((a) => [keyOf(a), a]))
     const aligned = Array.isArray(accountWindows) && accountWindows.length > 0

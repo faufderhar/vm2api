@@ -5,6 +5,7 @@ import path from 'node:path'
 import { prepareOutboundHeaders } from '../protocol/outbound-attempt.mjs'
 import { sanitizeAnthropicBodyForBetaTokens } from '../protocol/anthropic-policy.mjs'
 import { withRequestProtocolBetas } from '../protocol/claude-code-betas.mjs'
+import { applyThinkingDisplay, thinkingDisplayMode } from '../protocol/thinking.mjs'
 import { sealClaudeCodeCch } from '../identity/cch.mjs'
 import { credentialModeFromOauth } from '../oauth/credential-mode.mjs'
 import { isCrsMock, writeCrsTrace, mockCrsPayload, emitMockSse } from './crs-mock.mjs'
@@ -429,18 +430,31 @@ function dumpSessionEnvelope(envelope) {
  * body on the VM's HTTP betas would lift every role=system turn into system[],
  * so system grows each turn and no cached prefix is ever read.
  */
-export function finalizeWorkerPayload({ body, reqHeaders, exec, identity, routing, want1m = false, cliHop = false }) {
+export function finalizeWorkerPayload({
+  body,
+  reqHeaders,
+  exec,
+  identity,
+  routing,
+  want1m = false,
+  cliHop = false,
+  requestContext = null,
+} = {}) {
   const model = body?.model || ''
   const credMode = credentialModeFromOauth(exec?.vm?.claude || {})
   const headers = prepareOutboundHeaders(reqHeaders, exec?.homeDir, identity, model, {
     credentialMode: credMode,
     want1m: want1m === true,
   })
-  const betas = withRequestProtocolBetas(String(headers?.['anthropic-beta'] || '').split(','), body)
+  const displayed =
+    requestContext?.purpose === 'auto_mode_classifier' ? body : applyThinkingDisplay(body, thinkingDisplayMode(routing))
+  const betas = withRequestProtocolBetas(String(headers?.['anthropic-beta'] || '').split(','), displayed)
   headers['anthropic-beta'] = betas.join(',')
   // Envelope headers are discarded; the existing MessageRequest.betas channel
   // carries request gates to the native CLI, which builds the actual HTTP wire.
-  const gated = cliHop ? { ...body, betas } : sanitizeAnthropicBodyForBetaTokens(body, headers['anthropic-beta'])
+  const gated = cliHop
+    ? { ...displayed, betas }
+    : sanitizeAnthropicBodyForBetaTokens(displayed, headers['anthropic-beta'])
   return {
     headers,
     body: sealClaudeCodeCch(gated, { enabled: routing?.compatibility?.cch_enabled !== false, seal: !cliHop }),
@@ -461,7 +475,16 @@ function workerEnvelope({
   preserveCacheBreakpoints = null,
   cliHop = false,
 } = {}) {
-  const finalized = finalizeWorkerPayload({ body, reqHeaders, exec, identity, routing, want1m, cliHop })
+  const finalized = finalizeWorkerPayload({
+    body,
+    reqHeaders,
+    exec,
+    identity,
+    routing,
+    want1m,
+    cliHop,
+    requestContext,
+  })
   const envelope = {
     ...(requestContext ? { request_context: requestContext } : {}),
     body: finalized.body,
@@ -509,6 +532,7 @@ export async function callGoWorker({
       routing,
       want1m,
       cliHop,
+      requestContext,
     })
     writeCrsTrace({ body: outboundBody, headers, stream: false })
     const mock = mockCrsPayload({ scenario: mockScenario(exec) })
@@ -613,6 +637,7 @@ export async function streamGoWorker({
       routing,
       want1m,
       cliHop,
+      requestContext,
     })
     writeCrsTrace({ body: outboundBody, headers, stream: true })
     const scenario = mockScenario(exec)

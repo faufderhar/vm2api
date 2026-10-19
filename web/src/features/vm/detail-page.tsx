@@ -47,6 +47,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { ChoiceTiles } from '@/components/choice-tiles'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { PageHeader } from '@/components/page-header'
 import { PlatformChip, SlotIdentity } from '@/components/platform-chip'
@@ -139,6 +140,7 @@ function VmDetailBody({
   const [bindId, setBindId] = useState('')
   const [confirmDel, setConfirmDel] = useState(false)
   const [confirmReset, setConfirmReset] = useState(false)
+  const [resetMode, setResetMode] = useState<'keep' | 'traits'>('keep')
   const [resetInput, setResetInput] = useState('')
   const data = detail.data || {}
   const slotList: Vm[] =
@@ -242,9 +244,11 @@ function VmDetailBody({
     onError: (error: Error) => toast.error(error.message),
   })
   const resetVm = useMutation({
-    mutationFn: () => postVm(id, '/reset', {}),
-    onSuccess: async () => {
-      toast.success(`已销毁并重建 ${id}`)
+    mutationFn: (mode: 'keep' | 'traits') => postVm(id, '/reset', { mode }),
+    onSuccess: async (_data, mode) => {
+      toast.success(
+        mode === 'keep' ? `已保留原数据重建 ${id}` : `已按新特征重建 ${id}`
+      )
       setConfirmReset(false)
       setResetInput('')
       await refreshAll()
@@ -599,27 +603,43 @@ function VmDetailBody({
             setConfirmReset(open)
             if (!open) setResetInput('')
           }}
-          title='重置'
+          title='重建槽位'
           desc={
             <>
               <p>
                 {vm.name && vm.name !== id ? `${vm.name} · ` : ''}
                 {id}
               </p>
-              <p className='mt-2 text-destructive'>
-                销毁容器与家目录，再按原槽位重新创建。保留
-                ID、名称、内核、时区、代理和种子策略。凭证、指纹、统计和 guest
-                家目录会清空。
+              <p className='mt-2'>
+                本地槽和集群槽都换当前 kernel、cli-node 与 Go 遥测后的容器。
               </p>
             </>
           }
-          confirmText='销毁并重建'
+          confirmText={resetMode === 'keep' ? '保留原数据重建' : '重建新特征'}
           cancelBtnText='取消'
-          destructive
+          destructive={resetMode === 'traits'}
           disabled={resetInput.trim() !== id}
           isLoading={resetVm.isPending}
-          handleConfirm={() => resetVm.mutate()}
+          handleConfirm={() => resetVm.mutate(resetMode)}
         >
+          <ChoiceTiles
+            label='重建方式'
+            value={resetMode}
+            onChange={setResetMode}
+            choices={[
+              {
+                value: 'keep',
+                title: '保留原数据重建',
+                detail: '留下凭证、指纹、主机名和统计，只换容器里的服务。',
+              },
+              {
+                value: 'traits',
+                title: '重建新特征',
+                detail:
+                  '清掉凭证和家目录，重新生成主机名、machine-id 和设备特征。',
+              },
+            ]}
+          />
           <Input
             autoFocus
             autoComplete='off'
@@ -634,7 +654,7 @@ function VmDetailBody({
                 resetInput.trim() === id &&
                 !resetVm.isPending
               ) {
-                resetVm.mutate()
+                resetVm.mutate(resetMode)
               }
             }}
           />

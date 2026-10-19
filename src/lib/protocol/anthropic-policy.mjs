@@ -175,8 +175,11 @@ export function alignSamplingWithThinking(body = {}) {
  * Opus / Sonnet / Haiku 5.5 follow sub2api: one invalid block drops the whole
  * signed chain, including later valid thinking and redacted_thinking. Turns
  * left with no content are dropped. redacted_thinking stays when it carries
- * data on 5.5, otherwise when its signature is usable. The preserve path is
- * unchanged.
+ * data on 5.5, otherwise when its signature is usable. The preserve path
+ * (cli-hop first hop, default HTTP hop) skips the chain rule and keeps a
+ * signed block as-is, empty text and redacted_thinking included. A thinking
+ * block without a usable signature (missing, empty, shorter than 24, dummy)
+ * is dropped instead of forwarded with an empty signature.
  */
 export function stripInvalidThinkingBlocks(body = {}, { preserveThinkingBlocks = false } = {}) {
   if (!Array.isArray(body.messages)) return body
@@ -194,12 +197,11 @@ export function stripInvalidThinkingBlocks(body = {}, { preserveThinkingBlocks =
         if ((keepSigned || preserveThinkingBlocks) && message.role === 'assistant') {
           // Omitted thinking keeps empty text; redacted thinking keeps encrypted data.
           if (preserveThinkingBlocks) {
-            if (type === 'thinking' && !Object.hasOwn(block, 'signature')) {
+            if (type === 'redacted_thinking' || hasUsableThinkingSignature(block.signature)) {
+              content.push(block)
+            } else {
               changed = true
               filteredThis = true
-              content.push({ ...block, signature: '' })
-            } else {
-              content.push(block)
             }
             continue
           }

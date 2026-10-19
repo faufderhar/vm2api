@@ -164,7 +164,7 @@ test('cli-hop envelope keeps role=system turns that the VM betas do not declare'
   assert.deepEqual(out.body.system, body.system)
 })
 
-test('setup-token cli-hop preserves updates with its beta and isolates later requests', () => {
+test('setup-token cli-hop summarizes hidden thinking by default and keeps updates when passthrough', () => {
   const exec = { homeDir: '', vm: { claude: { mode: 'setup-token', scope: 'user:inference' } } }
   const updates = finalizeWorkerPayload({
     body: {
@@ -178,22 +178,23 @@ test('setup-token cli-hop preserves updates with its beta and isolates later req
     cliHop: true,
   })
   assert.equal(updates.body.thinking.type, 'adaptive')
-  assert.equal(updates.body.thinking.display, 'updates')
-  assert.ok(updates.body.betas.includes('thinking-display-updates-2026-08-18'))
+  assert.equal(updates.body.thinking.display, 'summarized')
+  assert.ok(!updates.body.betas.includes('thinking-display-updates-2026-08-18'))
   assert.ok(!updates.body.betas.includes('claude-code-20250219'))
-  const summarized = finalizeWorkerPayload({
+  const passed = finalizeWorkerPayload({
     body: {
       model: 'claude-opus-5-5',
-      thinking: { type: 'adaptive', display: 'summarized' },
+      thinking: { type: 'adaptive', display: 'updates' },
       messages: [{ role: 'user', content: 'hi' }],
     },
     reqHeaders: {},
     exec,
     identity: null,
+    routing: { compatibility: { thinking_display: 'passthrough' } },
     cliHop: true,
   })
-  assert.equal(summarized.body.thinking.display, 'summarized')
-  assert.ok(!summarized.body.betas.includes('thinking-display-updates-2026-08-18'))
+  assert.equal(passed.body.thinking.display, 'updates')
+  assert.ok(passed.body.betas.includes('thinking-display-updates-2026-08-18'))
 })
 
 const unix = process.platform !== 'win32'

@@ -77,3 +77,29 @@ test('outbound envelope drops speed for a model without fast mode', () => {
   assert.equal('speed' in r.body, false)
   assert.equal(r.headers['anthropic-beta'].includes(FAST_MODE_BETA), false)
 })
+
+test('outbound envelope summarizes a hidden thinking display unless passthrough', () => {
+  const body = {
+    model: 'claude-opus-5',
+    max_tokens: 100,
+    thinking: { type: 'adaptive', display: 'omitted' },
+    messages: [{ role: 'user', content: 'hi' }],
+  }
+  const summarized = prepareOutboundEnvelope({
+    identity: IDENTITY,
+    canonicalBody: body,
+    inbound: body,
+    unofficial: true,
+    stream: true,
+  })
+  assert.equal(summarized.body.thinking.display, 'summarized')
+  const passed = prepareOutboundEnvelope({
+    identity: IDENTITY,
+    canonicalBody: body,
+    inbound: body,
+    unofficial: true,
+    stream: true,
+    routing: { compatibility: { thinking_display: 'passthrough' } },
+  })
+  assert.equal(passed.body.thinking.display, 'omitted')
+})

@@ -210,7 +210,7 @@ test('prepareCliHopBody strips unsigned dummy and short thinking history', () =>
     { type: 'text', text: 'hello' },
   ])
 })
-test('prepareCliHopBody keeps existing signatures and fills missing ones', () => {
+test('prepareCliHopBody drops thinking without a usable signature on the preserve path', () => {
   const body = prepareCliHopBody(
     {
       model: 'claude-sonnet-5',
@@ -220,8 +220,10 @@ test('prepareCliHopBody keeps existing signatures and fills missing ones', () =>
         {
           role: 'assistant',
           content: [
-            { type: 'thinking', thinking: 'existing', signature: 'abc' },
+            { type: 'thinking', thinking: 'existing', signature: 'sig_real_1234567890abcdef' },
+            { type: 'thinking', thinking: 'short', signature: 'abc' },
             { type: 'thinking', thinking: 'missing' },
+            { type: 'redacted_thinking', data: '' },
             { type: 'text', text: 'hello' },
           ],
         },
@@ -230,8 +232,8 @@ test('prepareCliHopBody keeps existing signatures and fills missing ones', () =>
     { preserveThinkingBlocks: true },
   )
   assert.deepEqual(body.messages[1].content, [
-    { type: 'thinking', thinking: 'existing', signature: 'abc' },
-    { type: 'thinking', thinking: 'missing', signature: '' },
+    { type: 'thinking', thinking: 'existing', signature: 'sig_real_1234567890abcdef' },
+    { type: 'redacted_thinking', data: '' },
     { type: 'text', text: 'hello', cache_control: { type: 'ephemeral', ttl: '1h' } },
   ])
 })

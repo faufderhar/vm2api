@@ -441,6 +441,15 @@ test('PUT routing accepts only 5m and 1h cache TTL values', () => {
   assert.match(validatePersonaRoutingPatch({ compatibility: { cache_ttl: '60m' } })[0], /5m \/ 1h/)
 })
 
+test('PUT routing accepts summarized and passthrough thinking display', () => {
+  assert.deepEqual(validatePersonaRoutingPatch({ compatibility: { thinking_display: 'summarized' } }), [])
+  assert.deepEqual(validatePersonaRoutingPatch({ compatibility: { thinking_display: 'passthrough' } }), [])
+  assert.match(
+    validatePersonaRoutingPatch({ compatibility: { thinking_display: 'omitted' } })[0],
+    /summarized \/ passthrough/,
+  )
+})
+
 test('legacy routing without persona_preset keeps the old rewrite path', () => {
   withRoutingFile({ persona_inject: 'rewrite', persona_park: false }, (file) => {
     const out = applyCrsUnofficialPersona(
@@ -558,6 +567,41 @@ test('built-in templates omit cache_control.scope; custom explicit scope and cal
       assert.equal(injected.text, CRS_OFFICIAL_AGENT_PROMPT)
       assert.deepEqual(injected.cache_control, { type: 'ephemeral', ttl: '1h' })
       assert.equal(out.system.at(-1).text, 'KEEP_CALLER_SYSTEM')
+    },
+  )
+})
+
+test('edited built-in templates saved with the old global-scope default stop sending scope', () => {
+  const legacyCache = { type: 'ephemeral', ttl: '1h', scope: 'global' }
+  const legacy = (preset) =>
+    DEFAULT_PERSONA_TEMPLATES[preset].map((block) =>
+      block.id === 'agent' || block.id === 'agent_official'
+        ? { ...block, note: `${block.note || ''} edited`, cache_control: legacyCache }
+        : { ...block },
+    )
+  for (const preset of ['official', 'official_full']) {
+    withRoutingFile(
+      { persona_preset: preset, overlay_preset: 'off', persona_templates: { [preset]: legacy(preset) } },
+      (file) => {
+        const out = applyCrsUnofficialPersona({ messages: [{ role: 'user', content: 'hi' }] }, { routingFile: file })
+        const scoped = out.system.filter((block) => block?.cache_control?.scope)
+        assert.deepEqual(scoped, [], preset)
+        assert.ok(out.system.some((block) => block?.cache_control?.ttl === '1h'))
+      },
+    )
+  }
+  const explicit = DEFAULT_PERSONA_TEMPLATES.official_full.map((block) =>
+    block.id === 'agent_official'
+      ? { ...block, cache_control: { type: 'ephemeral', ttl: '5m', scope: 'global' } }
+      : { ...block },
+  )
+  withRoutingFile(
+    { persona_preset: 'official_full', overlay_preset: 'off', persona_templates: { official_full: explicit } },
+    (file) => {
+      const out = applyCrsUnofficialPersona({ messages: [{ role: 'user', content: 'hi' }] }, { routingFile: file })
+      assert.ok(
+        out.system.some((block) => block?.cache_control?.scope === 'global' && block.cache_control.ttl === '5m'),
+      )
     },
   )
 })

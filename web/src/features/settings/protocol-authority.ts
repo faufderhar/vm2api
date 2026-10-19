@@ -24,6 +24,15 @@ export function cchEnabledFromCompat(
   return compat?.cch_enabled !== false
 }
 
+/** `routing.compatibility.thinking_display`：缺省 summarized，显式 passthrough 才关。 */
+export function thinkingDisplayFromCompat(
+  compat: Record<string, unknown> | undefined
+): 'summarized' | 'passthrough' {
+  return compat?.thinking_display === 'passthrough'
+    ? 'passthrough'
+    : 'summarized'
+}
+
 /** `routing.inference.session_idle_ttl_seconds`：kernel 原生 sticky 槽空闲，默认 600。 */
 export function sessionIdleTtlFromInference(
   inference: Record<string, unknown> | undefined

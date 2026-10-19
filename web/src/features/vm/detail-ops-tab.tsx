@@ -1,8 +1,16 @@
+import { useState } from 'react'
 import type { Vm, VmProxySnap } from '@/types/panel-vm'
 import { type CredType, credTypeLabel } from '@/lib/cred-type'
 import { isClaudeVm, isCodexVm } from '@/lib/vm-kind'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { Separator } from '@/components/ui/separator'
 import { TabsContent } from '@/components/ui/tabs'
 import {
@@ -10,6 +18,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { ChoiceTiles } from '@/components/choice-tiles'
 import { Field } from '@/features/vm/detail-section-primitives'
 import { VmEnvironmentCard } from '@/features/vm/environment-card'
 import { NodeChip } from '@/features/vm/node-chip'
@@ -38,6 +47,8 @@ type VmOpsTabProps = {
 }
 
 export function VmOpsTab(props: VmOpsTabProps) {
+  const [kernelOpen, setKernelOpen] = useState(false)
+  const [kernelMode, setKernelMode] = useState<'keep' | 'traits'>('keep')
   const {
     vm,
     proxy,
@@ -211,17 +222,11 @@ export function VmOpsTab(props: VmOpsTabProps) {
             <Button
               size='sm'
               variant='outline'
-              disabled={remote}
               loading={busy('/wrap-cli/repair')}
-              onClick={() => onAction('/wrap-cli/repair')}
+              onClick={() => setKernelOpen(true)}
             >
               重装 kernel
             </Button>
-            {remote ? (
-              <span className='text-xs text-muted-foreground'>
-                {REMOTE_UNSUPPORTED_TEXT}
-              </span>
-            ) : null}
           </div>
         </>
       )}
@@ -235,6 +240,47 @@ export function VmOpsTab(props: VmOpsTabProps) {
           删除此槽位
         </Button>
       </div>
+      <Dialog open={kernelOpen} onOpenChange={setKernelOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>重装 kernel</DialogTitle>
+          </DialogHeader>
+          <ChoiceTiles
+            label='更新方式'
+            value={kernelMode}
+            onChange={setKernelMode}
+            choices={[
+              {
+                value: 'keep',
+                title: '保留原数据重建',
+                detail:
+                  '留下凭证、指纹和统计，只换 kernel、cli-node 与 Go 遥测。',
+              },
+              {
+                value: 'traits',
+                title: '重建新特征',
+                detail: remote
+                  ? '集群槽只换镜像，不在这里清远程家目录。'
+                  : '清家目录并重抽计算机身份。',
+              },
+            ]}
+          />
+          <DialogFooter>
+            <Button variant='outline' onClick={() => setKernelOpen(false)}>
+              取消
+            </Button>
+            <Button
+              variant={kernelMode === 'traits' ? 'destructive' : 'default'}
+              onClick={() => {
+                setKernelOpen(false)
+                onAction('/wrap-cli/repair', { mode: kernelMode })
+              }}
+            >
+              {kernelMode === 'keep' ? '保留原数据重建' : '重建新特征'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </TabsContent>
   )
 }
