@@ -30,7 +30,13 @@ export const PERSONA_TEMPLATE_VARS = Object.freeze([
   Object.freeze(['billing', '官方计费归因头整行：cc_version / cc_entrypoint / cch / cc_prompt_id']),
   Object.freeze(['billing_semi', '同 billing，但保证以分号结尾，供同一行继续拼接']),
   Object.freeze(['identity', "官方身份句 You are a Claude agent, built on Anthropic's Claude Agent SDK."]),
+  Object.freeze(['identity_cli', "交互 CLI 身份句 You are Claude Code, Anthropic's official CLI for Claude."]),
   Object.freeze(['identity_compact', '0注入短身份句 You are Anthropic Claude Agent SDK.']),
+  Object.freeze(['reporting', '官方 # Reporting outcomes 整段。cli-node 只在计费和身份都在时把它切成独立段']),
+  Object.freeze([
+    'dynamic_boundary',
+    '官方动态边界标记。cli-node 用它把前面的静态段标成 global，后面的标成 org，标记本身不出站',
+  ]),
   Object.freeze(['agent_expansion', 'KIN 短 agent 扩写段']),
   Object.freeze(['agent_official', '官方 agent 提示词全文']),
   Object.freeze(['agent_standing', 'agent prompt 常驻约束（按档开关，非空时以换行结尾）']),
@@ -116,16 +122,28 @@ export const DEFAULT_PERSONA_TEMPLATES = Object.freeze({
     }),
     Object.freeze({
       id: 'identity',
-      note: '官方身份句（Claude Agent SDK）',
+      note: '交互 CLI 身份句。cli-node 按这句切第 2 段，不能换成 Agent SDK 句',
       type: 'text',
-      text: '{{identity}}',
+      text: '{{identity_cli}}',
+    }),
+    Object.freeze({
+      id: 'reporting',
+      note: '官方 reporting 整段。必须是独立块，cli-node 才把它从静态段里抬出来',
+      type: 'text',
+      text: '{{reporting}}',
     }),
     Object.freeze({
       id: 'agent_official',
-      note: '常驻约束为第一段 + 官方 Claude Code 基础提示词全文。2.1.263 起 1h 缓存',
+      note: '静态段。常驻约束在前，官方提示词在后。1h 断点打在这里，排在会变的动态段之前',
       type: 'text',
       text: '{{agent_standing}}{{agent_official}}',
       cache_control: Object.freeze({ type: 'ephemeral', ttl: '1h' }),
+    }),
+    Object.freeze({
+      id: 'dynamic_boundary',
+      note: '静态段和动态段的分界。cli-node 丢掉这个标记，只拿它决定 cache scope',
+      type: 'text',
+      text: '{{dynamic_boundary}}',
     }),
     Object.freeze({
       id: 'env_official',
@@ -390,6 +408,9 @@ export function renderPersonaTemplate(blocks, vars = {}) {
   for (const block of source) {
     if (!block || typeof block !== 'object') continue
     const text = renderText(block.text, vars)
+    // The marker only tells cli-node where the global prefix ends. HTTP has no
+    // splitter, so a rendered block would ship the literal upstream.
+    if (text === '__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__') continue
     const blank = !text.trim()
     const emptyEnvironment =
       blank &&

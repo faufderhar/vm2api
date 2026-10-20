@@ -19,6 +19,7 @@ import {
   isAuthCooldownReason,
   isGrantRevoked,
   isLiveDiskGrant,
+  currentAccessOutlivesGrantError,
   probeOlderThanRefresh,
 } from './schedule-eligibility.mjs'
 
@@ -66,10 +67,21 @@ export function isCredentialRefreshFailed({
   if (isOfficialUsageRateLimited(probe)) return false
   const recordedError = currentRefreshError(vm, refreshError)
   const transientRecorded = TRANSIENT_CREDENTIAL_REFRESH_FAIL.test(String(recordedError || ''))
+  const accessOutlives = currentAccessOutlivesGrantError(
+    vm,
+    {
+      schedule_disabled_reason: scheduleDisabledReason ?? vm.schedule_disabled_reason,
+      has_token: !!(vm?.has_token || vm?.has_access || vm?.claude?.has_access || workerCredential?.has_access),
+      expiresAt: expiresAt || vm?.expires_at || vm?.claude?.expires_at || workerCredential?.expires_at,
+    },
+    now,
+  )
   // A transient refresh write failure must not eject a ticket that is still
-  // live. Once the access expires, the same error becomes admission-fatal.
+  // live. A leftover oauth_revoked string must not either, once this access
+  // token is still inside its TTL and the slot was not parked.
   const accessLive =
-    isLiveRefreshedAccess({ vm, expiresAt, workerCredential, now }) && !(recordedError && !transientRecorded)
+    isLiveRefreshedAccess({ vm, expiresAt, workerCredential, now }) &&
+    (!(recordedError && !transientRecorded) || accessOutlives)
   const staleProbe = probeOlderThanRefresh(
     {
       last_probe: probe,
@@ -78,7 +90,7 @@ export function isCredentialRefreshFailed({
     { last_probe: probe },
   )
   const bits = [scheduleDisabledReason, vm.schedule_disabled_reason]
-  if (!(accessLive && transientRecorded)) bits.push(recordedError)
+  if (!(accessLive && (transientRecorded || accessOutlives))) bits.push(recordedError)
   // Leftover worker last_error must not keep a freshly rotated ticket out of the pool.
   if (!accessLive) bits.push(workerLastError)
   if (!staleProbe && !(accessLive && isUsageRefreshSuccess(probe))) {

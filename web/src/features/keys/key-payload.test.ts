@@ -52,4 +52,50 @@ describe('API key limit payload', () => {
       keyLimitsPayload({ ...draft, allowed_vms: [] }, 'create')
     ).toThrow('至少选择一台 VM')
   })
+
+  it('handles vm_pool_id for admin and strips it for non-admin', () => {
+    const pooledDraft: KeyLimitsDraft = {
+      ...draft,
+      group_type: 'pool',
+      vm_pool_id: 'pool_12345678',
+    }
+
+    // Admin creates key with pool
+    const adminCreate = keyLimitsPayload(pooledDraft, 'create', {
+      isAdmin: true,
+    })
+    expect(adminCreate.vm_pool_id).toBe('pool_12345678')
+    expect(adminCreate.group_type).toBe('all')
+    expect(adminCreate.allowed_vms).toEqual([])
+
+    // Admin edits key with non-pool group_type -> vm_pool_id cleared to null
+    const adminEditAll = keyLimitsPayload(
+      { ...draft, group_type: 'all', vm_pool_id: 'pool_12345678' },
+      'edit',
+      { isAdmin: true }
+    )
+    expect(adminEditAll.vm_pool_id).toBeNull()
+
+    // Non-admin payload must not carry vm_pool_id under any mode or group_type
+    const tenantCreate = keyLimitsPayload(
+      { ...draft, group_type: 'all', vm_pool_id: 'pool_12345678' },
+      'create',
+      { isAdmin: false }
+    )
+    expect(tenantCreate).not.toHaveProperty('vm_pool_id')
+
+    const tenantEdit = keyLimitsPayload(
+      { ...draft, group_type: 'all', vm_pool_id: 'pool_12345678' },
+      'edit',
+      { isAdmin: false }
+    )
+    expect(tenantEdit).not.toHaveProperty('vm_pool_id')
+
+    // If non-admin passes group_type: 'pool' (e.g. from tampered client state), fallback cleanly without vm_pool_id
+    const tenantTampered = keyLimitsPayload(pooledDraft, 'create', {
+      isAdmin: false,
+    })
+    expect(tenantTampered).not.toHaveProperty('vm_pool_id')
+    expect(tenantTampered.group_type).toBe('all')
+  })
 })

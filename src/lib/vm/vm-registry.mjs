@@ -237,6 +237,8 @@ export function summarizeVm(vm, projectRoot = null, routing = null) {
     reset_credits: codex?.reset_credits || null,
     codex_credits: codex?.credits || null,
     plan_type: codex?.plan_type || (grok ? vm.grok?.plan_type || null : null),
+    chatgpt_subscription_active_until: isCodex ? codex?.chatgpt_subscription_active_until || null : null,
+    chatgpt_plan_type: isCodex ? codex?.chatgpt_plan_type || null : null,
     grok_auth_error: grok?.auth_error || null,
     grok_limited_until: grok?.limited_until || null,
     grok_limited_reason: grok?.limited_reason || null,

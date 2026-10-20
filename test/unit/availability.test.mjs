@@ -255,6 +255,60 @@ test('leftover invalid_grant after a live refresh does not block the pool', () =
   assert.equal(av.in_pool, true)
 })
 
+test('a scheduled slot with a live access token is not pinned by leftover oauth_revoked', () => {
+  const now = Date.now()
+  const av = evaluateAccount({
+    vm: {
+      has_token: true,
+      has_refresh: true,
+      expires_at: Math.floor((now + 8 * 3600_000) / 1000),
+      refreshed_at: new Date(now - 60_000).toISOString(),
+      refresh_error: 'oauth_revoked',
+      schedulable: true,
+      schedule_disabled_reason: null,
+    },
+    hasToken: true,
+    hasRefresh: true,
+    schedulable: true,
+    refreshError: 'oauth_revoked',
+    expiresAt: now + 8 * 3600_000,
+    refreshedAt: new Date(now - 60_000).toISOString(),
+    workerCredential: {
+      has_access: true,
+      has_refresh: true,
+      needs_refresh: false,
+      expires_at: now + 8 * 3600_000,
+    },
+    quota: { utilization_5h: 0.1, status_5h: 'allowed' },
+    now,
+  })
+  assert.equal(av.key, 'ok')
+  assert.equal(av.text, '可用')
+  assert.equal(av.accept, true)
+})
+
+test('a parked oauth_revoked schedule stays invalid even when the old expiry has not elapsed', () => {
+  const now = Date.now()
+  const av = evaluateAccount({
+    vm: {
+      has_token: true,
+      expires_at: Math.floor((now + 8 * 3600_000) / 1000),
+      refresh_error: 'oauth_revoked',
+      schedule_disabled_reason: 'oauth_revoked',
+    },
+    hasToken: true,
+    hasRefresh: true,
+    schedulable: false,
+    scheduleDisabledReason: 'oauth_revoked',
+    refreshError: 'oauth_revoked',
+    expiresAt: now + 8 * 3600_000,
+    quota: { utilization_5h: 0.1, status_5h: 'allowed' },
+    now,
+  })
+  assert.equal(av.key, 'bad')
+  assert.equal(av.usable, false)
+})
+
 test('vm-05 style official-cc-usage in pool is available', () => {
   const av = evaluateAccount({
     hasToken: false,

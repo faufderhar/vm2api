@@ -149,6 +149,11 @@ import { syncClaudeKernelConfigsFromFile } from '../transport/rust-kernel-superv
 import { ensureWorkerCredential } from '../transport/go-worker-client.mjs'
 import { formatPoolSelectionSummary } from '../pool/pool-scheduler.mjs'
 import { extraHeadersFromLimitError, isAccountQuotaExhausted } from '../pool/quota-window.mjs'
+import {
+  filterThinkingForAccount,
+  recordThinkingOwners,
+  thinkingOwners as defaultThinkingOwners,
+} from '../pool/thinking-owner.mjs'
 import { getVm } from '../vm/vm-registry.mjs'
 import { credentialModeFromOauth, isApiKeyMode } from '../oauth/credential-mode.mjs'
 import {
@@ -184,6 +189,7 @@ export function createHandleProtocol(deps) {
     typeof deps.getFailoverRunner === 'function' ? deps.getFailoverRunner() : deps.failoverRunner
   const getAttemptsRepo = () =>
     typeof deps.getAttemptsRepo === 'function' ? deps.getAttemptsRepo() : deps.attemptsRepo
+  const thinkingOwnerStore = deps.thinkingOwners || defaultThinkingOwners
   function responseClosed(res) {
     return !!(res?.destroyed || res?.writableEnded || res?.closed)
   }
@@ -774,6 +780,7 @@ export function createHandleProtocol(deps) {
           projectRoot: cfg.paths.project,
           captureOutbound: logCtx.capture_outbound === true,
           accountGate,
+          ops: deps.codexOps || {},
           ...codexSticky,
         })
       }
@@ -791,6 +798,7 @@ export function createHandleProtocol(deps) {
         projectRoot: cfg.paths.project,
         captureOutbound: logCtx.capture_outbound === true,
         accountGate,
+        ops: deps.codexOps || {},
         ...codexSticky,
       })
     }
@@ -1258,6 +1266,17 @@ export function createHandleProtocol(deps) {
         deliveryMode,
         signal: clientAbort.signal,
         applyAttempt: async (body, selected, extra = {}) => {
+          // Only this account's own thinking replays as thinking. Another
+          // account's signature, or one with no record, goes out as text.
+          const owned = filterThinkingForAccount(body, selected.accountId, thinkingOwnerStore)
+          body = owned.body
+          if (owned.kept || owned.converted || owned.dropped) {
+            const { kept, converted, dropped, unknown } = owned
+            logBag.hop_meta = {
+              ...logBag.hop_meta,
+              thinking_owner: { account_id: selected.accountId, kept, converted, dropped, unknown },
+            }
+          }
           if (claudeScopePending()) {
             const blocked = await applyProtocolIntercept({
               req,
@@ -1592,6 +1611,9 @@ export function createHandleProtocol(deps) {
     logBag.vm_id = result?.vmId || null
     logBag.account_id = result?.accountId || null
     logBag.final_account_id = result?.accountId || null
+    if (result?.threadBetas) logBag.hop_meta = { ...logBag.hop_meta, thread_betas: result.threadBetas }
+    if (result?.accountId && (result.ok || result.committed))
+      recordThinkingOwners(result.body, result.accountId, thinkingOwnerStore)
     // Zero executions is a real 0, not unknown; the VM is the last one that ran.
     logBag.attempt_count = result?.attemptCount ?? 0
     logBag.final_state = result?.finalState || result?.terminalState || null

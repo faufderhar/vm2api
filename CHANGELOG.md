@@ -9,21 +9,50 @@
 - 公网主密钥不再能调用 `/admin`。停用账号或改角色会立刻作废该用户的登录；下次请求也会按数据库里的角色和停用状态拒绝。数据库密钥改存到数据目录外面的 `secrets/db.secret`，旧的 `data/db.secret` 启动时迁过去。代理默认拒绝本机、内网和解析后落到这些地址的域名，本机实验可设 `VM2API_ALLOW_PRIVATE_PROXY=1`。首次探测 SSH 只读取主机指纹，确认后才发送密码或私钥。登录按账号分开限流；反代后要设 `TRUST_PROXY=1` 才会按浏览器地址限流。面板密码不能再用公开默认值 `123456`。`/` 和 `/health` 不再返回当前槽位。终端票据改走 WebSocket 子协议，不再放在地址里。
 - 同一平台有多个账号时，调度等级、负载或分数接近的情况下，按用量窗口的 7 天重置时间比较，时间更早的账号优先。没有这个时间的仍按原来的槽位顺序。粘性会话和手动等级不变。
 - 安装脚本和容器入口不再保留公开默认密码 `123456`：密码为空或仍是这个值时生成随机密码，并只打印一次；已经改过的密码不动。登录按来源地址限流。主密钥只有本机回环地址能进管理面板。没配数据库密钥时会生成仅本机可读的 `data/db.secret`，之后写入的凭据列加密保存。`/health` 不再返回探针详情和内核信息，`/v1/meta` 必须带密钥且不返回邮箱。代理拒绝云元数据和链路本地地址，本机 `127.0.0.1` 仍可用。内核空令牌直接拒绝。默认日志改为 `normal`。
+
+## 1.3.202 — 2026-10-20
+
+- 官方凭证只保留一份 refresh token：`.credentials.json` 里较新的授权先并入宿主 `credentials.json`，再把官方文件名链回去。进行中的槽内 `claude auth login` 不再拿旧 refresh token 去换票，避免新授权被判 revoked。
+- cli-node 2.1.296 在 `CLAUDE_CODE_HOST_REFRESH=1` 时读写宿主 `credentials.json`，logout 不删除该文件。仍有效的 access 不再因为残留 `oauth_revoked` 被钉成无效凭证。
+- 集群槽官方登录：票据与 WebSocket 升级走 Engine API 异步检查容器与 cli-node；登录终端开前把控制面空凭证与 `.credentials.json` 链接推到节点 `claude/` 挂载，粘贴完成后从节点拉回 OAuth 再 `adoptShellLogin` 入账，避免只读本地空文件。（#630）
+- 面板租户（role=user）权限收紧：导入凭证、导入代理时绑定槽位、API Key 的 `allowed_vms` 只认本人的槽（他人的与不存在的同样回 404）；租户改 Key 时忽略 `user_id`、`group_id`，`vm_pool_id` 仅管理员可设（非管理员带值回 403 `key_pool_forbidden`，前端隐藏账号池）；改角色或停用用户时撤销其全部面板会话；`GET /api/panel/test-models` 对租户与 super 只读放行，带他人 `vm_id` 回 404，`refresh=1` 仅管理员生效。
+- Docker 槽在线扩容：面板成功须 HostConfig 内存与 swap 一致；可读 cgroup 时核对 v2 `memory.max` 或 v1 `memory.limit_in_bytes`（`max`/无上限哨兵在 HostConfig 已匹配时跳过）。扩容后校验失败会 docker update 回滚至扩容前限额且不写 vm 配置。（#623，REQ-0441）
+- 集群槽 prepareRemoteDir：程序目录 slot-bin 改为 0755（私有 run/claude/cli-home 仍 0700），使 CapDrop ALL 的 egress 能 traverse /opt/kin-live，避免迁 live 后容器停在 Created / permission denied。（#632）
+
+已部署机升级：更新 Node 控制面后重启一次。cli-node 字节已变，需要 `wrap-cli/sync`（逐槽重启 dataplane，不要 `docker rm`）。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+
+## 1.3.201 — 2026-10-20
+
+- 消息线程 beta 在控制面按消息 id 记住 24 小时（最多 1 万条）：同模型的 `continue` 补回上一轮 beta，并保留本轮新算出的；换模型、过期或未知 id 用现算值，不失败。create 轮对支持的模型仅凭 `thread` 带上 `mid-conversation-output-config`，continue 不再回放 effort 控件也能带上该门。命中 / 未命中 / 换模型记在 `hop_meta.thread_betas`。进程重启后 pin 丢失，按未命中处理。（#621）
+- Docker 在线扩容只在容器运行中、且 `HostConfig.Memory`、`HostConfig.MemorySwap` 与容器内 cgroup `memory.max` 三者都等于请求字节时写入 `vm.machine.memory`。停着的容器在 `docker update` 前拒绝；不一致返回 502 且不改配置。校验失败不回滚已经执行的 `docker update`，容器限额可能已经是新值。cgroup v2 读到 `max` 视为不一致。（#621）
+- 官方 Claude Code 登录（`cc`）在已有授权链接之前打开槽终端，避免链接面板盖住「打开官方登录终端」。（#621，#622）
+- Responses WebSocket：入站 `response.interrupt`（Codex steer）本地中止在飞 hop 并回 `response.interrupt.accepted`；取消走既有 handleProtocol 终态记账，不再报 `unsupported Responses WebSocket message type` 或网关 `incomplete_response`。上游 interrupt 转发对齐 CPR 后置。（#616）
+- Fable `7d_oi`：reset 已过（含秒级时间戳）不再永久判 rejected；`fableWindowResetAt` / weekly split 用 `parseResetMs`；过期清理纳入 `unified['7d_oi']`，且 `elapsedExtraResetMs` 纳入 `7d_oi` 后会在窗口过期时触发 usage probe；无 reset 时仍按 rejected 处理。（#601）
+- OpenAI 槽：从 OAuth `id_token` 读取 `chatgpt_subscription_active_until`（含 epoch 秒/毫秒归一化为 ISO），刷新时新 token 带 claim 则覆盖到期日、不带则保留旧值；账号页只读展示「订阅到期（以凭证为准）」，缺失显示「—」。`plan_type` 缺失时用 id_token 的 `chatgpt_plan_type` 兜底展示；wham 写入的套餐类型优先。（#609）
+
+已部署机升级：更新 Node 控制面与 `web/dist` 后重启。不必更换 kernel / CLI，不必重建槽。已有 Docker 槽的内存限额不会因本次升级自动改变。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.3.200 — 2026-10-20
+
 - 官方 OAuth（claude_code）：在已运行槽终端里执行 `claude auth login`，面板弹出槽终端、授权链接在终端复制、授权码由用户粘贴；宿主机不再自造 authorize URL。Cookie 导入与 Setup Token 路径不变。（#615）
-- 槽位种子页默认锁定：需确认解锁后才能改配置，播种前再次确认；时区/语言提供 en、cn、jp 基础选项。时区跟随当前 SOCKS5（空/非手动钉住）时展示出口时区，播种经 `timezone_follow_proxy` 写入；可改固定 IANA 时区或改回跟随。TZ/LANG/LC_ALL 仍不经 `extra_env` 覆盖契约键。
-- 槽位种子页：`settings.json` 的 env 行与 `theme` 可直接编辑并随播种写入；`autoUpdates`、`grove_enabled` 只读且播种时固定为 `false`；TZ/LANG/LC_ALL、遥测 kill-switch、Bedrock/Vertex、gateway hint 等同理只读（播种由契约重写）。缺 `CLAUDE_CODE_ATTRIBUTION_HEADER` 时默认 `0`。调试上传默认关，独立 query 拉最近 40 条上传，切换开关不重置未保存编辑；Go sidecar 写 `vms/<id>/run/telemetry-upload.log`，面板 `GET seed-settings?debug=1` 返回 `telemetry_log`。
-- 协议页可配置 `routing.compatibility.auto_compact_window`（100K–1M 或跟随模型）；入站在清理 settings 前提取调用方 `CLAUDE_CODE_AUTO_COMPACT_WINDOW`，经内部 `auto_compact_window` 字段进入当前 job，清理后的 body 不再携带该 env。
-- 槽位种子页按当前槽 `settings.json` 列出真实配置；`claude.setting` 可编辑播种；缺失文件返回 `null`、空文件返回空串，不用策略默认冒充槽内文件；遥测开关与 sidecar 进程状态分开展示，保存不因遥测进程刷新失败而 502。
+- 槽位种子页默认锁定：需确认解锁后才能改配置，播种前再次确认；时区/语言提供 en、cn、jp 基础选项。时区跟随当前 SOCKS5（空/非手动钉住）时展示出口时区，播种经 `timezone_follow_proxy` 写入；可改固定 IANA 时区或改回跟随。TZ/LANG/LC_ALL 仍不经 `extra_env` 覆盖契约键。（#613）
+- 槽位种子页：`settings.json` 的 env 行与 `theme` 可直接编辑并随播种写入；`autoUpdates`、`grove_enabled` 只读且播种时固定为 `false`；TZ/LANG/LC_ALL、遥测 kill-switch、Bedrock/Vertex、gateway hint 等同理只读（播种由契约重写）。缺 `CLAUDE_CODE_ATTRIBUTION_HEADER` 时默认 `0`。调试上传默认关，独立 query 拉最近 40 条上传，切换开关不重置未保存编辑；Go sidecar 写 `vms/<id>/run/telemetry-upload.log`，面板 `GET seed-settings?debug=1` 返回 `telemetry_log`。（#611）
+- 协议页可配置 `routing.compatibility.auto_compact_window`（100K–1M 或跟随模型）；入站在清理 settings 前提取调用方 `CLAUDE_CODE_AUTO_COMPACT_WINDOW`，经内部 `auto_compact_window` 字段进入当前 job，清理后的 body 不再携带该 env。（#607）
+- 槽位种子页按当前槽 `settings.json` 列出真实配置；`claude.setting` 可编辑播种；缺失文件返回 `null`、空文件返回空串，不用策略默认冒充槽内文件；遥测开关与 sidecar 进程状态分开展示，保存不因遥测进程刷新失败而 502。（#608）
 - 集群槽 legacy kin-worker / kin-egress 容器可一次性迁到持久化 `/opt/kin-live` 挂载：旧容器重命名为 `*-legacy-<timestamp>` 保留作回滚，替换容器复用原镜像与网络身份；rename 后先从 user-defined 网 disconnect 释放 IP/别名再 create；KVM 已挂 `/opt/kin-guest/opt/kin-live` 不再误判 legacy；`scripts/migrate-legacy-cluster-slots.mjs` 与 fleet `action=telemetry` 同路径；迁移时保留 CapDrop/CapAdd 等 HostConfig，避免 canReuse 后 egress 权限缩水。（#605）
 - fleet 遥测刷新在 kin-egress 二进制被替换（含 `(deleted)` 旧进程与脏 pidfile）时，会按 egress 配置扫停全部 helper、等待 `/proc/<pid>` 消失后再绑定新二进制；同一 SOCKS 出口的 stop/start 与 `ensureProxyEgress` 共用 per-proxy 锁，避免并发 telemetry 互相 SIGTERM。（#604）
-- 扩展节点直连通道：`PUT /api/panel/cluster/nodes/:id/direct-link` 在节点上建 `kin-slot-gate`（TLS 1.3，首次启动自签证书，控制面经 SSH 读取并固定指纹；每节点随机令牌），远程槽 kernel / worker 请求改为每次一条直连 TLS 连接，不再全部挤在一条 SSH 长连接里（长连接在零碎流量下拥塞窗口会卡在约 17KB/s，突发请求正文排队数秒）。请求正文随握手后的第一包发出、不等应答。gate 只连槽的两个 socket 且不跟随符号链接；连不上、证书不符或令牌被拒时该节点退回 SSH 30 秒。面板节点详情可启用 / 关闭，节点行显示「直连」/「直连→SSH」。新增 Go 命令 `kin-slot-gate`（`npm run build:gate`，Release 附件同名）。
-- 面板：侧栏「GitHub / 文档」两枚链接不再折行，字体偏宽时「文档」不会逐字竖排，空间不够先缩箭头再省略文字；VM 列表搜索框关闭浏览器自动填充，不再被回填成登录邮箱。
-- 集群页「扩展节点」新增 CPU / 内存 / 容器三列：健康检查（每 30 秒）经同一条 SSH 连接读节点 `/proc` 和 cgroup，口径同本机宿主列；容器 = 节点上全部 Docker 容器内存合计（扣除 inactive_file，同 `docker stats`）。修复本机宿主列 CPU 最高只显示 10%（`Math.min(100, …×1000)/10` 写错上限）。链路列不再折行。
+- 扩展节点直连通道：`PUT /api/panel/cluster/nodes/:id/direct-link` 在节点上建 `kin-slot-gate`（TLS 1.3，首次启动自签证书，控制面经 SSH 读取并固定指纹；每节点随机令牌），远程槽 kernel / worker 请求改为每次一条直连 TLS 连接，不再全部挤在一条 SSH 长连接里（长连接在零碎流量下拥塞窗口会卡在约 17KB/s，突发请求正文排队数秒）。请求正文随握手后的第一包发出、不等应答。gate 只连槽的两个 socket 且不跟随符号链接；连不上、证书不符或令牌被拒时该节点退回 SSH 30 秒。面板节点详情可启用 / 关闭，节点行显示「直连」/「直连→SSH」。新增 Go 命令 `kin-slot-gate`（`npm run build:gate`，Release 附件同名）。（#614）
+- 面板：侧栏「GitHub / 文档」两枚链接不再折行，字体偏宽时「文档」不会逐字竖排，空间不够先缩箭头再省略文字；VM 列表搜索框关闭浏览器自动填充，不再被回填成登录邮箱。（#602）
+- 集群页「扩展节点」新增 CPU / 内存 / 容器三列：健康检查（每 30 秒）经同一条 SSH 连接读节点 `/proc` 和 cgroup，口径同本机宿主列；容器 = 节点上全部 Docker 容器内存合计（扣除 inactive_file，同 `docker stats`）。修复本机宿主列 CPU 最高只显示 10%（`Math.min(100, …×1000)/10` 写错上限）。链路列不再折行。（#603）
 - 集群槽无需重建 VM 即可更新 Go 槽位服务（kin-worker / kin-egress）：持久化 `slot-bin` 挂载推送二进制，fleet `action=telemetry` 热更新遥测与 egress。（#600）
-- Codex 入站在平台探测前支持 CPR 式 `routing.codex.model_mappings` 精确模型映射；默认 `codex-auto-review` → `gpt-6-luna`（清空该键时回退 `gpt-6.1-sol`）。日志保留 `requested_model` / `upstream_model`；非法或非 GPT 目标 400，不 hop Anthropic。（#526）
-- 保留路径不再给没有可用签名的 thinking 补 `signature: ""`：缺失、空、短于 24、dummy 的删掉；签名可用的留，空正文也留。这一支里的 `redacted_thinking` 不看 data 和签名，原样留；不走保留路径时仍按原规则删。5.5 的非保留路径仍接受短的非 dummy 签名。没有按账号归属过滤签名。
-- 协议页新增「thinking 显示」，`routing.compatibility.thinking_display` 默认 `summarized`。调用方打开 thinking 却要求隐藏（`omitted`、`updates`，或默认隐藏的模型上没写 display）时，出站改成 `summarized`；显式 `passthrough` 保留调用方的值。已保存的 `routing.json` 不写这个键也按 summarized 生效。
-- Claude kernel / CLI 依赖固定到不可变快照 `payload-2026.10.19-kernel-cli`（kin-kernel + cli-node）；Codex kernel 与其余原生产物保持不变。（#594）
+- Codex 入站在平台探测前支持 CPR 式 `routing.codex.model_mappings` 精确模型映射；默认 `codex-auto-review` → `gpt-6-luna`（清空该键时回退 `gpt-6.1-sol`）。日志保留 `requested_model` / `upstream_model`；非法或非 GPT 目标 400，不 hop Anthropic。（#598，#526）
+- 保留路径不再给没有可用签名的 thinking 补 `signature: ""`：缺失、空、短于 24、dummy 的删掉；签名可用的留，空正文也留。这一支里的 `redacted_thinking` 不看 data 和签名，原样留；不走保留路径时仍按原规则删。5.5 的非保留路径仍接受短的非 dummy 签名。没有按账号归属过滤签名。（#592）
+- 协议页新增「thinking 显示」，`routing.compatibility.thinking_display` 默认 `summarized`。调用方打开 thinking 却要求隐藏（`omitted`、`updates`，或默认隐藏的模型上没写 display）时，出站改成 `summarized`；显式 `passthrough` 保留调用方的值。已保存的 `routing.json` 不写这个键也按 summarized 生效。（#592）
+- Claude kernel / CLI 依赖固定到不可变快照 `payload-2026.10.19-kernel-cli`（kin-kernel + cli-node）；Codex kernel 与其余原生产物保持不变。（#594，#597）
+- 安全：web 依赖 `source-map-js` 固定 1.2.2（CVE-2026-93749）。（#599）
+
+已部署机升级：更新 Node 控制面与 `web/dist` 后重启；数据库迁移 `039_cluster_node_direct_links` 启动时自动执行。Claude kernel / cli-node 改为快照 `payload-2026.10.19-kernel-cli`，需一键更新或 `wrap-cli/sync`（keep）刷新（#594）。集群槽：#600 槽布局 2→3（`kin.vm.layout=3`），旧布局槽需 recreate 一次才挂上 `slot-bin`，或用 `scripts/migrate-legacy-cluster-slots.mjs` 或 fleet `action=telemetry` 迁到 `/opt/kin-live`，**容器 ID 会变**，旧容器保留为 `*-legacy-<timestamp>` 作回滚（#605）。扩展节点直连为可选：控制面 `bin/` 需放入新附件 `kin-slot-gate`（控制面经 SSH 下发到节点），面板节点详情启用并放行防火墙端口，默认仍走 SSH（#614）。`thinking_display` 默认 `summarized`（#592）；官方 OAuth 改为槽终端内 `claude auth login`（#615）；可配 `auto_compact_window`（#607）。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
 
 ## 1.3.199 — 2026-10-19
 

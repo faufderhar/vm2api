@@ -71,12 +71,16 @@ async function prepareRemoteDir(session, vm) {
   const dir = remoteSlotDir(session.host, vm.id)
   const owner = remoteSlotOwner(session.host, vm)
   // Mount roots only: nothing here resolves through a path the guest can rewrite.
-  const roots = [`${dir}/run`, `${dir}/claude`, `${dir}/cli-home`, `${dir}/slot-bin`].map(shellQuote).join(' ')
+  const roots = [`${dir}/run`, `${dir}/claude`, `${dir}/cli-home`].map(shellQuote).join(' ')
+  const binDir = shellQuote(`${dir}/slot-bin`)
   // Docker creates a missing bind source as root:root, which the slot uid cannot write.
-  const chown = session.host.uid === 0 ? ` && chown ${owner.uid}:${owner.gid} ${shellQuote(dir)} ${roots}` : ''
-  await runRemote(session.client, `umask 077 && mkdir -p ${roots} && chmod 700 ${shellQuote(dir)} ${roots}${chown}`, {
-    timeoutMs: 20_000,
-  })
+  const chown =
+    session.host.uid === 0 ? ` && chown ${owner.uid}:${owner.gid} ${shellQuote(dir)} ${roots} ${binDir}` : ''
+  await runRemote(
+    session.client,
+    `umask 077 && mkdir -p ${roots} ${binDir} && chmod 700 ${shellQuote(dir)} ${roots} && chmod 755 ${binDir}${chown}`,
+    { timeoutMs: 20_000 },
+  )
   done.add(vm.id)
 }
 
@@ -204,6 +208,18 @@ export async function reconcileSlotCredentials(vm, slotDir, session) {
   const pulled = await pullSlotCredentials(vm, slotDir, session)
   if (pulled.reason !== 'remote_missing') return pulled
   return pushSlotCredentials(vm, slotDir, session)
+}
+
+/** Point the node official CLI at worker credentials.json without rewriting its bytes. */
+export async function ensureRemoteOfficialCredentialLink(vm, slotDir, session = null) {
+  const s = session || (await nodeSession(vmNodeId(vm)))
+  const remoteCred = `${remoteSlotDir(s.host, vm.id)}/${remoteSlotPath(CREDENTIALS)}`
+  const remote = await readRemoteFileNoFollow(s.client, remoteCred)
+  if (!remote) return { linked: false, reason: 'remote_missing' }
+  await prepareRemoteDir(s, vm)
+  const sftp = await openSftp(s.client)
+  await remoteSymlink(sftp, 'credentials.json', `${remoteSlotDir(s.host, vm.id)}/claude/.credentials.json`)
+  return { linked: true }
 }
 
 const queues = new Map()

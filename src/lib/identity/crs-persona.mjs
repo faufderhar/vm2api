@@ -44,6 +44,7 @@ import {
   CRS_OFFICIAL_AGENT_IDENTITY,
   CRS_OFFICIAL_AGENT_PROMPT,
   CRS_OFFICIAL_CONTINUATION,
+  CRS_REPORTING_OUTCOMES,
   applySlotLocale,
   applySlotTimezone,
   buildOfficialContinuationText,
@@ -75,6 +76,7 @@ export {
   CRS_OFFICIAL_AGENT_IDENTITY,
   CRS_OFFICIAL_AGENT_PROMPT,
   CRS_OFFICIAL_CONTINUATION,
+  CRS_REPORTING_OUTCOMES,
 }
 
 export const CRS_OFFICIAL_CLI_SYSTEM = "You are Claude Code, Anthropic's official CLI for Claude."
@@ -797,7 +799,10 @@ export function personaTemplateVars({
     billing,
     billing_semi: billing.endsWith(';') ? billing : `${billing};`,
     identity: CRS_OFFICIAL_SYSTEM,
+    identity_cli: CRS_OFFICIAL_CLI_SYSTEM,
     identity_compact: CRS_COMPACT_IDENTITY,
+    reporting: CRS_REPORTING_OUTCOMES,
+    dynamic_boundary: '__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__',
     agent_expansion: CRS_AGENT_EXPANSION,
     agent_official: agentOfficial || CRS_OFFICIAL_AGENT_PROMPT,
     agent_standing: String(agentStanding || ''),
@@ -828,7 +833,10 @@ export function personaPreviewVars({ timezone = 'UTC', model = 'claude-sonnet-5'
   const vars = personaTemplateVars({ env: { timezone, modelId: model }, model, withEnv: true })
   return {
     identity: vars.identity,
+    identity_cli: vars.identity_cli,
     identity_compact: vars.identity_compact,
+    reporting: vars.reporting,
+    dynamic_boundary: vars.dynamic_boundary,
     agent_expansion: vars.agent_expansion,
     agent_official: vars.agent_official,
     env_timezone_only: vars.env_timezone_only(),

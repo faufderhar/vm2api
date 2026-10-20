@@ -49,6 +49,14 @@ const FAST_MODE_MODELS = {
   'claude-opus-5': true,
   'claude-opus-5-5': true,
 }
+const MID_OUTPUT_CONFIG_MODELS = {
+  'claude-haiku-5-5': true,
+  'claude-sonnet-5-5': true,
+  'claude-opus-5': true,
+  'claude-opus-5-5': true,
+  'claude-fable-5-1': true,
+  'claude-mythos-5-1': true,
+}
 
 function hasHourCache(node) {
   if (Array.isArray(node)) return node.some(hasHourCache)
@@ -69,6 +77,7 @@ export function withRequestProtocolBetas(tokens = [], body = {}) {
     .replace(/-\d{8}$/, '')
   if (Object.hasOwn(PER_TURN_MODELS, model)) add('per-turn-control-2026-07-01')
   if (Object.hasOwn(MID_TOOL_CHANGE_MODELS, model)) add(BETA_MID_CONVERSATION_TOOL_CHANGES)
+  if (body.thread != null && Object.hasOwn(MID_OUTPUT_CONFIG_MODELS, model)) add(BETA_MID_CONVERSATION_OUTPUT_CONFIG)
   if (body.output_config?.effort != null) add(BETA_EFFORT)
   if (body.thinking?.display === 'updates') add(BETA_THINKING_DISPLAY_UPDATES)
   if (Array.isArray(body.safeguards) && body.safeguards.some((item) => item?.type === 'dangerous_tool_use'))

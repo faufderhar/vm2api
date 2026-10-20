@@ -77,33 +77,34 @@ test('auth login session stays reusable until force regenerate or login_ready', 
   assert.equal(isPersistentAuthLoginSession({ ...session, alive: false }), false)
 })
 
-test('assertAuthLoginReady refuses a missing container and a missing cli-node', () => {
+test('assertAuthLoginReady refuses a missing container and a missing cli-node', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-auth-login-ready-'))
   const stopped = () => ({ running: false })
   const running = () => ({ running: true })
   try {
     fs.mkdirSync(path.join(root, 'vms', 'vm-01'), { recursive: true })
     fs.writeFileSync(path.join(root, 'vms', 'vm-01.json'), JSON.stringify({ id: 'vm-01' }))
-    assert.throws(
-      () => assertAuthLoginReady(root, { id: 'vm-01' }, { inspect: stopped }),
+    await assert.rejects(
+      assertAuthLoginReady(root, { id: 'vm-01' }, { inspect: stopped }),
       (err) => err.code === 'container_not_ready',
     )
     const home = path.join(root, 'vms', 'vm-01', 'cli-home', '.kin')
     fs.mkdirSync(home, { recursive: true })
     fs.writeFileSync(path.join(home, 'cli-node'), '')
-    assert.throws(
-      () => assertAuthLoginReady(root, { id: 'vm-01' }, { inspect: stopped }),
+    await assert.rejects(
+      assertAuthLoginReady(root, { id: 'vm-01' }, { inspect: stopped }),
       (err) => err.code === 'container_not_ready',
     )
-    assert.throws(
-      () => assertAuthLoginReady(root, { id: 'vm-missing' }, { inspect: running }),
+    await assert.rejects(
+      assertAuthLoginReady(root, { id: 'vm-missing' }, { inspect: running }),
       (err) => err.code === 'cli_node_missing',
     )
-    assert.throws(
-      () => assertAuthLoginReady(root, { id: 'vm-01', node_id: 'node-a' }, { inspect: running }),
-      (err) => err.code === 'remote_unsupported',
+    const remote = { id: 'vm-01', node_id: 'node-a' }
+    await assert.rejects(
+      assertAuthLoginReady(root, remote, { inspect: running }),
+      (err) => err.code === 'container_unreadable',
     )
-    assert.equal(assertAuthLoginReady(root, { id: 'vm-01' }, { inspect: running }).container, 'kin-01')
+    assert.equal((await assertAuthLoginReady(root, { id: 'vm-01' }, { inspect: running })).container, 'kin-01')
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
@@ -186,25 +187,23 @@ test('stopClaudeAuthLoginSession pkills auth login, not setup-token', async () =
     fs.writeFileSync(path.join(root, 'vms', 'vm-02.json'), JSON.stringify({ id: 'vm-02', runtime: { type: 'docker' } }))
     const seen = []
     await stopClaudeAuthLoginSession(root, 'vm-02', {
-      spawn: (bin, argv) => {
-        seen.push({ bin, argv })
-        return { status: 0 }
+      execDetach: async (_connect, id, cmd) => {
+        seen.push({ id, cmd })
       },
     })
-    assert.equal(seen[0].bin, 'docker')
-    assert.deepEqual(seen[0].argv.slice(0, 4), ['exec', 'kin-02', 'sh', '-lc'])
-    assert.match(seen[0].argv.at(-1), /auth login/)
-    assert.doesNotMatch(seen[0].argv.at(-1), /setup-token/)
+    assert.equal(seen[0].id, 'kin-02')
+    assert.deepEqual(seen[0].cmd.slice(0, 2), ['sh', '-lc'])
+    assert.match(seen[0].cmd.at(-1), /auth login/)
+    assert.doesNotMatch(seen[0].cmd.at(-1), /setup-token/)
 
     fs.writeFileSync(path.join(root, 'vms', 'vm-01.json'), JSON.stringify({ id: 'vm-01', runtime: { type: 'kvm' } }))
     const kvm = []
     await stopClaudeAuthLoginSession(root, 'vm-01', {
-      spawn: (_bin, argv) => {
-        kvm.push(argv)
-        return { status: 0 }
+      execDetach: async (_connect, _id, cmd) => {
+        kvm.push(cmd)
       },
     })
-    assert.equal(kvm[0][2], KVM_GUEST_EXEC)
+    assert.equal(kvm[0][0], KVM_GUEST_EXEC)
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }

@@ -59,6 +59,19 @@ test('case 2: 7d_oi full or rejected → regular_only', () => {
   assert.equal(splitBlocksModel(rejected, 'claude-fable-5'), 'fable_split')
 })
 
+test('7d_oi rejected with elapsed reset does not block Fable in weekly split', () => {
+  const now = Date.parse('2026-10-19T09:00:00Z')
+  const s = computeWeeklySplit({
+    utilization_7d: 0.2,
+    utilization_7d_oi: 0.36,
+    status_7d_oi: 'rejected',
+    reset_7d_oi: '1792206000',
+    now,
+  })
+  assert.equal(s.fable_blocked, false)
+  assert.equal(s.mode, 'open')
+})
+
 test('enabled=false never intercepts', () => {
   const s = computeWeeklySplit({
     enabled: false,

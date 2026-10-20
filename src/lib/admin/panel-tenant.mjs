@@ -21,13 +21,17 @@ export function panelVmIdFromPath(path) {
   return id
 }
 
+/** Tenant (role=user) asking for a slot it does not own; missing and foreign look the same. */
+export function userMissesVmId(req, projectRoot, id) {
+  if (panelIdentity(req).role !== 'user') return false
+  const vm = id ? getVm(projectRoot, String(id)) : null
+  return !vm || vmOwnerId(vm) !== normalizeOwnerId(req.panelUserId)
+}
+
 export function denyIfUserMissesVm(req, res, { projectRoot, json, path }) {
-  const ident = panelIdentity(req)
-  if (ident.role !== 'user') return false
   const id = panelVmIdFromPath(path)
   if (!id) return false
-  const vm = getVm(projectRoot, id)
-  if (!vm || vmOwnerId(vm) !== normalizeOwnerId(req.panelUserId)) {
+  if (userMissesVmId(req, projectRoot, id)) {
     json(
       res,
       404,

@@ -74,18 +74,20 @@ export function isUsageProbeTarget(vm) {
 const STALE_USAGE_PROBE_GAP_MS = 15 * 60_000
 
 function elapsedExtraResetMs(unified = {}, now = Date.now()) {
-  const headers = unified?.headers
-  if (!headers || typeof headers !== 'object') return null
   let resetMs = null
-  for (const key of ['5h', '7d']) {
-    const window = headers[key]
-    if (!window || typeof window !== 'object') continue
+  const consider = (window) => {
+    if (!window || typeof window !== 'object') return
     const ms = parseResetMs(window.reset)
     const elapsed = window.stale_reason === 'reset_elapsed' || (Number.isFinite(ms) && ms <= now)
-    if (!elapsed) continue
+    if (!elapsed) return
     const mark = Number.isFinite(ms) ? ms : 0
     resetMs = resetMs == null ? mark : Math.min(resetMs, mark)
   }
+  const headers = unified?.headers
+  if (headers && typeof headers === 'object') {
+    for (const key of ['5h', '7d', '7d_oi']) consider(headers[key])
+  }
+  consider(unified['7d_oi'])
   return resetMs
 }
 

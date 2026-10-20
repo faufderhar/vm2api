@@ -46,6 +46,16 @@ export function isRefreshFailure(workerStatus) {
   return REFRESH_FAILURE.test(err)
 }
 
+
+/** A parked grant-death reason is current. A refresh_error is not, once access is still inside its TTL. */
+export function currentAccessOutlivesGrantError(vm = {}, extras = {}, now = Date.now()) {
+  const reason = String(extras.schedule_disabled_reason ?? vm.schedule_disabled_reason ?? '')
+  if (GRANT_REVOKED.test(reason) || /oauth_invalid_grant|invalid_grant/i.test(reason)) return false
+  const exp = expiresAtToMs(extras.expiresAt ?? extras.expires_at ?? vm.expires_at ?? vm.claude?.expires_at ?? null)
+  if (!exp || exp <= now) return false
+  return !!(extras.has_token || extras.has_access || vm.has_token || vm.has_access || vm.claude?.has_access)
+}
+
 export function isLiveDiskGrant(vm = {}, extras = {}) {
   const refreshError = extras.refresh_error ?? vm.refresh_error ?? vm.claude?.refresh_error ?? null
   const reason = extras.schedule_disabled_reason ?? vm.schedule_disabled_reason ?? null
@@ -138,7 +148,8 @@ export function isGrantRevoked(extras = {}, quota = {}) {
   const liveDisk = isLiveDiskGrant(extras.vm || {}, extras)
   const staleProbe = probeOlderThanRefresh(extras, quota)
   const testProbe = isTestProbeSource(extras.last_probe) || isTestProbeSource(quota.last_probe)
-  const bits = [extras.schedule_disabled_reason, extras.refresh_error]
+  const bits = [extras.schedule_disabled_reason]
+  if (!currentAccessOutlivesGrantError(extras.vm || {}, extras)) bits.push(extras.refresh_error)
   // Runtime cooldown is a cache of disk grant-death. After login heals vm.json
   // it must not keep painting revoke. Fresh last_probe revoke still counts.
   if (!liveDisk) {

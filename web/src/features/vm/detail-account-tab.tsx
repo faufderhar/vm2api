@@ -159,6 +159,11 @@ export function VmAccountTab(props: VmAccountTabProps) {
                   )}
                 </Field>
               ) : null}
+              {gpt ? (
+                <Field label='订阅到期（以凭证为准）' compact>
+                  {fmtExpiresAt(vm.chatgpt_subscription_active_until)}
+                </Field>
+              ) : null}
               {credType === 'apikey' ? (
                 <Field label='Key' compact>
                   {vm.has_token ? '已写入' : '—'}

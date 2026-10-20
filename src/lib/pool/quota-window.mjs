@@ -176,33 +176,45 @@ export function headerWindowOrEmpty(unified = {}, key = '5h', { now = Date.now()
   }
 }
 
+function wipeElapsedWindow(window, now) {
+  if (!windowHasData(window)) return null
+  const resetMs = parseResetMs(window.reset)
+  if (!Number.isFinite(resetMs) || resetMs > now) return null
+  return {
+    utilization: 0,
+    status: 'active',
+    reset: window.reset ?? null,
+    stale: true,
+    stale_reason: 'reset_elapsed',
+  }
+}
+
 export function wipeElapsedHeaderWindows(unified = {}, { now = Date.now() } = {}) {
   const headers = unified?.headers
-  if (!headers || typeof headers !== 'object') return { headers, changed: false }
   let changed = false
-  const next = { ...headers }
-  for (const key of ['5h', '7d']) {
-    const w = next[key]
-    if (!windowHasData(w)) continue
-    const resetMs = parseResetMs(w.reset)
-    if (!Number.isFinite(resetMs) || resetMs > now) continue
-    next[key] = {
-      utilization: 0,
-      status: 'active',
-      reset: w.reset ?? null,
-      stale: true,
-      stale_reason: 'reset_elapsed',
+  let next = headers && typeof headers === 'object' ? { ...headers } : headers
+  if (next && typeof next === 'object') {
+    for (const key of ['5h', '7d', '7d_oi']) {
+      const wiped = wipeElapsedWindow(next[key], now)
+      if (!wiped) continue
+      next[key] = wiped
+      changed = true
     }
+    if (changed) {
+      const liveRejected = ['5h', '7d'].some((key) => {
+        const s = String(next[key]?.status || '').toLowerCase()
+        return s === 'rejected' || s === 'rate_limited'
+      })
+      if (!liveRejected) next.exhausted_at = null
+    }
+  }
+  let oi = null
+  const wipedOi = wipeElapsedWindow(unified?.['7d_oi'], now)
+  if (wipedOi) {
+    oi = wipedOi
     changed = true
   }
-  if (changed) {
-    const liveRejected = ['5h', '7d'].some((key) => {
-      const s = String(next[key]?.status || '').toLowerCase()
-      return s === 'rejected' || s === 'rate_limited'
-    })
-    if (!liveRejected) next.exhausted_at = null
-  }
-  return { headers: next, changed }
+  return { headers: next, oi, changed }
 }
 
 /**
@@ -240,11 +252,12 @@ export function leftoverClearHeaderWindows(unified = {}, { now = Date.now(), las
 
 /** List / capsule / gate numbers from Extra only. */
 export function listQuotaFromHeaders(unified = {}, { now = Date.now() } = {}) {
-  const wiped = wipeElapsedHeaderWindows(unified, { now }).headers || unified?.headers || {}
+  const wipedResult = wipeElapsedHeaderWindows(unified, { now })
+  const wiped = wipedResult.headers || unified?.headers || {}
   const view = { ...unified, headers: wiped }
   const w5 = headerWindowOrEmpty(view, '5h', { now })
   const w7 = headerWindowOrEmpty(view, '7d', { now })
-  const oi = wiped['7d_oi'] || unified?.['7d_oi'] || {}
+  const oi = wipedResult.oi ?? unified?.['7d_oi'] ?? wiped['7d_oi'] ?? {}
   return {
     utilization_5h: w5.utilization != null ? Number(w5.utilization) : null,
     utilization_7d: w7.utilization != null ? Number(w7.utilization) : null,

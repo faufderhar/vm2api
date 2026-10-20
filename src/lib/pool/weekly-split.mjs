@@ -8,6 +8,8 @@
  * Off by default; callers must honor `enabled`.
  */
 
+import { parseResetMs } from './quota-window.mjs'
+
 export const DEFAULT_FABLE_SHARE = 0.5
 
 function clamp01(n) {
@@ -36,8 +38,10 @@ export function computeWeeklySplit({
   utilization_7d,
   utilization_7d_oi,
   status_7d_oi,
+  reset_7d_oi,
   fable_share = DEFAULT_FABLE_SHARE,
   enabled = true,
+  now = Date.now(),
 } = {}) {
   const share =
     Number.isFinite(Number(fable_share)) && Number(fable_share) > 0 && Number(fable_share) < 1
@@ -45,7 +49,9 @@ export function computeWeeklySplit({
       : DEFAULT_FABLE_SHARE
   const u7 = normalizeUtil(utilization_7d) ?? 0
   const uOi = normalizeUtil(utilization_7d_oi) ?? 0
-  const oiRejected = ['rejected', 'rate_limited'].includes(String(status_7d_oi || '').toLowerCase())
+  let oiRejected = ['rejected', 'rate_limited'].includes(String(status_7d_oi || '').toLowerCase())
+  const resetMs = parseResetMs(reset_7d_oi)
+  if (oiRejected && Number.isFinite(resetMs) && resetMs <= now) oiRejected = false
   const fableUsed = Math.min(share, Math.max(0, uOi * share))
   const regularUsed = Math.min(1, Math.max(0, u7 - fableUsed))
   const fableRemain = Math.max(0, share - fableUsed)

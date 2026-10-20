@@ -19,6 +19,7 @@ import {
 } from '../../src/lib/cluster/placement.mjs'
 import { remoteIptablesScript, slotContainerBody, slotEgressNames } from '../../src/lib/cluster/remote-slot.mjs'
 import {
+  ensureRemoteOfficialCredentialLink,
   pullSlotCredentials,
   pushSlotCredentials,
   reconcileSlotCredentials,
@@ -139,6 +140,20 @@ function localSlot(cred) {
 }
 
 const vm = { id: 'vm-07', node_id: 'node-t' }
+
+test('login prepare reconcile keeps a live remote credential when local is stale', async () => {
+  const node = fakeNode()
+  node.files.set(node.remoteCred, Buffer.from('{"rt":"rotated-live"}'))
+  const slotDir = localSlot('{"rt":"stale-local"}')
+  const r = await reconcileSlotCredentials(vm, slotDir, node.session)
+  assert.equal(r.pulled, true)
+  assert.equal(node.files.get(node.remoteCred).toString(), '{"rt":"rotated-live"}')
+  const local = path.join(slotDir, 'cli-home', '.claude', 'credentials.json')
+  assert.equal(fs.readFileSync(local, 'utf8'), '{"rt":"rotated-live"}')
+  const link = await ensureRemoteOfficialCredentialLink(vm, slotDir, node.session)
+  assert.equal(link.linked, true)
+  assert.equal(node.links.get(`${node.session.host.root}/vms/vm-07/claude/.credentials.json`), 'credentials.json')
+})
 
 test('start reconcile never overwrites a remote credential the slot already rotated', async () => {
   const node = fakeNode()

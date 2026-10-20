@@ -416,6 +416,37 @@ function ClaudeCredentialPanel({
             {importCred.isPending ? '换票中…' : '导入'}
           </Button>
         </div>
+      ) : activeMethod === 'cc' ? (
+        <div className='space-y-2'>
+          <Hint>
+            打开槽终端并自动执行 claude auth
+            login。链接在终端里复制，授权码直接粘进终端，不经过面板。需要容器已运行且
+            cli-node 已安装。
+          </Hint>
+          <Button size='sm' onClick={() => setLoginOpen(true)}>
+            打开官方登录终端
+          </Button>
+          <Dialog open={loginOpen} onOpenChange={setLoginOpen}>
+            <DialogContent className='flex h-[70vh] max-w-4xl flex-col'>
+              <DialogHeader>
+                <DialogTitle>官方登录</DialogTitle>
+                <DialogDescription>
+                  终端会执行 claude auth
+                  login。复制里面的链接，授权码粘回这个终端。
+                </DialogDescription>
+              </DialogHeader>
+              <div className='min-h-0 flex-1'>
+                {loginOpen ? (
+                  <WsTerminal
+                    ticketPath={`/api/panel/vms/${encodeURIComponent(vmId)}/shell-ticket`}
+                    socketPath={`/api/panel/vms/${encodeURIComponent(vmId)}/shell`}
+                    officialLogin
+                  />
+                ) : null}
+              </div>
+            </DialogContent>
+          </Dialog>
+        </div>
       ) : linkReady ? (
         <div className='space-y-2'>
           <div className='flex flex-wrap items-center gap-2'>
@@ -482,41 +513,8 @@ function ClaudeCredentialPanel({
           <Hint>
             {kind === 'setup-token'
               ? `申请完整 OAuth 权限，换票后采集身份。浏览器须走 ${proxyHint || '同一槽出口'}，授权码须含 # 后半段。以 Setup Token 模式运行，不跑官方初装。`
-              : activeMethod === 'cc'
-                ? `槽内 cli-node 执行官方 claude auth login。链接、PKCE 和换票都由官方 CLI 完成，浏览器须走 ${proxyHint || '同一槽出口'}。需要容器已运行且 cli-node 已安装。`
-                : `浏览器须走 ${proxyHint || '同一槽出口'}，授权码须含 # 后半段。换票后采集身份。`}
+              : `浏览器须走 ${proxyHint || '同一槽出口'}，授权码须含 # 后半段。换票后采集身份。`}
           </Hint>
-        </div>
-      ) : activeMethod === 'cc' ? (
-        <div className='space-y-2'>
-          <Hint>
-            打开槽终端并自动执行 claude auth
-            login。链接在终端里复制，授权码直接粘进终端，不经过面板。需要容器已运行且
-            cli-node 已安装。
-          </Hint>
-          <Button size='sm' onClick={() => setLoginOpen(true)}>
-            打开官方登录终端
-          </Button>
-          <Dialog open={loginOpen} onOpenChange={setLoginOpen}>
-            <DialogContent className='flex h-[70vh] max-w-4xl flex-col'>
-              <DialogHeader>
-                <DialogTitle>官方登录</DialogTitle>
-                <DialogDescription>
-                  终端会执行 claude auth
-                  login。复制里面的链接，授权码粘回这个终端。
-                </DialogDescription>
-              </DialogHeader>
-              <div className='min-h-0 flex-1'>
-                {loginOpen ? (
-                  <WsTerminal
-                    ticketPath={`/api/panel/vms/${encodeURIComponent(vmId)}/shell-ticket`}
-                    socketPath={`/api/panel/vms/${encodeURIComponent(vmId)}/shell`}
-                    officialLogin
-                  />
-                ) : null}
-              </div>
-            </DialogContent>
-          </Dialog>
         </div>
       ) : (
         <div className='space-y-2'>

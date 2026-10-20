@@ -53,7 +53,8 @@ const patchVm = (handlePanel, id = 'vm-01') =>
 function mockExec() {
   return (argv) => {
     if (argv.includes('update')) return { ok: true, stdout: '', stderr: '' }
-    if (argv.includes('inspect')) return { ok: true, stdout: String(1024 ** 3), stderr: '' }
+    if (argv.includes('inspect')) return { ok: true, stdout: `${1024 ** 3} ${1024 ** 3} true`, stderr: '' }
+    if (argv.includes('exec')) return { ok: true, stdout: String(1024 ** 3), stderr: '' }
     return { ok: false, stderr: 'unexpected' }
   }
 }

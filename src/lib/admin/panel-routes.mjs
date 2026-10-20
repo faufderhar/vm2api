@@ -123,6 +123,7 @@ import {
   denyIfUserMissesKey,
   denyIfUserMissesProxy,
   denyIfUserMissesVm,
+  userMissesVmId,
 } from './panel-tenant.mjs'
 import {
   VM_ORIGIN,
@@ -926,8 +927,13 @@ export function createPanelHandler(ctx) {
     }
   }
 
-  function normalizePanelApiKeyInput(body = {}) {
+  function normalizePanelApiKeyInput(body = {}, req) {
     const normalized = { ...body }
+    if (panelIdentity(req).role !== 'admin') {
+      delete normalized.user_id
+      delete normalized.group_id
+      delete normalized.vm_pool_id
+    }
     const hasRequestQuota = Object.prototype.hasOwnProperty.call(body, 'quota_requests')
     const hasLegacyQuota = Object.prototype.hasOwnProperty.call(body, 'quota')
     const hasUsdQuota = Object.prototype.hasOwnProperty.call(body, 'quota_usd')
@@ -938,6 +944,12 @@ export function createPanelHandler(ctx) {
     }
     if (hasUsdQuota) normalized.quota = body.quota_usd
     return normalized
+  }
+
+  /** Slots a key may be scoped to; a tenant's foreign slots read as missing. */
+  function keyScopeVms(req) {
+    const ident = panelIdentity(req)
+    return filterVmsForPanel(listVms(cfg.paths.project), { role: ident.role, userId: req.panelUserId })
   }
 
   function rulesFile() {
@@ -1545,14 +1557,11 @@ export function createPanelHandler(ctx) {
           const before = panelUsers.getById(id)
           const rec = panelUsers.update(id, body || {}, { actorId: req.panelUserId })
           if (!rec) return json(res, 404, { ok: false, error: { message: 'user not found' } })
-          const roleChanged = !!before && before.role !== rec.role
-          const disabled = !!before && before.enabled !== false && rec.enabled === false
-          if (body?.password || roleChanged || disabled) {
-            // Role and disable drop every token, including the actor's if they changed themselves.
-            revokePanelSessionsForUser(
-              rec.username,
-              body?.password && !roleChanged && !disabled ? { exceptToken: extractPanelToken(req) } : {},
-            )
+          // Sessions cache the role from login time, so a role or enable change must log them out.
+          if (before && (before.role !== rec.role || !!before.enabled !== !!rec.enabled)) {
+            revokePanelSessionsForUser(rec.username)
+          } else if (body?.password) {
+            revokePanelSessionsForUser(rec.username, { exceptToken: extractPanelToken(req) })
           }
           return json(res, 200, panel.ok({ item: publicUserView(rec) }))
         } catch (e) {
@@ -1648,14 +1657,23 @@ export function createPanelHandler(ctx) {
       }
       if (req.method === 'POST' && p === '/api/panel/api-keys') {
         const body = await readBody(req, 8192).catch(() => ({}))
-        const input = normalizePanelApiKeyInput(body)
+        const ident = panelIdentity(req)
+        if (ident.role !== 'admin' && body?.vm_pool_id != null && String(body.vm_pool_id).trim() !== '') {
+          return json(res, 403, {
+            ok: false,
+            error: { code: 'key_pool_forbidden', message: '只有管理员可以设置账号池' },
+          })
+        }
+        const input = normalizePanelApiKeyInput(body, req)
         try {
           const scopeInput = { group_type: body?.group_type, allowed_vms: body?.allowed_vms }
-          if (Object.prototype.hasOwnProperty.call(body || {}, 'vm_pool_id')) scopeInput.vm_pool_id = body.vm_pool_id
+          if (ident.role === 'admin' && Object.prototype.hasOwnProperty.call(body || {}, 'vm_pool_id')) {
+            scopeInput.vm_pool_id = body.vm_pool_id
+          }
           const scope = normalizeKeyScope(scopeInput)
           const pools = vmPoolsFor(apiKeyStore.db)
           if (scope.vm_pool_id) assertVmPoolExists(pools, scope.vm_pool_id)
-          else assertVmScope(listVms(cfg.paths.project), scope)
+          else assertVmScope(keyScopeVms(req), scope)
           const defaultConc = Number(
             ctx.routingConfig?.concurrency?.default_key_concurrency ??
               ctx.routingConfig?.concurrency?.default_max_per_account ??
@@ -1667,7 +1685,7 @@ export function createPanelHandler(ctx) {
             category: body?.category,
             user_id:
               panelIdentity(req).role === 'user' ? req.panelUserId || null : body?.user_id || req.panelUserId || null,
-            group_id: body?.group_id,
+            group_id: input.group_id,
             group_type: scope.group_type,
             allowed_vms: scope.allowed_vms,
             vm_pool_id: scope.vm_pool_id,
@@ -1702,15 +1720,28 @@ export function createPanelHandler(ctx) {
         const id = p.split('/').pop()
         if (denyIfUserMissesKey(req, res, { apiKeyStore, json, keyId: id })) return true
         const body = await readBody(req, 8192).catch(() => ({}))
+        const ident = panelIdentity(req)
+        if (ident.role !== 'admin' && body?.vm_pool_id != null && String(body.vm_pool_id).trim() !== '') {
+          return json(res, 403, {
+            ok: false,
+            error: { code: 'key_pool_forbidden', message: '只有管理员可以设置账号池' },
+          })
+        }
         try {
-          const input = normalizePanelApiKeyInput(body || {})
+          const input = normalizePanelApiKeyInput(body || {}, req)
+          const currentRec = apiKeyStore.getById(id)
           const scopeInput = { group_type: body?.group_type, allowed_vms: body?.allowed_vms }
-          if (Object.prototype.hasOwnProperty.call(body || {}, 'vm_pool_id')) scopeInput.vm_pool_id = body.vm_pool_id
-          const scope = normalizeKeyScope(scopeInput, { partial: true, current: apiKeyStore.getById(id) })
+          if (ident.role === 'admin' && Object.prototype.hasOwnProperty.call(body || {}, 'vm_pool_id')) {
+            scopeInput.vm_pool_id = body.vm_pool_id
+          }
+          const scope = normalizeKeyScope(scopeInput, { partial: true, current: currentRec })
           if (scope) {
+            if (ident.role !== 'admin' && currentRec?.vm_pool_id) {
+              scope.vm_pool_id = currentRec.vm_pool_id
+            }
             const pools = vmPoolsFor(apiKeyStore.db)
             if (scope.vm_pool_id) assertVmPoolExists(pools, scope.vm_pool_id)
-            else assertVmScope(listVms(cfg.paths.project), scope)
+            else assertVmScope(keyScopeVms(req), scope)
             input.group_type = scope.group_type
             input.allowed_vms = scope.allowed_vms
             input.vm_pool_id = scope.vm_pool_id
@@ -2652,7 +2683,7 @@ export function createPanelHandler(ctx) {
       // POST /api/panel/vms/:id/shell-ticket — single-use ticket for the slot terminal WebSocket
       if (req.method === 'POST' && /^\/api\/panel\/vms\/[^/]+\/shell-ticket$/.test(p)) {
         const body = await readBody(req, 1024).catch(() => ({}))
-        const issued = ctx.slotShell.issueTicket(p.split('/')[4], { login: body.login === true })
+        const issued = await ctx.slotShell.issueTicket(p.split('/')[4], { login: body.login === true })
         if (!issued.ok) return json(res, issued.status, { ok: false, error: issued.error })
         return json(res, 200, panel.ok({ ticket: issued.ticket, expires_in: issued.expires_in }))
       }
@@ -3207,7 +3238,13 @@ export function createPanelHandler(ctx) {
       if (req.method === 'GET' && p === '/api/panel/test-models') {
         const platform = url.searchParams.get('platform') || url.searchParams.get('kind') || ''
         const vmId = url.searchParams.get('vm_id') || url.searchParams.get('vm') || ''
-        const refresh = url.searchParams.get('refresh') === '1' || url.searchParams.get('refresh') === 'true'
+        if (vmId && userMissesVmId(req, cfg.paths.project, vmId)) {
+          return json(res, 404, { ok: false, error: { message: 'vm not found' } })
+        }
+        // A live refresh rewrites the shared Codex catalog; only admins may trigger it.
+        const refresh =
+          panelIdentity(req).role === 'admin' &&
+          (url.searchParams.get('refresh') === '1' || url.searchParams.get('refresh') === 'true')
         const payload = await resolveTestModels({
           projectRoot: cfg.paths.project,
           vmId,
@@ -4424,7 +4461,7 @@ export function createPanelHandler(ctx) {
             return json(res, 400, { ok: false, error: { message: 'vm_id required (先创建虚拟机)' } })
           }
           const vmPath = path.join(cfg.paths.project, 'vms', `${vmId}.json`)
-          if (!fs.existsSync(vmPath)) {
+          if (!fs.existsSync(vmPath) || userMissesVmId(req, cfg.paths.project, vmId)) {
             return json(res, 404, { ok: false, error: { message: 'vm not found, 请先创建种子虚拟机' } })
           }
           const existing = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
@@ -5792,6 +5829,10 @@ export function createPanelHandler(ctx) {
         const body = await readBody(req, 2 * 1024 * 1024)
         const text = body.text || body.lines || (Array.isArray(body) ? body.join('\n') : '')
         const ident = panelIdentity(req)
+        const bindVmId = String(body.bind_vm_id || body.vm_id || '').trim()
+        if (bindVmId && userMissesVmId(req, cfg.paths.project, bindVmId)) {
+          return json(res, 404, { ok: false, error: { message: 'vm not found' } })
+        }
         const result = proxyPool.importLines(text, {
           fields: body.proxies || body.entries || null,
           host: body.host,
@@ -5800,7 +5841,6 @@ export function createPanelHandler(ctx) {
           password: body.password ?? body.pass,
           ownerUserId: ident.role === 'user' ? req.panelUserId : null,
         })
-        const bindVmId = String(body.bind_vm_id || body.vm_id || '').trim()
         let bound = null
         let worker = null
         let timezone = null

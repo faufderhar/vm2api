@@ -245,6 +245,39 @@ export function stripInvalidThinkingBlocks(body = {}, { preserveThinkingBlocks =
   return dropEmptySystemControlTurns({ ...body, messages: mergeConsecutiveAnthropicMessages(withoutEmpty) })
 }
 
+/**
+ * Rewrite history thinking / redacted_thinking blocks: `map(block, message)`
+ * returns the block to keep it, a replacement block, or null to drop it;
+ * every other block of the turn stays. A turn left empty goes and its
+ * neighbours merge. Returns the body unchanged when nothing changed.
+ * @returns {{ body: object, changed: number }}
+ */
+export function mapThinkingBlocks(body = {}, map = () => null) {
+  if (!Array.isArray(body?.messages)) return { body, changed: 0 }
+  let changed = 0
+  const messages = body.messages.map((message) => {
+    if (!Array.isArray(message?.content)) return message
+    let touched = false
+    const content = []
+    for (const block of message.content) {
+      const type = block?.type
+      const next = type === 'thinking' || type === 'redacted_thinking' ? map(block, message) : block
+      if (next === block) {
+        content.push(block)
+        continue
+      }
+      touched = true
+      changed += 1
+      if (next) content.push(next)
+    }
+    return touched ? { ...message, content } : message
+  })
+  if (!changed) return { body, changed }
+  const withoutEmpty = messages.filter(
+    (message) => !anthropicContentIsEmpty(message?.content) || messageHasTurnControls(message),
+  )
+  return { body: { ...body, messages: mergeConsecutiveAnthropicMessages(withoutEmpty) }, changed }
+}
 export const CONTEXT_MANAGEMENT_BETA = 'context-management-2025-06-27'
 export const PROMPT_CACHING_SCOPE_BETA = 'prompt-caching-scope-2026-01-05'
 export const MID_CONVERSATION_SYSTEM_BETA = 'mid-conversation-system-2026-04-07'

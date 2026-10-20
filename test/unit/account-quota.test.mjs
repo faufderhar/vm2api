@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { AccountQuota, extraHeadersFromLimitError } from '../../src/lib/pool/account-quota.mjs'
+import { parseResetMs } from '../../src/lib/pool/quota-window.mjs'
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'kin-quota-'))
@@ -677,15 +678,71 @@ test('7d_oi window is Fable-only and does not block the account', () => {
     dataDir: tmpDir(),
     config: { quota: { safety_ratio: 0.95, block_on_5h: true, block_on_7d: true } },
   })
+  const reset = futureReset(7 * 24 * 3600_000)
   q.ingestHeaders('acc-oi', {
     'anthropic-ratelimit-unified-7d_oi-utilization': '1',
     'anthropic-ratelimit-unified-7d_oi-status': 'rejected',
-    'anthropic-ratelimit-unified-7d_oi-reset': '2026-08-25T00:00:00Z',
+    'anthropic-ratelimit-unified-7d_oi-reset': reset,
     'anthropic-ratelimit-unified-representative-claim': 'seven_day_overage_included',
   })
   assert.equal(q.canAccept('acc-oi').ok, true)
   assert.equal(q.fableWindowLimited('acc-oi'), true)
-  assert.equal(q.fableWindowResetAt('acc-oi'), Date.parse('2026-08-25T00:00:00Z'))
+  assert.equal(q.fableWindowResetAt('acc-oi'), Date.parse(reset))
+})
+
+test('7d_oi rejected with elapsed second-level reset is not Fable-limited', () => {
+  const q = new AccountQuota({
+    dataDir: tmpDir(),
+    config: { quota: { safety_ratio: 0.95, block_on_5h: true, block_on_7d: true } },
+  })
+  const now = Date.parse('2026-10-19T09:00:00Z')
+  const resetSec = '1792206000'
+  const acc = q.ensure({ account_id: 'acc-oi-elapsed' })
+  acc.unified['7d_oi'] = {
+    utilization: 1,
+    reset: resetSec,
+    status: 'rejected',
+    claim: 'seven_day_overage_included',
+  }
+  q.repo.save(acc)
+  assert.ok(parseResetMs(resetSec) <= now)
+  assert.equal(q.fableWindowLimited('acc-oi-elapsed', now), false)
+  assert.equal(q.fableWindowResetAt('acc-oi-elapsed'), parseResetMs(resetSec))
+})
+
+test('7d_oi rejected without reset stays Fable-limited', () => {
+  const q = new AccountQuota({ dataDir: tmpDir(), config: {} })
+  const acc = q.ensure({ account_id: 'acc-oi-no-reset' })
+  acc.unified['7d_oi'] = { utilization: 1, status: 'rejected' }
+  q.repo.save(acc)
+  assert.equal(q.fableWindowLimited('acc-oi-no-reset'), true)
+  assert.equal(q.fableWindowResetAt('acc-oi-no-reset'), null)
+})
+
+test('7d_oi rejected with future second-level reset stays Fable-limited', () => {
+  const q = new AccountQuota({ dataDir: tmpDir(), config: {} })
+  const now = Date.parse('2026-10-19T09:00:00Z')
+  const resetSec = '1792810800'
+  const acc = q.ensure({ account_id: 'acc-oi-future' })
+  acc.unified['7d_oi'] = { utilization: 1, reset: resetSec, status: 'rejected' }
+  q.repo.save(acc)
+  assert.ok(parseResetMs(resetSec) > now)
+  assert.equal(q.fableWindowLimited('acc-oi-future', now), true)
+  assert.equal(q.fableWindowResetAt('acc-oi-future'), parseResetMs(resetSec))
+})
+
+test('persistEffectiveWindows clears elapsed unified 7d_oi', () => {
+  const q = new AccountQuota({ dataDir: tmpDir(), config: {} })
+  const now = Date.parse('2026-10-19T09:00:00Z')
+  const acc = q.ensure({ account_id: 'acc-wipe-oi' })
+  acc.unified['7d_oi'] = { utilization: 1, reset: '1792206000', status: 'rejected' }
+  acc.unified.headers = { '5h': { utilization: 0.1, status: 'allowed', reset: '2099-01-01T00:00:00Z' } }
+  q.repo.save(acc)
+  q.persistEffectiveWindows('acc-wipe-oi', { now })
+  const oi = q.repo.get('acc-wipe-oi').unified['7d_oi']
+  assert.equal(oi.utilization, 0)
+  assert.equal(oi.status, 'active')
+  assert.equal(oi.stale_reason, 'reset_elapsed')
 })
 
 test('probe 5h rejected with no last_used stays a hard block until reset', () => {

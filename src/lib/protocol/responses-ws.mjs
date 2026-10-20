@@ -91,6 +91,76 @@ export function decodeResponseCreate(payload) {
   return { ok: true, body }
 }
 
+export function interruptTargetResponseId(value = {}) {
+  const previousId = typeof value.previous_response_id === 'string' ? value.previous_response_id.trim() : ''
+  const responseId = typeof value.response_id === 'string' ? value.response_id.trim() : ''
+  return previousId || responseId || ''
+}
+
+export function decodeResponseInterrupt(payload) {
+  let value
+  if (typeof payload === 'string') {
+    try {
+      value = JSON.parse(payload)
+    } catch {
+      return {
+        ok: false,
+        error: responsesWsErrorFrame({
+          code: 'invalid_json',
+          message: 'response.interrupt frame must be valid JSON',
+        }),
+      }
+    }
+  } else {
+    value = payload
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {
+      ok: false,
+      error: responsesWsErrorFrame({
+        code: 'invalid_value',
+        message: 'response.interrupt frame must be a JSON object',
+        param: 'type',
+      }),
+    }
+  }
+  if (value.type !== 'response.interrupt') {
+    return {
+      ok: false,
+      error: responsesWsErrorFrame({
+        code: 'invalid_value',
+        message: 'unsupported Responses WebSocket message type',
+        param: 'type',
+      }),
+    }
+  }
+  return { ok: true, value }
+}
+
+export function parseResponsesWsClientMessage(raw) {
+  let value
+  try {
+    value = JSON.parse(raw)
+  } catch {
+    return { kind: 'queue' }
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { kind: 'queue' }
+  if (value.type !== 'response.interrupt') return { kind: 'queue' }
+  const decoded = decodeResponseInterrupt(value)
+  if (!decoded.ok) return { kind: 'interrupt_error', error: decoded.error }
+  return { kind: 'interrupt', value: decoded.value }
+}
+
+export function responseInterruptAcceptedFrame(value = {}) {
+  const frame = { type: 'response.interrupt.accepted' }
+  const previousId = typeof value.previous_response_id === 'string' ? value.previous_response_id.trim() : ''
+  const responseId = typeof value.response_id === 'string' ? value.response_id.trim() : ''
+  if (previousId) frame.previous_response_id = previousId
+  else if (responseId) frame.response_id = responseId
+  if (typeof value.mode === 'string' && value.mode) frame.mode = value.mode
+  return frame
+}
+
 function cloneJson(value) {
   if (value == null) return value
   return JSON.parse(JSON.stringify(value))
@@ -435,6 +505,8 @@ export function createResponsesWsHandler({
     let busy = false
     let closed = false
     let currentReq = null
+    let activeResponseId = null
+    let activeHopCompleted = false
 
     const abortCurrent = () => {
       try {
@@ -505,15 +577,25 @@ export function createResponsesWsHandler({
             }
             hopBody = expandPreviousResponse(hopBody, resolved.snapshot)
           }
+          activeResponseId = null
+          activeHopCompleted = false
           const req = createProtocolReq(upgradeReq, hopBody)
           currentReq = req
+          let hopClientAborted = false
           const res = createProtocolRes()
           const bridge = createSseJsonBridge()
           let jsonBody = ''
           const flushBridge = () => {
             for (const frame of bridge.frames) sendFrame(ws, frame)
             bridge.frames.length = 0
+            const snap = bridge.snapshot()
+            if (snap?.id) activeResponseId = snap.id
+            if (bridge.terminal === 'completed') activeHopCompleted = true
           }
+          req.once('aborted', () => {
+            if (bridge.terminal === 'completed' || activeHopCompleted) return
+            hopClientAborted = true
+          })
           res.on('chunk', (text) => {
             if (contentTypeOf(res._headers).includes('application/json')) {
               jsonBody += text
@@ -543,6 +625,7 @@ export function createResponsesWsHandler({
           if (closed) return
           bridge.finish()
           flushBridge()
+          if (hopClientAborted && bridge.terminal !== 'completed') continue
           if (contentTypeOf(res._headers).includes('application/json')) {
             sendFrame(ws, httpErrorToFrame(res.statusCode, jsonBody))
             continue
@@ -581,8 +664,35 @@ export function createResponsesWsHandler({
         abortCurrent()
         return
       }
-      const bytes = Buffer.byteLength(data)
+      const raw = String(data)
+      const clientMessage = parseResponsesWsClientMessage(raw)
+      if (clientMessage.kind === 'interrupt_error') {
+        sendFrame(ws, clientMessage.error)
+        return
+      }
+      if (clientMessage.kind === 'interrupt') {
+        const routing = typeof getRouting === 'function' ? getRouting() || {} : {}
+        if (!inferenceWebsocketEnabled(routing)) {
+          sendFrame(
+            ws,
+            responsesWsErrorFrame({
+              status: 403,
+              type: 'permission_error',
+              code: 'websocket_disabled',
+              message: 'Responses WebSocket is disabled',
+            }),
+          )
+          return
+        }
+        const targetId = interruptTargetResponseId(clientMessage.value)
+        const shouldAbort =
+          currentReq && !activeHopCompleted && (!targetId || (activeResponseId && targetId === activeResponseId))
+        if (shouldAbort) abortCurrent()
+        sendFrame(ws, responseInterruptAcceptedFrame(clientMessage.value))
+        return
+      }
       const routing = typeof getRouting === 'function' ? getRouting() || {} : {}
+      const bytes = Buffer.byteLength(raw)
       if (bytes + queuedBytes > inboundBodyLimit(routing, maxBodyBytes)) {
         closed = true
         ws.close(1009, 'Responses WebSocket receive buffer exceeds request body limit')
@@ -604,7 +714,7 @@ export function createResponsesWsHandler({
         abortCurrent()
         return
       }
-      queue.push(String(data))
+      queue.push(raw)
       queuedBytes += bytes
       pump().catch((error) => {
         console.warn('[responses-ws] connection failed', error?.code || error?.name || 'unknown_error')

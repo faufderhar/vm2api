@@ -119,27 +119,94 @@ export function applyOauthToCfg(cfg, cred) {
   return cfg
 }
 
-/** The Go worker's only credential file. Never the leftover `.credentials.json`. */
+/** The Go worker's only credential file. Official CLI name is `.credentials.json`. */
 export function slotWorkerCredentialPath(homeDir) {
   if (!homeDir) return null
   return path.join(homeDir, '.claude', 'credentials.json')
 }
 
+const AUTH_LOGIN_REFRESH_HOLD_MS = 30 * 60 * 1000
+
+/** A live `claude auth login` is about to exchange a new grant. Do not spend the old RT. */
+export function authLoginBlocksRefresh(homeDir, now = Date.now()) {
+  if (!homeDir) return false
+  try {
+    const status = JSON.parse(fs.readFileSync(path.join(homeDir, '..', 'run', 'auth-login', 'status.json'), 'utf8'))
+    const state = String(status.status || '')
+    if (!state || state === 'login_ready' || state === 'error' || state === 'exited') return false
+    const expires = Number(status.expires_at || 0)
+    if (expires > 0) return now < expires
+    const created = Number(status.created_at || 0)
+    return !created || now < created + AUTH_LOGIN_REFRESH_HOLD_MS
+  } catch {
+    return false
+  }
+}
+
+function regularOauthGrant(file) {
+  let st
+  try {
+    st = fs.lstatSync(file)
+  } catch {
+    return null
+  }
+  if (!st.isFile()) return null
+  try {
+    const doc = JSON.parse(fs.readFileSync(file, 'utf8'))
+    const oauth = doc?.claudeAiOauth && typeof doc.claudeAiOauth === 'object' ? doc.claudeAiOauth : doc
+    if (!oauth || typeof oauth !== 'object') return null
+    return {
+      refresh: String(oauth.refreshToken || oauth.refresh_token || '').trim(),
+      expires: Number(oauth.expiresAt || oauth.expires_at || 0) || 0,
+      mtimeMs: Number(st.mtimeMs) || 0,
+    }
+  } catch {
+    return null
+  }
+}
+
+/** A different refresh token in the official file wins only when it is the later grant. */
+function officialGrantWins(official, worker) {
+  if (!official?.refresh) return false
+  if (!worker?.refresh) return true
+  if (official.refresh === worker.refresh) return false
+  if (official.expires !== worker.expires) {
+    if (!worker.expires) return true
+    if (!official.expires) return false
+    return official.expires > worker.expires
+  }
+  return official.mtimeMs > worker.mtimeMs
+}
+
 /**
  * Official CLI reads ~/.claude/.credentials.json. One store: symlink
- * that name onto host-owned credentials.json so wrap cannot copy RT.
- * A fresh slot has neither file. Create the worker file first; otherwise
- * official login writes a separate .credentials.json that the worker never reads.
+ * that name onto host-owned credentials.json so the two names cannot
+ * hold two refresh tokens. A regular `.credentials.json` with a later
+ * grant is copied onto the worker file first. Deleting it and refreshing
+ * the older RT is what revokes the new grant.
  */
 export function ensureOfficialCredentialLink(homeDir, { uid, gid, create = false } = {}) {
   const claudeDir = path.join(homeDir || '', '.claude')
   const workerFile = path.join(claudeDir, 'credentials.json')
   const officialFile = path.join(claudeDir, '.credentials.json')
   if (!homeDir) return { wrote: false, error: 'home missing' }
-  if (!fs.existsSync(workerFile)) {
-    if (!create) return { wrote: false, error: 'worker credentials.json missing' }
+  const officialGrant = regularOauthGrant(officialFile)
+  const workerGrant = regularOauthGrant(workerFile)
+  const adopt = officialGrantWins(officialGrant, workerGrant)
+  if (!workerGrant && !fs.existsSync(workerFile)) {
+    if (!adopt && !create) return { wrote: false, error: 'worker credentials.json missing' }
     fs.mkdirSync(claudeDir, { recursive: true, mode: 0o700 })
-    fs.writeFileSync(workerFile, '{}\n', { mode: 0o600 })
+    if (adopt) fs.copyFileSync(officialFile, workerFile)
+    else fs.writeFileSync(workerFile, '{}\n', { mode: 0o600 })
+    fs.chmodSync(workerFile, 0o600)
+    if (uid != null && gid != null) {
+      try {
+        fs.chownSync(workerFile, uid, gid)
+      } catch {}
+    }
+  } else if (adopt) {
+    fs.copyFileSync(officialFile, workerFile)
+    fs.chmodSync(workerFile, 0o600)
     if (uid != null && gid != null) {
       try {
         fs.chownSync(workerFile, uid, gid)
@@ -152,7 +219,7 @@ export function ensureOfficialCredentialLink(homeDir, { uid, gid, create = false
     if (st.isSymbolicLink()) {
       const target = fs.readlinkSync(officialFile)
       if (target === 'credentials.json' || path.resolve(claudeDir, target) === path.resolve(workerFile)) {
-        return { wrote: true, path: officialFile, linked: true }
+        return { wrote: true, path: officialFile, linked: true, adopted: adopt }
       }
     }
     fs.rmSync(officialFile, { force: true })
@@ -167,7 +234,7 @@ export function ensureOfficialCredentialLink(homeDir, { uid, gid, create = false
       fs.lchownSync(officialFile, uid, gid)
     } catch {}
   }
-  return { wrote: true, path: officialFile, linked: true }
+  return { wrote: true, path: officialFile, linked: true, adopted: adopt }
 }
 
 /** Read the slot worker credentials.json without logging secrets. */
