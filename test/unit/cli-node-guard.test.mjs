@@ -55,13 +55,15 @@ test('keeps the kernel CLI, init bootstrap, setup-token and live panel CLIs incl
   const hello = slot.add(['-p', 'hello', '--permission-mode', 'bypassPermissions'], ['KIN_OFFICIAL_CC=1'])
   const usage = slot.add(['/usage', '--print'], ['KIN_OFFICIAL_CC=1'])
   const setupToken = slot.add(['setup-token'], ['KIN_SETUP_TOKEN=1'])
+  const authLogin = slot.add(['auth', 'login'], ['KIN_AUTH_LOGIN=1'])
   const panelPrint = slot.add(['-p', 'hello'], ['KIN_PANEL_SHELL=live'])
   const panelInteractive = slot.add([], ['KIN_PANEL_SHELL=live'])
   slot.run(['live'])
   await settle()
   assert.equal(alive(kernel), true)
   assert.equal(alive(duplicate), false)
-  for (const child of [hello, usage, setupToken, panelPrint, panelInteractive]) assert.equal(alive(child), true)
+  for (const child of [hello, usage, setupToken, authLogin, panelPrint, panelInteractive])
+    assert.equal(alive(child), true)
 })
 
 test('kills leaked CLIs from closed panel shells and unmarked -p runs', async (t) => {

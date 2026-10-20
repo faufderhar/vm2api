@@ -651,6 +651,7 @@ start_stack() {
     fi
     if KIN_AUTO_SYNC_WRAP="$auto_sync_wrap" compose up -d; then
       wait_health || true
+      refresh_slot_services
       return
     fi
     err "docker compose 失败。日志: docker logs ${SERVICE_NAME}"
@@ -663,6 +664,7 @@ start_stack() {
     cat "$log"
     rm -f "$log"
     wait_health || true
+    refresh_slot_services
     return
   fi
   cat "$log"
@@ -672,6 +674,7 @@ start_stack() {
     if KIN_AUTO_SYNC_WRAP="$auto_sync_wrap" compose up -d --build; then
       rm -f "$log"
       wait_health || true
+      refresh_slot_services
       return
     fi
     guide_changelog_error
@@ -682,6 +685,21 @@ start_stack() {
   guide_changelog_error
   rm -f "$log"
   exit 1
+}
+
+refresh_slot_services() {
+  # The control-plane image carries the freshly built Go binaries. Publish them
+  # into persistent slot-bin mounts and restart only kin-worker/kin-egress.
+  # A stale kin-egress can keep the old binary and its listen port after this
+  # refresh. Leaving that as a warning reports the upgrade done while the old
+  # exit is still serving traffic.
+  if ! docker exec "$SERVICE_NAME" test -f /opt/vm2api/scripts/fleet-services.mjs >/dev/null 2>&1; then
+    err "控制面缺少 Go 服务刷新脚本，不能确认 kin-egress 已换到当前二进制"
+    exit 1
+  elif ! docker exec "$SERVICE_NAME" node /opt/vm2api/scripts/fleet-services.mjs; then
+    err "Go slot service refresh failed; VM containers were left untouched, but kin-egress may still be the previous binary"
+    exit 1
+  fi
 }
 
 print_banner() {

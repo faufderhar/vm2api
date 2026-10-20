@@ -138,6 +138,15 @@ attempt=0
 while [ "$attempt" -lt 45 ]; do
   if probe verify "$TAG" "$BASELINE"; then
     [ -d .git ] || printf '%s\n' "${TAG#v}" > VERSION
+    # Replace the Go worker/egress payloads in-place; no VM/container rebuild.
+    # Older control-plane images may not carry the helper yet; retry on the
+    # next image update instead of invalidating an otherwise verified upgrade.
+    if ! docker exec "$CONTAINER" test -f /opt/vm2api/scripts/fleet-services.mjs >/dev/null 2>&1; then
+      echo "Go service refresh helper is not present in the control plane; retry after the next image update" >&2
+    elif ! docker exec "$CONTAINER" node /opt/vm2api/scripts/fleet-services.mjs; then
+      echo "Go service-only update failed; inspect the per-slot report" >&2
+      exit 1
+    fi
     echo "Control plane restarted and verified at $TAG"
     echo "Previously healthy slot kernels verified: $BASELINE"
     exit 0

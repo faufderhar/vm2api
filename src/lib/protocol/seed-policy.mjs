@@ -30,6 +30,16 @@ export function isTelemetryEnabled(pol = {}) {
  */
 export const NONESSENTIAL_TRAFFIC_ENV_KEY = 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'
 
+// Keep a visible, editable copy of the Claude opt-out setting next to the
+// generated settings.json. The file is intentionally plain text so operators
+// can inspect or replace it without having to edit JSON.
+export const DEFAULT_CLAUDE_SETTING = `${NONESSENTIAL_TRAFFIC_ENV_KEY}=1`
+
+export function normalizeClaudeSetting(value) {
+  if (typeof value !== 'string') return DEFAULT_CLAUDE_SETTING
+  return value.replace(/\r\n?/g, '\n').replace(/\n+$/g, '')
+}
+
 export const TELEMETRY_KILL_ENV = Object.freeze({
   DISABLE_TELEMETRY: '1',
 })
@@ -104,7 +114,18 @@ export function buildSlotSettingsEnv(pol = {}, { timezone, locale, extra } = {})
   const out = applyRequiredSeedEnv(env, pol)
   // 2.1.283+ sends x-claude-code-prompt-id only when this is set. Default on.
   out.CLAUDE_CODE_GATEWAY_HINT_HEADERS = '1'
+  if (out.CLAUDE_CODE_ATTRIBUTION_HEADER == null) out.CLAUDE_CODE_ATTRIBUTION_HEADER = '0'
   return out
+}
+
+export function callerAutoCompactWindow(body = {}) {
+  const sources = [body?.settings?.env, body?.claude_settings?.env, body?.env]
+  for (const source of sources) {
+    if (!source || typeof source !== 'object' || Array.isArray(source)) continue
+    const value = Number(source.CLAUDE_CODE_AUTO_COMPACT_WINDOW)
+    if (Number.isInteger(value) && value >= 100_000 && value <= 1_000_000) return value
+  }
+  return null
 }
 
 export function buildSeedSettingsEnv(pol = {}, extra = {}) {
@@ -141,6 +162,7 @@ export function defaultSeedPolicy(partial = {}) {
     reject_client_metadata_identity: partial.reject_client_metadata_identity !== false,
     theme: partial.theme || 'dark',
     extra_env: partial.extra_env && typeof partial.extra_env === 'object' ? partial.extra_env : {},
+    claude_setting: normalizeClaudeSetting(partial.claude_setting),
     settings_json_override:
       partial.settings_json_override && typeof partial.settings_json_override === 'object'
         ? partial.settings_json_override

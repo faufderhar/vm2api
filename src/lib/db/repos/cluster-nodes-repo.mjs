@@ -52,6 +52,7 @@ export class ClusterNodesRepo {
       RETURNING ${PUBLIC_COLUMNS.join(', ')}
     `)
     this._remove = db.prepare('DELETE FROM cluster_nodes WHERE id = ?')
+    this._stmts = new Map()
   }
 
   list() {
@@ -131,5 +132,47 @@ export class ClusterNodesRepo {
 
   remove(id) {
     return this._remove.run(id).changes > 0
+  }
+
+  // Prepared on first use: callers that only load 026 (older fixtures) never touch this table.
+  _stmt(sql) {
+    let stmt = this._stmts.get(sql)
+    if (!stmt) {
+      stmt = this.db.prepare(sql)
+      this._stmts.set(sql, stmt)
+    }
+    return stmt
+  }
+
+  /** node_id → { address, port }; the gate token stays out of listings. */
+  directLinks() {
+    const rows = this._stmt('SELECT node_id, address, port FROM cluster_node_direct_links').all()
+    return new Map(rows.map((row) => [row.node_id, { address: row.address, port: row.port }]))
+  }
+
+  getDirectLink(id) {
+    const row = this._stmt(
+      'SELECT address, port, token, cert_sha256 FROM cluster_node_direct_links WHERE node_id = ?',
+    ).get(id)
+    return row
+      ? { address: row.address, port: row.port, token: maybeDecrypt(row.token), certSha256: row.cert_sha256 || null }
+      : null
+  }
+
+  setDirectLink(id, { address, port, token }, now = new Date().toISOString()) {
+    this._stmt(`
+      INSERT INTO cluster_node_direct_links (node_id, address, port, token, updated_at) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(node_id) DO UPDATE SET address = excluded.address, port = excluded.port,
+        token = excluded.token, updated_at = excluded.updated_at
+    `).run(id, address, port, maybeEncrypt(token), now)
+  }
+
+  /** The pin follows the node's gate, not the address: an address edit keeps it. */
+  setDirectLinkCert(id, certSha256) {
+    this._stmt('UPDATE cluster_node_direct_links SET cert_sha256 = ? WHERE node_id = ?').run(certSha256, id)
+  }
+
+  clearDirectLink(id) {
+    return this._stmt('DELETE FROM cluster_node_direct_links WHERE node_id = ?').run(id).changes > 0
   }
 }

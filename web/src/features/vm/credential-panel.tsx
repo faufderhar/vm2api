@@ -21,6 +21,13 @@ import {
 import { importErrorMessage } from '@/lib/import-errors'
 import { proxyNamedLabel } from '@/lib/vm-status'
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -31,6 +38,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { WsTerminal } from '@/components/ws-terminal'
 import { dashboardQueryOptions } from '@/features/overview/queries'
 import { CodexCredentialPanel } from '@/features/vm/codex-credential-panel'
 import { ConvertOauthToSetupButton } from '@/features/vm/convert-oauth-button'
@@ -168,7 +176,7 @@ function ClaudeCredentialPanel({
   const [code, setCode] = useState('')
   const [sessionKey, setSessionKey] = useState('')
   const [apiKey, setApiKey] = useState('')
-
+  const [loginOpen, setLoginOpen] = useState(false)
   const activeMethod = resolveImportMethod(kind, method)
   const sig = `${kind}:${activeMethod}`
   const linkReady = !!(link.sessionId && link.authUrl && link.sig === sig)
@@ -474,17 +482,48 @@ function ClaudeCredentialPanel({
           <Hint>
             {kind === 'setup-token'
               ? `申请完整 OAuth 权限，换票后采集身份。浏览器须走 ${proxyHint || '同一槽出口'}，授权码须含 # 后半段。以 Setup Token 模式运行，不跑官方初装。`
-              : `浏览器须走 ${proxyHint || '同一槽出口'}，授权码须含 # 后半段。换票后采集身份。`}
+              : activeMethod === 'cc'
+                ? `槽内 cli-node 执行官方 claude auth login。链接、PKCE 和换票都由官方 CLI 完成，浏览器须走 ${proxyHint || '同一槽出口'}。需要容器已运行且 cli-node 已安装。`
+                : `浏览器须走 ${proxyHint || '同一槽出口'}，授权码须含 # 后半段。换票后采集身份。`}
           </Hint>
+        </div>
+      ) : activeMethod === 'cc' ? (
+        <div className='space-y-2'>
+          <Hint>
+            打开槽终端并自动执行 claude auth
+            login。链接在终端里复制，授权码直接粘进终端，不经过面板。需要容器已运行且
+            cli-node 已安装。
+          </Hint>
+          <Button size='sm' onClick={() => setLoginOpen(true)}>
+            打开官方登录终端
+          </Button>
+          <Dialog open={loginOpen} onOpenChange={setLoginOpen}>
+            <DialogContent className='flex h-[70vh] max-w-4xl flex-col'>
+              <DialogHeader>
+                <DialogTitle>官方登录</DialogTitle>
+                <DialogDescription>
+                  终端会执行 claude auth
+                  login。复制里面的链接，授权码粘回这个终端。
+                </DialogDescription>
+              </DialogHeader>
+              <div className='min-h-0 flex-1'>
+                {loginOpen ? (
+                  <WsTerminal
+                    ticketPath={`/api/panel/vms/${encodeURIComponent(vmId)}/shell-ticket`}
+                    socketPath={`/api/panel/vms/${encodeURIComponent(vmId)}/shell`}
+                    officialLogin
+                  />
+                ) : null}
+              </div>
+            </DialogContent>
+          </Dialog>
         </div>
       ) : (
         <div className='space-y-2'>
           <Hint>
             {kind === 'setup-token'
               ? `连接形式：生成完整 OAuth 权限授权链接。换票经槽 SOCKS5，浏览器须走 ${proxyHint || '同一槽出口'}；落盘后仍以 Setup Token 模式运行。`
-              : activeMethod === 'cc'
-                ? '官方 Claude Code 授权页。换票经槽 SOCKS5，打开链接仍是本机浏览器。'
-                : `换票经槽 SOCKS5，浏览器须走 ${proxyHint || '同一 SOCKS5'}。`}
+              : `换票经槽 SOCKS5，浏览器须走 ${proxyHint || '同一 SOCKS5'}。`}
           </Hint>
           <Button
             size='sm'

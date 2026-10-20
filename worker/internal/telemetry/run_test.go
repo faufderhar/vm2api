@@ -216,3 +216,35 @@ func TestRunReloadsTelemetryWithoutRestart(t *testing.T) {
 		t.Fatalf("reloaded body missing hardware: %s", got)
 	}
 }
+
+func TestUploadLogKeepsFortyLinesAndDropsIdentity(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Config{ConfigPath: filepath.Join(dir, "worker.json")}
+	payload := Event{EventType: "ClaudeCodeInternalEvent", EventData: map[string]any{
+		"event_name": "tengu_init",
+		"email":      "person@example.com",
+		"device_id":  "abc",
+		"auth":       map[string]any{"account_uuid": "acct", "organization_uuid": "org"},
+		"env":        map[string]any{"platform": "linux"},
+	}}
+	for range 45 {
+		recordUpload(cfg, "batch", "tengu_init", nil, BatchRequest{Events: []Event{payload}})
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "telemetry-upload.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	if len(lines) != uploadLogLines {
+		t.Fatalf("lines=%d", len(lines))
+	}
+	for _, secret := range []string{"person@example.com", "account_uuid", "organization_uuid", "device_id"} {
+		if strings.Contains(text, secret) {
+			t.Fatalf("log kept %s", secret)
+		}
+	}
+	if !strings.Contains(text, `"events":[`) || !strings.Contains(text, `"platform":"linux"`) || !strings.Contains(text, "batch tengu_init ok") {
+		t.Fatalf("log lost the upload shape: %s", text)
+	}
+}

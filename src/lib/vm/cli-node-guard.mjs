@@ -4,8 +4,9 @@
  * still sets CLAUDE_CODE_KIN_NATIVE_SLOTS; that process is the kernel CLI
  * until sync, not a leak. When both are present, keep the unprefixed one.
  * Beside it may run: any `claude` (interactive or `-p`) in a live panel shell,
- * and host-run init bootstrap / setup-token CLIs (KIN_OFFICIAL_CC=1 /
- * KIN_SETUP_TOKEN=1) that have their own lifecycle. Anything else is a leak
+ * and host-run init bootstrap / setup-token / official auth-login CLIs
+ * (KIN_OFFICIAL_CC=1 / KIN_SETUP_TOKEN=1 / KIN_AUTH_LOGIN=1) that have their
+ * own lifecycle. Anything else is a leak
  * from a closed terminal (cli-node ignores SIGHUP) and is killed. A process
  * whose environ cannot be read is left alone.
  */
@@ -55,7 +56,7 @@ for d in "$proc"/[0-9]*; do
     kill -KILL "$pid" 2>/dev/null || true
     continue
   fi
-  printf '%s\\n' "$env" | grep -qx -e 'KIN_OFFICIAL_CC=1' -e 'KIN_SETUP_TOKEN=1' && continue
+  printf '%s\\n' "$env" | grep -qx -e 'KIN_OFFICIAL_CC=1' -e 'KIN_SETUP_TOKEN=1' -e 'KIN_AUTH_LOGIN=1' && continue
   panel=$(printf '%s\\n' "$env" | sed -n 's/^KIN_PANEL_SHELL=//p' | head -n 1)
   if [ -n "$panel" ]; then
     for token in "$@"; do

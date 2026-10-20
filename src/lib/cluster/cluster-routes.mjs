@@ -77,6 +77,11 @@ export function createClusterRoutes({ manager, json, readBody, ok }) {
       return json(res, 200, ok({ id }))
     }
     if (sub === '/reconnect' && m === 'POST') return json(res, 200, ok(manager.reconnect(id)))
+    if (sub === '/direct-link' && m === 'PUT') {
+      const body = await readBody(req, MAX_BODY)
+      return json(res, 200, ok(await manager.setDirectLink(id, body)))
+    }
+    if (sub === '/direct-link' && m === 'DELETE') return json(res, 200, ok(await manager.clearDirectLink(id)))
     if (sub === '/shell-ticket' && m === 'POST') return json(res, 200, ok(manager.issueShellTicket(id)))
 
     if (sub === '/docker/info' && m === 'GET') return json(res, 200, ok(await dockerInfo(manager.docker(id))))

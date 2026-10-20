@@ -49,6 +49,13 @@ import {
   SETUP_TOKEN_FLAVOR,
 } from '../oauth/claude-setup-token.mjs'
 import {
+  completeClaudeAuthLogin,
+  readAuthLoginSession,
+  startClaudeAuthLoginSession,
+  AUTH_LOGIN_FLAVOR,
+  AUTH_LOGIN_SOURCE,
+} from '../oauth/claude-auth-login.mjs'
+import {
   canOfficialCc,
   isApiKeyMode,
   isAnySetupTokenMode,
@@ -2636,7 +2643,8 @@ export function createPanelHandler(ctx) {
       }
       // POST /api/panel/vms/:id/shell-ticket — single-use ticket for the slot terminal WebSocket
       if (req.method === 'POST' && /^\/api\/panel\/vms\/[^/]+\/shell-ticket$/.test(p)) {
-        const issued = ctx.slotShell.issueTicket(p.split('/')[4])
+        const body = await readBody(req, 1024).catch(() => ({}))
+        const issued = ctx.slotShell.issueTicket(p.split('/')[4], { login: body.login === true })
         if (!issued.ok) return json(res, issued.status, { ok: false, error: issued.error })
         return json(res, 200, panel.ok({ ticket: issued.ticket, expires_in: issued.expires_in }))
       }
@@ -3598,25 +3606,36 @@ export function createPanelHandler(ctx) {
         if (!vm) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
         const homeDir = path.join(cfg.paths.project, 'vms', id, 'cli-home')
         let settings_json = null
+        let claude_setting = null
         let kin_seed = null
         try {
           settings_json = JSON.parse(fs.readFileSync(path.join(homeDir, '.claude', 'settings.json'), 'utf8'))
         } catch {}
         try {
+          claude_setting = fs
+            .readFileSync(path.join(homeDir, '.claude', 'claude.setting'), 'utf8')
+            .replace(/\r\n?/g, '\n')
+            .replace(/\n+$/g, '')
+        } catch {
+          // Missing file stays null. The policy default is not this slot's file.
+        }
+        try {
           kin_seed = JSON.parse(fs.readFileSync(path.join(homeDir, '.claude', 'kin-seed.json'), 'utf8'))
         } catch {}
-        return json(
-          res,
-          200,
-          panel.ok({
-            vm_id: id,
-            seed_policy: defaultSeedPolicy(vm.seed_policy || {}),
-            ...seedTelemetryContract(defaultSeedPolicy(vm.seed_policy || {})),
-            settings_json,
-            kin_seed,
-            cli_home: homeDir,
-          }),
-        )
+        const seed_policy = defaultSeedPolicy(vm.seed_policy || {})
+        if (claude_setting !== null) seed_policy.claude_setting = claude_setting
+        const debug = new URL(req.url || '/', 'http://localhost').searchParams.get('debug') === '1'
+        const payload = {
+          vm_id: id,
+          seed_policy,
+          ...seedTelemetryContract(seed_policy),
+          settings_json,
+          claude_setting,
+          kin_seed,
+          cli_home: homeDir,
+        }
+        if (debug) payload.telemetry_log = readTelemetryUploadLog(cfg.paths.project, id)
+        return json(res, 200, panel.ok(payload))
       }
       // PUT /api/panel/vms/:id/seed-settings
       if (req.method === 'PUT' && /^\/api\/panel\/vms\/[^/]+\/seed-settings$/.test(p)) {
@@ -3633,17 +3652,78 @@ export function createPanelHandler(ctx) {
         if (body.theme !== undefined) merged.theme = body.theme
         if (body.extra_env !== undefined) merged.extra_env = body.extra_env
         if (body.settings_json_override !== undefined) merged.settings_json_override = body.settings_json_override
+        if (body.claude_setting !== undefined) merged.claude_setting = body.claude_setting
+        if (body['claude.setting'] !== undefined) merged.claude_setting = body['claude.setting']
         const next = defaultSeedPolicy(merged)
         if (body.settings_json_override !== undefined) next.settings_json_override = body.settings_json_override
         if (body.extra_env !== undefined) next.extra_env = body.extra_env || {}
+        const followProxyTz = body?.timezone_follow_proxy === true || body?.timezoneFollowProxy === true
+        const hasTimezone = body && Object.prototype.hasOwnProperty.call(body, 'timezone')
+        const hasLocale = body && Object.prototype.hasOwnProperty.call(body, 'locale')
+        let nextLocale = null
+        if (hasLocale) {
+          const requestedLocale = body.locale == null || body.locale === '' ? STANDARD_LOCALE : String(body.locale)
+          if (!SLOT_LOCALES.includes(requestedLocale)) {
+            return json(res, 400, {
+              ok: false,
+              error: { code: 'invalid_locale', message: `语言必须是 ${SLOT_LOCALES.join('、')}` },
+            })
+          }
+          nextLocale = requestedLocale
+        }
+        if (hasTimezone) {
+          const zone = validTimezone(body.timezone)
+          if (!zone) {
+            return json(res, 400, {
+              ok: false,
+              error: {
+                type: 'invalid_request_error',
+                code: 'invalid_timezone',
+                message: '时区必须是有效的 IANA 名称，如 Asia/Tokyo',
+                param: 'timezone',
+              },
+            })
+          }
+          const pinned = persistVmTimezone(cfg.paths.project, id, zone, { source: 'manual' })
+          if (!pinned) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
+          Object.assign(vm, pinned)
+        } else if (followProxyTz) {
+          const synced = await syncVmTimezoneFromProxy(cfg.paths.project, proxyPool, id, { force: true })
+          if (!synced.ok) {
+            return json(res, 400, {
+              ok: false,
+              error: {
+                type: 'invalid_request_error',
+                code: synced.reason || 'proxy_timezone_unknown',
+                message: '未能从代理节点取到时区，请先检测代理地理位置',
+              },
+            })
+          }
+          if (synced.applied) {
+            const fresh = getVm(cfg.paths.project, id)
+            if (fresh) Object.assign(vm, fresh)
+          } else if (synced.timezone) {
+            vm.timezone = synced.timezone
+            vm.timezone_source = 'proxy_geo'
+          }
+        }
+        if (nextLocale) vm.locale = nextLocale
         vm.seed_policy = next
         vm.updated_at = new Date().toISOString()
         atomicWriteJson(vmPath, vm, { mode: 0o600 })
         const written = writeSlotSeedFiles(cfg.paths.project, vm, next)
-        if (next.telemetry_disabled === false && telemetryWasOff) {
-          try {
-            await reloadSlotReady(vm, cfg.paths.project, { routing: ctx.routingConfig })
-          } catch {}
+        let service = null
+        if (
+          vm.status === 'running' &&
+          (next.telemetry_disabled !== telemetryWasOff || body.telemetry_service_restart === true)
+        ) {
+          const report = await runFleetUpdate(cfg.paths.project, {
+            action: 'telemetry',
+            ids: [id],
+            concurrency: 1,
+            routing: ctx.routingConfig,
+          })
+          service = report.items?.[0] || report
         }
         return json(
           res,
@@ -3653,7 +3733,9 @@ export function createPanelHandler(ctx) {
             seed_policy: next,
             ...seedTelemetryContract(next),
             settings_json: written.settings || null,
+            claude_setting: written.claude_setting || '',
             kin_seed: written.kin_seed || null,
+            service,
           }),
         )
       }
@@ -4590,6 +4672,22 @@ export function createPanelHandler(ctx) {
             )
           }
           const flavor = body.flavor || body.type || 'cai'
+          if (normalizeOauthFlavor(flavor) === 'claude_code') {
+            const generated = await startClaudeAuthLoginSession({
+              vm: existing,
+              projectRoot: cfg.paths.project,
+              force: body.force === true || body.force === 'true' || body.force === 1,
+            })
+            const px = existing.proxy || {}
+            return json(
+              res,
+              200,
+              panel.ok({
+                ...generated,
+                proxy_hint: slotProxyHint(px, proxyPool?.labelOf(px.id)),
+              }),
+            )
+          }
           const generated = generateAuthUrl({
             vmId: id,
             proxyUrl: slotProxy.proxyUrl,
@@ -4764,22 +4862,40 @@ export function createPanelHandler(ctx) {
           }
           const code = body.code || body.auth_code || ''
           const flavor = body.flavor || body.type || ''
+          const loginSession = readAuthLoginSession(cfg.paths.project, id)
+          const sessionKey = String(body.session_id || body.sessionId || '')
+          const officialLogin =
+            normalizeOauthFlavor(flavor) === 'claude_code' ||
+            (loginSession?.alive &&
+              !loginSession.expired &&
+              loginSession.session_id &&
+              loginSession.session_id === sessionKey)
           let oauth = looksLikeOfficialSetupToken(code)
             ? await completeClaudeSetupToken({
                 projectRoot: cfg.paths.project,
                 vmId: id,
-                sessionId: body.session_id || body.sessionId,
+                sessionId: sessionKey,
                 code,
               })
-            : await exchangeAuthCode({
-                sessionId: body.session_id || body.sessionId,
-                code,
-                proxyUrl: slotProxy.proxyUrl,
-                vmId: id,
-              })
+            : officialLogin
+              ? await completeClaudeAuthLogin({
+                  projectRoot: cfg.paths.project,
+                  vmId: id,
+                  sessionId: sessionKey,
+                  code,
+                })
+              : await exchangeAuthCode({
+                  sessionId: sessionKey,
+                  code,
+                  proxyUrl: slotProxy.proxyUrl,
+                  vmId: id,
+                })
           if (looksLikeOfficialSetupToken(code) || oauth.flavor === SETUP_TOKEN_FLAVOR) {
             oauth.type = 'official-setup-token'
             oauth.mode = 'official-setup-token'
+          } else if (oauth.flavor === AUTH_LOGIN_FLAVOR || oauth.source === AUTH_LOGIN_SOURCE) {
+            oauth.type = 'oauth'
+            oauth.mode = 'oauth'
           } else if (
             normalizeOauthFlavor(flavor) === 'setup_token' ||
             oauth.flavor === 'setup_token' ||
@@ -6094,5 +6210,15 @@ export function createPanelHandler(ctx) {
     }
 
     return false
+  }
+}
+
+function readTelemetryUploadLog(projectRoot, id) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,80}$/.test(String(id || ''))) return []
+  try {
+    const text = fs.readFileSync(path.join(projectRoot, 'vms', id, 'run', 'telemetry-upload.log'), 'utf8')
+    return text.split(/\r?\n/).filter(Boolean).slice(-40)
+  } catch {
+    return []
   }
 }

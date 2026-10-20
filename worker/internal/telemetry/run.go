@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"os"
 	"path/filepath"
@@ -244,10 +245,7 @@ func postBatch(ctx context.Context, deps Deps, cfg config.Config, token string, 
 		return nil
 	}
 	err := deps.HTTP.PostBatch(ctx, token, cfg.Telemetry.Headers, []Event{ev})
-	if err != nil {
-		class, status := ClassifyBatchErr(err)
-		log.Printf("telemetry sidecar: batch failed class=%s status=%d", class, status)
-	}
+	recordUpload(cfg, "batch", ev.EventData["event_name"], err, BatchRequest{Events: []Event{ev}})
 	return err
 }
 
@@ -256,11 +254,94 @@ func postEval(ctx context.Context, deps Deps, cfg config.Config, token string, b
 		return nil
 	}
 	err := deps.HTTP.PostEval(ctx, token, cfg.Telemetry.Headers, body)
+	recordUpload(cfg, "eval", "growthbook", err, body)
+	return err
+}
+
+const uploadLogLines = 40
+
+var redactedUploadKeys = map[string]struct{}{
+	"email": {}, "account_uuid": {}, "accountuuid": {},
+	"organization_uuid": {}, "organizationuuid": {},
+	"device_id": {}, "deviceid": {}, "session_id": {}, "sessionid": {},
+	"user_id": {}, "userid": {}, "id": {},
+}
+
+func recordUpload(cfg config.Config, kind string, name any, err error, payload any) {
+	if strings.TrimSpace(cfg.ConfigPath) == "" {
+		return
+	}
+	body, marshalErr := json.Marshal(redactUpload(payload))
+	if marshalErr != nil {
+		body = []byte("{}")
+	}
+	state := "ok"
 	if err != nil {
 		class, status := ClassifyBatchErr(err)
-		log.Printf("telemetry sidecar: eval failed class=%s status=%d", class, status)
+		state = class
+		log.Printf("telemetry sidecar: %s failed class=%s status=%d", kind, class, status)
+		_ = status
 	}
-	return err
+	line := time.Now().UTC().Format(time.RFC3339) + " " + kind + " " + strings.TrimSpace(fmtName(name)) + " " + state + " " + string(body)
+	path := filepath.Join(filepath.Dir(cfg.ConfigPath), "telemetry-upload.log")
+	_ = rewriteUploadLog(path, line)
+}
+
+func redactUpload(value any) any {
+	switch item := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(item))
+		for key, child := range item {
+			if _, drop := redactedUploadKeys[strings.ToLower(key)]; drop {
+				continue
+			}
+			out[key] = redactUpload(child)
+		}
+		return out
+	case []any:
+		out := make([]any, len(item))
+		for i, child := range item {
+			out[i] = redactUpload(child)
+		}
+		return out
+	case []Event:
+		out := make([]any, len(item))
+		for i, child := range item {
+			out[i] = redactUpload(child)
+		}
+		return out
+	case BatchRequest:
+		return map[string]any{"events": redactUpload(item.Events)}
+	case Event:
+		return redactUpload(map[string]any{"event_type": item.EventType, "event_data": item.EventData})
+	default:
+		return value
+	}
+}
+
+func rewriteUploadLog(path, line string) error {
+	previous, _ := os.ReadFile(path)
+	lines := strings.Split(strings.TrimRight(string(previous), "\n"), "\n")
+	if len(previous) == 0 {
+		lines = nil
+	}
+	lines = append(lines, line)
+	if len(lines) > uploadLogLines {
+		lines = lines[len(lines)-uploadLogLines:]
+	}
+	next := path + ".next"
+	if err := os.WriteFile(next, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(next, path)
+}
+
+func fmtName(name any) string {
+	text, _ := name.(string)
+	if text == "" {
+		return "-"
+	}
+	return text
 }
 
 func stopOn4xx(err error) bool {

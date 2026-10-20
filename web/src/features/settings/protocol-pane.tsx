@@ -3,7 +3,14 @@ import {
   SESSION_IDLE_TTL_SECONDS_MAX,
   SESSION_IDLE_TTL_SECONDS_MIN,
 } from '@/types/panel-routing'
-import { Brain, Check, Clock3, Database, Hash, ShieldCheck } from 'lucide-react'
+import {
+  Brain,
+  Check,
+  Clock3,
+  Database,
+  Scaling,
+  ShieldCheck,
+} from 'lucide-react'
 import {
   cacheTtlFromCompat,
   detectProxiedOfficialCcFromCompat,
@@ -31,6 +38,13 @@ const CLAUDE_CODE_FINGERPRINT: [string, string][] = [
   ['system', '官方计费块 / 身份行'],
   ['计费块', 'cc_version = UA 版本'],
 ]
+
+function autoCompactWindowValue(value: unknown) {
+  const tokens = Number(value)
+  if (tokens === 200_000 || tokens === 500_000 || tokens === 1_000_000)
+    return String(tokens)
+  return 'model'
+}
 
 export function ProtocolPane({
   compat,
@@ -188,7 +202,34 @@ export function ProtocolPane({
         </SettingRow>
       </PaneSection>
       <PaneSection
-        icon={Hash}
+        icon={Scaling}
+        title='Auto compact 窗口'
+        desc='默认跟随请求模型。显式值替换模型窗口，请求里的 CLAUDE_CODE_AUTO_COMPACT_WINDOW 仍优先。'
+      >
+        <SettingRow
+          label='窗口'
+          desc='跟随模型时，Opus / Sonnet / Haiku 5.x 使用 1M，其余模型使用 200K。'
+        >
+          <ChipGroup
+            label='Auto compact 窗口'
+            value={autoCompactWindowValue(compat.auto_compact_window)}
+            options={[
+              ['model', '跟随模型'],
+              ['200000', '200K'],
+              ['500000', '500K'],
+              ['1000000', '1M'],
+            ]}
+            onChange={(value) =>
+              onCompatChange({
+                ...compat,
+                auto_compact_window: value === 'model' ? null : Number(value),
+              })
+            }
+          />
+        </SettingRow>
+      </PaneSection>
+      <PaneSection
+        icon={Clock3}
         title='CCH 统一附加'
         desc='出站 billing 的 cch。开启后缺失也补，不区分试用或订阅。'
       >

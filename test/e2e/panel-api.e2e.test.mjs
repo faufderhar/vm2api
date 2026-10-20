@@ -342,27 +342,14 @@ test('pasted setup token survives identity enrichment and persists inference cre
   }
 })
 
-test('generate-auth-url claude_code flavor then exchange-code', async () => {
+test('claude_code flavor refuses login before the slot container and cli-node exist', async () => {
   const gw = await startGateway({ oauth: false })
   try {
     const gen = await api(gw, 'POST', '/api/panel/vms/vm-sim-01/oauth/generate-auth-url', {
       body: { flavor: 'claude_code' },
     })
-    assert.equal(gen.status, 200, gen.text)
-    const data = gen.json.data || gen.json
-    assert.match(String(data.auth_url || ''), /claude\.ai\/oauth\/authorize/)
-    assert.equal(data.flavor, 'claude_code')
-    assert.ok(data.session_id)
-    const ex = await api(gw, 'POST', '/api/panel/vms/vm-sim-01/oauth/exchange-code', {
-      body: { session_id: data.session_id, code: 'pasted-auth-code' },
-    })
-    assert.equal(ex.status, 200, ex.text)
-    const out = ex.json.data || ex.json
-    assert.equal(out.oauth_email, 'fake-oauth@kin.test')
-    assert.equal(out.flavor, 'claude_code')
-    const vm = JSON.parse(fs.readFileSync(path.join(gw.project, 'vms', 'vm-sim-01.json'), 'utf8'))
-    assert.match(vm.claude.scope, /user:sessions:claude_code/)
-    assert.doesNotMatch(vm.claude.scope, /user:file_upload/)
+    assert.equal(gen.status, 400, gen.text)
+    assert.equal(gen.json.error.code, 'container_not_ready')
   } finally {
     await gw.stop()
   }

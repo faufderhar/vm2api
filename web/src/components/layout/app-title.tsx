@@ -17,6 +17,10 @@ const CHIP_CLASS =
 const CHIP_LINK_CLASS =
   'cursor-pointer hover:border-primary/45 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground'
 
+// 两枚链接按内容分一行且不折行：中文标签被压窄时会逐字竖排；空间不够先缩箭头，再省略文字。
+const CHIP_PAIR_CLASS = 'flex-auto justify-center whitespace-nowrap'
+const CHIP_PAIR_ARROW_CLASS = 'size-3.5 min-w-0 shrink-[100] opacity-60'
+
 // 版本号单独占一行且不截断：发布号可能带预发布/构建后缀，截断会丢失关键信息。
 const VERSION_CHIP_CLASS = 'h-auto min-h-10 gap-2 py-1.5 text-base'
 
@@ -51,34 +55,28 @@ export function AppTitle({ version }: { version?: string }) {
         </div>
         <div className='mt-2.5 grid gap-1.5 group-data-[collapsible=icon]:hidden'>
           <VersionChip version={version?.replace(/^v/i, '')} />
-          <div className='flex gap-1.5'>
+          <div className='flex min-w-0 gap-1.5'>
             <a
               href={REPO_URL}
               target='_blank'
               rel='noreferrer'
               title='github.com/dofastted/vm2api'
-              className={cn(CHIP_CLASS, CHIP_LINK_CLASS)}
+              className={cn(CHIP_CLASS, CHIP_LINK_CLASS, CHIP_PAIR_CLASS)}
             >
               <IconGithub aria-hidden className='size-4 shrink-0' />
-              GitHub
-              <ArrowUpRight
-                aria-hidden
-                className='size-3.5 shrink-0 opacity-60'
-              />
+              <span className='truncate'>GitHub</span>
+              <ArrowUpRight aria-hidden className={CHIP_PAIR_ARROW_CLASS} />
             </a>
             <a
               href={DOCS_URL}
               target='_blank'
               rel='noreferrer'
               title='项目入门'
-              className={cn(CHIP_CLASS, CHIP_LINK_CLASS)}
+              className={cn(CHIP_CLASS, CHIP_LINK_CLASS, CHIP_PAIR_CLASS)}
             >
               <BookOpen aria-hidden className='size-4 shrink-0' />
-              文档
-              <ArrowUpRight
-                aria-hidden
-                className='size-3.5 shrink-0 opacity-60'
-              />
+              <span className='truncate'>文档</span>
+              <ArrowUpRight aria-hidden className={CHIP_PAIR_ARROW_CLASS} />
             </a>
           </div>
         </div>

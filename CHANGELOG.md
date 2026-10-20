@@ -4,8 +4,21 @@
 
 - 同一平台有多个账号时，调度等级、负载或分数接近的情况下，按用量窗口的 7 天重置时间比较，时间更早的账号优先。没有这个时间的仍按原来的槽位顺序。粘性会话和手动等级不变。
 - 安装脚本和容器入口不再保留公开默认密码 `123456`：密码为空或仍是这个值时生成随机密码，并只打印一次；已经改过的密码不动。登录按来源地址限流。主密钥只有本机回环地址能进管理面板。没配数据库密钥时会生成仅本机可读的 `data/db.secret`，之后写入的凭据列加密保存。`/health` 不再返回探针详情和内核信息，`/v1/meta` 必须带密钥且不返回邮箱。代理拒绝云元数据和链路本地地址，本机 `127.0.0.1` 仍可用。内核空令牌直接拒绝。默认日志改为 `normal`。
+- 官方 OAuth（claude_code）：在已运行槽终端里执行 `claude auth login`，面板弹出槽终端、授权链接在终端复制、授权码由用户粘贴；宿主机不再自造 authorize URL。Cookie 导入与 Setup Token 路径不变。（#615）
+- 槽位种子页默认锁定：需确认解锁后才能改配置，播种前再次确认；时区/语言提供 en、cn、jp 基础选项。时区跟随当前 SOCKS5（空/非手动钉住）时展示出口时区，播种经 `timezone_follow_proxy` 写入；可改固定 IANA 时区或改回跟随。TZ/LANG/LC_ALL 仍不经 `extra_env` 覆盖契约键。
+- 槽位种子页：`settings.json` 的 env 行与 `theme` 可直接编辑并随播种写入；`autoUpdates`、`grove_enabled` 只读且播种时固定为 `false`；TZ/LANG/LC_ALL、遥测 kill-switch、Bedrock/Vertex、gateway hint 等同理只读（播种由契约重写）。缺 `CLAUDE_CODE_ATTRIBUTION_HEADER` 时默认 `0`。调试上传默认关，独立 query 拉最近 40 条上传，切换开关不重置未保存编辑；Go sidecar 写 `vms/<id>/run/telemetry-upload.log`，面板 `GET seed-settings?debug=1` 返回 `telemetry_log`。
+- 协议页可配置 `routing.compatibility.auto_compact_window`（100K–1M 或跟随模型）；入站在清理 settings 前提取调用方 `CLAUDE_CODE_AUTO_COMPACT_WINDOW`，经内部 `auto_compact_window` 字段进入当前 job，清理后的 body 不再携带该 env。
+- 槽位种子页按当前槽 `settings.json` 列出真实配置；`claude.setting` 可编辑播种；缺失文件返回 `null`、空文件返回空串，不用策略默认冒充槽内文件；遥测开关与 sidecar 进程状态分开展示，保存不因遥测进程刷新失败而 502。
+- 集群槽 legacy kin-worker / kin-egress 容器可一次性迁到持久化 `/opt/kin-live` 挂载：旧容器重命名为 `*-legacy-<timestamp>` 保留作回滚，替换容器复用原镜像与网络身份；rename 后先从 user-defined 网 disconnect 释放 IP/别名再 create；KVM 已挂 `/opt/kin-guest/opt/kin-live` 不再误判 legacy；`scripts/migrate-legacy-cluster-slots.mjs` 与 fleet `action=telemetry` 同路径；迁移时保留 CapDrop/CapAdd 等 HostConfig，避免 canReuse 后 egress 权限缩水。（#605）
+- fleet 遥测刷新在 kin-egress 二进制被替换（含 `(deleted)` 旧进程与脏 pidfile）时，会按 egress 配置扫停全部 helper、等待 `/proc/<pid>` 消失后再绑定新二进制；同一 SOCKS 出口的 stop/start 与 `ensureProxyEgress` 共用 per-proxy 锁，避免并发 telemetry 互相 SIGTERM。（#604）
+- 扩展节点直连通道：`PUT /api/panel/cluster/nodes/:id/direct-link` 在节点上建 `kin-slot-gate`（TLS 1.3，首次启动自签证书，控制面经 SSH 读取并固定指纹；每节点随机令牌），远程槽 kernel / worker 请求改为每次一条直连 TLS 连接，不再全部挤在一条 SSH 长连接里（长连接在零碎流量下拥塞窗口会卡在约 17KB/s，突发请求正文排队数秒）。请求正文随握手后的第一包发出、不等应答。gate 只连槽的两个 socket 且不跟随符号链接；连不上、证书不符或令牌被拒时该节点退回 SSH 30 秒。面板节点详情可启用 / 关闭，节点行显示「直连」/「直连→SSH」。新增 Go 命令 `kin-slot-gate`（`npm run build:gate`，Release 附件同名）。
+- 面板：侧栏「GitHub / 文档」两枚链接不再折行，字体偏宽时「文档」不会逐字竖排，空间不够先缩箭头再省略文字；VM 列表搜索框关闭浏览器自动填充，不再被回填成登录邮箱。
+- 集群页「扩展节点」新增 CPU / 内存 / 容器三列：健康检查（每 30 秒）经同一条 SSH 连接读节点 `/proc` 和 cgroup，口径同本机宿主列；容器 = 节点上全部 Docker 容器内存合计（扣除 inactive_file，同 `docker stats`）。修复本机宿主列 CPU 最高只显示 10%（`Math.min(100, …×1000)/10` 写错上限）。链路列不再折行。
+- 集群槽无需重建 VM 即可更新 Go 槽位服务（kin-worker / kin-egress）：持久化 `slot-bin` 挂载推送二进制，fleet `action=telemetry` 热更新遥测与 egress。（#600）
+- Codex 入站在平台探测前支持 CPR 式 `routing.codex.model_mappings` 精确模型映射；默认 `codex-auto-review` → `gpt-6-luna`（清空该键时回退 `gpt-6.1-sol`）。日志保留 `requested_model` / `upstream_model`；非法或非 GPT 目标 400，不 hop Anthropic。（#526）
 - 保留路径不再给没有可用签名的 thinking 补 `signature: ""`：缺失、空、短于 24、dummy 的删掉；签名可用的留，空正文也留。这一支里的 `redacted_thinking` 不看 data 和签名，原样留；不走保留路径时仍按原规则删。5.5 的非保留路径仍接受短的非 dummy 签名。没有按账号归属过滤签名。
 - 协议页新增「thinking 显示」，`routing.compatibility.thinking_display` 默认 `summarized`。调用方打开 thinking 却要求隐藏（`omitted`、`updates`，或默认隐藏的模型上没写 display）时，出站改成 `summarized`；显式 `passthrough` 保留调用方的值。已保存的 `routing.json` 不写这个键也按 summarized 生效。
+- Claude kernel / CLI 依赖固定到不可变快照 `payload-2026.10.19-kernel-cli`（kin-kernel + cli-node）；Codex kernel 与其余原生产物保持不变。（#594）
 
 ## 1.3.199 — 2026-10-19
 

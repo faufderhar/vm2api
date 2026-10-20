@@ -6,6 +6,7 @@ import type {
   VmCreateOptions,
   VmCredentialResponse,
   VmDetailPayload,
+  VmSeedSettings,
   VmsListResponse,
 } from '@/types/panel-vm'
 import { api } from '@/lib/api'
@@ -46,9 +47,29 @@ export function vmSeedQueryOptions(id: string) {
   return queryOptions({
     queryKey: ['panel', 'vm', id, 'seed'] as const,
     queryFn: () =>
-      api<Record<string, unknown>>(
+      api<VmSeedSettings>(
         `/api/panel/vms/${encodeURIComponent(id)}/seed-settings`
       ),
+    refetchInterval: false,
+  })
+}
+
+/** Upload audit lines only — does not share the seed form query key. */
+export function vmSeedUploadLogQueryOptions(id: string) {
+  return queryOptions({
+    queryKey: ['panel', 'vm', id, 'seed-upload-log'] as const,
+    queryFn: async () => {
+      const data = await api<VmSeedSettings>(
+        `/api/panel/vms/${encodeURIComponent(id)}/seed-settings?debug=1`
+      )
+      const lines = data.telemetry_log
+      return Array.isArray(lines)
+        ? lines.filter(
+            (line): line is string => typeof line === 'string' && line !== ''
+          )
+        : []
+    },
+    refetchInterval: false,
   })
 }
 

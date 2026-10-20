@@ -11,7 +11,9 @@ import { dockerPing, sshDocker } from '../../src/lib/cluster/docker-remote.mjs'
 import { ClusterNodesRepo } from '../../src/lib/db/repos/cluster-nodes-repo.mjs'
 
 const { Server, utils } = ssh2
-const schema = fs.readFileSync(new URL('../../src/lib/db/migrations/026_cluster_nodes.sql', import.meta.url), 'utf8')
+const schema = ['026_cluster_nodes.sql', '039_cluster_node_direct_links.sql']
+  .map((name) => fs.readFileSync(new URL(`../../src/lib/db/migrations/${name}`, import.meta.url), 'utf8'))
+  .join('\n')
 const key = () => utils.generateKeyPairSync('ecdsa', { bits: 256 })
 const defer = () => {
   let resolve

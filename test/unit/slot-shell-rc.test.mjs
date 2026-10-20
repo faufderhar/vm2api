@@ -4,8 +4,13 @@ import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { panelShellLaunch } from '../../src/lib/vm/slot-shell.mjs'
+import { adoptShellLogin, createSlotShell, panelShellLaunch } from '../../src/lib/vm/slot-shell.mjs'
 import { OFFICIAL_CLI_VERSION } from '../../src/lib/identity/vm-identity.mjs'
+import {
+  ensureOfficialCredentialLink,
+  readWorkerCredentialFile,
+  writeWorkerCredentialFile,
+} from '../../src/lib/oauth/oauth-credentials.mjs'
 test('claude in the panel shell runs cli-node and points config at .claude', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'slot-shell-rc-'))
   const bin = path.join(dir, 'cli-node')
@@ -45,6 +50,138 @@ test('claude in the panel shell runs cli-node and points config at .claude', () 
   assert.equal(fs.readlinkSync(path.join(home, '.claude', '.credentials.json')), 'credentials.json')
   assert.equal(fs.readlinkSync(path.join(home, '.claude.json')), '.claude/.claude.json')
   fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('official login runs only when the panel login marker is set', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'slot-shell-login-'))
+  const bin = path.join(dir, 'cli-node')
+  fs.writeFileSync(bin, '#!/bin/sh\necho "cli-node $*"\n', { mode: 0o755 })
+  const { rc } = panelShellLaunch(bin)
+  const rcPath = path.join(dir, 'rc')
+  fs.writeFileSync(rcPath, `${rc}\n`)
+  const script = ['set +e', rc, 'exit 0'].join('\n')
+  const run = (env) =>
+    spawnSync('bash', ['-c', script], {
+      encoding: 'utf8',
+      env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH}`, KIN_PANEL_RCFILE: rcPath, ...env },
+    })
+  const plain = run({})
+  const login = run({ KIN_PANEL_LOGIN: '1' })
+  assert.equal(plain.status, 0, plain.stderr)
+  assert.doesNotMatch(plain.stdout, /auth login/)
+  assert.equal(login.status, 0, login.stderr)
+  assert.match(login.stdout, /cli-node auth login/)
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('a fresh slot login links the official credential file onto the worker file', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'slot-shell-cred-'))
+  const home = path.join(root, 'cli-home')
+  try {
+    const linked = ensureOfficialCredentialLink(home, { create: true })
+    assert.equal(linked.linked, true)
+    const official = path.join(home, '.claude', '.credentials.json')
+    assert.equal(fs.readlinkSync(official), 'credentials.json')
+    fs.writeFileSync(
+      official,
+      JSON.stringify({
+        claudeAiOauth: { accessToken: 'at-fresh', refreshToken: 'rt-fresh', scopes: ['user:profile'] },
+      }),
+    )
+    assert.equal(readWorkerCredentialFile(home).refresh_token, 'rt-fresh')
+    assert.equal(ensureOfficialCredentialLink(home).linked, true)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('shell login is synced into the worker credential and the terminal keeps the link', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'slot-shell-adopt-'))
+  const home = path.join(root, 'vms', 'vm-02', 'cli-home')
+  const official = path.join(home, '.claude', '.credentials.json')
+  try {
+    fs.mkdirSync(path.dirname(official), { recursive: true })
+    fs.writeFileSync(
+      official,
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: 'at-shell',
+          refreshToken: 'rt-shell',
+          expiresAt: Date.now() + 3600_000,
+          scopes: ['user:profile', 'user:inference'],
+          email: 'shell@example.com',
+        },
+      }),
+    )
+    const calls = []
+    const adopted = await adoptShellLogin(
+      root,
+      { id: 'vm-02' },
+      {
+        importOauth: async (input) => {
+          calls.push(input)
+          writeWorkerCredentialFile(home, input.oauth)
+          return { ok: true }
+        },
+      },
+    )
+    assert.equal(adopted.imported, true)
+    assert.equal(adopted.linked, true)
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].source, 'claude-auth-login')
+    assert.equal(readWorkerCredentialFile(home).refresh_token, 'rt-shell')
+    assert.equal(fs.readlinkSync(official), 'credentials.json')
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('official login tickets refuse a cluster slot and a slot without cli-node', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'slot-shell-ticket-'))
+  fs.mkdirSync(path.join(root, 'vms'), { recursive: true })
+  fs.writeFileSync(path.join(root, 'vms', 'vm-01.json'), JSON.stringify({ id: 'vm-01', node_id: 'node-a' }))
+  fs.writeFileSync(path.join(root, 'vms', 'vm-02.json'), JSON.stringify({ id: 'vm-02' }))
+  const shell = createSlotShell({ projectRoot: root, logger: { warn() {} } })
+  try {
+    const remote = shell.issueTicket('vm-01', { login: true })
+    assert.equal(remote.ok, false)
+    assert.equal(remote.error.code, 'remote_unsupported')
+    const missing = shell.issueTicket('vm-02', { login: true })
+    assert.equal(missing.ok, false)
+    assert.equal(missing.error.code, 'container_not_ready')
+    const ops = shell.issueTicket('vm-02')
+    assert.equal(ops.ok, true)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('an ops shell ticket cannot be upgraded into an official login', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'slot-shell-upgrade-'))
+  fs.mkdirSync(path.join(root, 'vms', 'vm-02', 'cli-home', '.kin'), { recursive: true })
+  fs.writeFileSync(path.join(root, 'vms', 'vm-02.json'), JSON.stringify({ id: 'vm-02' }))
+  fs.writeFileSync(path.join(root, 'vms', 'vm-02', 'cli-home', '.kin', 'cli-node'), '')
+  const shell = createSlotShell({ projectRoot: root, logger: { warn() {} } })
+  const ops = shell.issueTicket('vm-02')
+  const seen = []
+  const socket = {
+    write(data) {
+      seen.push(String(data))
+    },
+    destroy() {},
+  }
+  try {
+    const handled = shell.handleUpgrade(
+      { url: `/api/panel/vms/vm-02/shell?ticket=${ops.ticket}&login=1` },
+      socket,
+      Buffer.alloc(0),
+    )
+    assert.equal(handled, true)
+    assert.match(seen[0], /^HTTP\/1\.1 409 /)
+    assert.equal(fs.existsSync(path.join(root, 'vms', 'vm-02', 'cli-home', '.claude', 'credentials.json')), false)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test('panelShellLaunch rejects a non-absolute cli-node path', () => {

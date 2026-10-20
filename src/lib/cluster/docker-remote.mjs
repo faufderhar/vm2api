@@ -328,6 +328,16 @@ export async function removeContainer(connect, id) {
   await dockerJson(connect, { method: 'DELETE', path: `${containerPath(id)}?force=1&v=1`, timeoutMs: 60_000 }, [204])
 }
 
+/** Preserve the container object for a rollback instead of deleting it. */
+export async function renameContainer(connect, id, name) {
+  if (!NAME_RE.test(String(name || ''))) throw new ClusterError(400, 'invalid_name', '容器名不合法')
+  await dockerJson(
+    connect,
+    { method: 'POST', path: `${containerPath(id)}/rename?name=${encodeURIComponent(name)}`, timeoutMs: 30_000 },
+    [204],
+  )
+}
+
 export async function containerLogs(connect, id, { tail = 200 } = {}) {
   const n = Math.min(5000, Math.max(1, Number.parseInt(tail, 10) || 200))
   const inspect = await dockerJson(connect, { path: `${containerPath(id)}/json` })
@@ -500,6 +510,34 @@ export async function removeNetwork(connect, name) {
   // 404: already gone. 403/409: a container joined meanwhile; it keeps the network.
   if (res.status === 204 || res.status === 404 || res.status === 403 || res.status === 409) return
   throw new ClusterError(502, 'docker_network_failed', dockerMessage(res))
+}
+
+/** Detach a container so its static IP / aliases are free for a replacement join. */
+export async function disconnectContainerFromNetwork(connect, network, container) {
+  await dockerJson(
+    connect,
+    {
+      method: 'POST',
+      path: `/networks/${encodeURIComponent(network)}/disconnect`,
+      body: { Container: container },
+      timeoutMs: 30_000,
+    },
+    [200, 204, 404],
+  )
+}
+
+/** Re-attach a container with the endpoint it had before a failed migration rollback. */
+export async function connectContainerToNetwork(connect, network, container, endpointConfig = {}) {
+  await dockerJson(
+    connect,
+    {
+      method: 'POST',
+      path: `/networks/${encodeURIComponent(network)}/connect`,
+      body: { Container: container, EndpointConfig: endpointConfig },
+      timeoutMs: 30_000,
+    },
+    [200, 204],
+  )
 }
 
 /**

@@ -160,7 +160,6 @@ test('OAuth binary exchanges provider state with session PKCE and preserves cook
   const proxyUrl = `socks5h://127.0.0.1:${proxy.address().port}`
   for (const scenario of [
     { flavor: 'cai', returnedState: 'provider-exchange-state' },
-    { flavor: 'claude_code', returnedState: 'provider-cc-state' },
     { flavor: 'cai', returnedState: undefined },
     { flavor: 'setup_token', returnedState: 'session' },
   ]) {
@@ -188,7 +187,7 @@ test('OAuth binary exchanges provider state with session PKCE and preserves cook
       assert.equal(peekAuthUrlSession(generated.session_id), null)
     })
   }
-  assert.equal(tokenRequests, 4)
+  assert.equal(tokenRequests, 3)
   await assert.rejects(
     sessionKeyToOAuth('sk-ant-sid01-testaaaaaaaa', {
       proxyUrl: `socks5h://127.0.0.1:${proxy.address().port}`,

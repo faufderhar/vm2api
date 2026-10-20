@@ -179,3 +179,13 @@ export function remoteNodeFromApi(
     remote: node,
   }
 }
+
+/** 直连通道状态一句话；面板与节点行共用。 */
+export function directLinkText(link: ClusterApiNode['direct_link']): string {
+  if (!link) return '未启用'
+  if (link.state === 'pending') return '等待检查'
+  if (link.state === 'ok') {
+    return `直连中${link.latency_ms != null ? ` · ${link.latency_ms}ms` : ''}`
+  }
+  return `已退回 SSH${link.error ? `（${link.error}）` : ''}`
+}

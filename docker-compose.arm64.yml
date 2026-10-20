@@ -12,6 +12,7 @@ services:
       DOCKER_DEFAULT_PLATFORM: linux/amd64
       KIN_CLUSTER_WORKER_BIN: /opt/vm2api/cluster-bin-amd64/kin-worker
       KIN_CLUSTER_EGRESS_BIN: /opt/vm2api/cluster-bin-amd64/kin-egress
+      KIN_CLUSTER_GATE_BIN: /opt/vm2api/cluster-bin-amd64/kin-slot-gate
     volumes:
       # Keep native runtime helpers out of the repository's amd64 bin/ assets.
       - ./.local/arm64/vms:/opt/vm2api/vms

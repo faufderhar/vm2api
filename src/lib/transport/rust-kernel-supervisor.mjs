@@ -37,6 +37,11 @@ import {
 } from '../oauth/oauth-credentials.mjs'
 import { slotHost } from '../vm/slot-host.mjs'
 
+function normalizeAutoCompactWindow(value) {
+  const windowTokens = Number(value)
+  return Number.isInteger(windowTokens) && windowTokens >= 100_000 && windowTokens <= 1_000_000 ? windowTokens : null
+}
+
 const starts = new Map()
 const KVM_HEALTH_MS = { kvm: 120_000, tcg: 480_000 }
 
@@ -693,6 +698,13 @@ export function writeKernelConfig(
   const previousMax = Number(previous.max_request_bytes)
   const requestBytes = routing == null && previousMax > 0 ? previousMax : maxRequestBytes(routing)
   const cchEnabled = routing == null ? previous.cch_enabled !== false : routing?.compatibility?.cch_enabled !== false
+  const previousWindow = Number(previous.auto_compact_window)
+  const autoCompactWindow =
+    routing == null
+      ? Number.isInteger(previousWindow) && previousWindow >= 100_000 && previousWindow <= 1_000_000
+        ? previousWindow
+        : null
+      : normalizeAutoCompactWindow(routing?.compatibility?.auto_compact_window)
   const sessionIdleTtlSeconds =
     routing == null
       ? normalizeSessionIdleTtlSeconds(previous.session_idle_ttl_seconds)
@@ -726,6 +738,7 @@ export function writeKernelConfig(
     cli_version: OFFICIAL_CLI_VERSION,
     default_cache_ttl: defaultCacheTtl,
     cch_enabled: cchEnabled,
+    auto_compact_window: autoCompactWindow,
   }
 
   if (tz) config.timezone = tz

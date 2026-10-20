@@ -7,7 +7,13 @@ import {
   buildSeedSettingsEnv,
   stripLegacyScriptEnv,
   LEGACY_SCRIPT_ENV_KEYS,
+  DEFAULT_CLAUDE_SETTING,
 } from '../../src/lib/protocol/seed-policy.mjs'
+
+test('default seed policy includes the editable claude setting', () => {
+  assert.equal(defaultSeedPolicy().claude_setting, DEFAULT_CLAUDE_SETTING)
+  assert.equal(defaultSeedPolicy({ claude_setting: 'FOO=bar\r\n' }).claude_setting, 'FOO=bar')
+})
 
 test('explicit opt-in removes telemetry kill switches; omitted policy retains them', () => {
   assert.equal(buildSlotSettingsEnv(standardSeedPolicy()).DISABLE_TELEMETRY, '1')
@@ -63,6 +69,7 @@ test('buildSlotSettingsEnv is TZ/LANG plus contract, leftover extra cannot win',
   assert.equal(env.LC_ALL, 'en_US.UTF-8')
   assert.equal(env.CUSTOM, 'ok')
   assert.equal(env.CLAUDE_CODE_GATEWAY_HINT_HEADERS, '1')
+  assert.equal(env.CLAUDE_CODE_ATTRIBUTION_HEADER, '0')
 })
 
 test('buildSeedSettingsEnv delegates to slot env', () => {

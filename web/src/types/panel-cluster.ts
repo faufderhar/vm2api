@@ -28,6 +28,8 @@ export type ClusterApiNode = {
     docker: { ok: boolean; error: string | null }
     /** Docker `/info` 计数；Docker 不可用时为 null。 */
     containers: { total: number | null; running: number | null } | null
+    /** 节点宿主负载，口径同本机宿主列；远端读不到时为 null。 */
+    host?: NodeHostStats | null
     checked_at: string
   } | null
   bridge: {
@@ -37,6 +39,32 @@ export type ClusterApiNode = {
     active: number
   } | null
   install: DockerInstallJob | null
+  /** 直连通道（kin-slot-gate，TLS）；未配置为 null。令牌与证书指纹从不返回。 */
+  direct_link?: ClusterDirectLink | null
+}
+
+export type ClusterDirectLink = {
+  address: string
+  port: number
+  /** ok 直连；down 已退回 SSH；pending 尚未检查。 */
+  state: 'ok' | 'down' | 'pending'
+  latency_ms: number | null
+  error: string | null
+  gate_error: string | null
+  checked_at: string | null
+}
+
+export type NodeHostStats = {
+  cpu_count: number
+  load1: number
+  load5: number | null
+  load15: number | null
+  cpu_pct: number
+  mem_total: number
+  mem_used: number
+  mem_pct: number
+  /** 全部 Docker 容器内存合计（扣除 inactive_file）；读不到 cgroup 时为 null。 */
+  containers_mem: number | null
 }
 
 export type DockerInstallJob = {

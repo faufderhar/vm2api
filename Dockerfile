@@ -20,6 +20,7 @@ RUN cd api-kernel && go mod download
 COPY api-kernel/ ./api-kernel/
 RUN cd worker && go build -buildvcs=false -trimpath -o /out/kin-worker ./cmd/kin-worker \
   && go build -buildvcs=false -trimpath -o /out/kin-egress ./cmd/kin-egress \
+  && CGO_ENABLED=0 go build -buildvcs=false -trimpath -o /out/kin-slot-gate ./cmd/kin-slot-gate \
   && cd ../api-kernel && go build -buildvcs=false -trimpath -o /out/kin-api-kernel ./cmd/kin-api-kernel
 
 FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS payload

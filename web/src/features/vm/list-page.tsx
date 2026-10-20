@@ -202,6 +202,11 @@ export function VmListPage() {
           <Input
             className='h-8 w-64'
             type='search'
+            name='vm-filter'
+            autoComplete='off'
+            data-1p-ignore
+            data-lpignore='true'
+            data-bwignore
             placeholder='搜索名称 / 邮箱 / 代理'
             value={q}
             onChange={(e) => setQ(e.target.value)}

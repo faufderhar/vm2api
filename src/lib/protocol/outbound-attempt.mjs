@@ -190,11 +190,16 @@ export function prepareCliHopBody(
     preserveSystem = false,
     preserveThinkingBlocks = false,
     preserveCallerEnvironment = false,
+    autoCompactWindow = null,
   } = {},
 ) {
   if (requestContext?.purpose === 'auto_mode_classifier') return prepareClassifierBody(canonicalBody, { stream })
   if (preserveSystem) validateCacheBreakpoints(canonicalBody)
   let body = officialMessagesBody(canonicalBody, { stream })
+  const windowTokens = Number(autoCompactWindow)
+  if (Number.isInteger(windowTokens) && windowTokens >= 100_000 && windowTokens <= 1_000_000) {
+    body.auto_compact_window = windowTokens
+  }
   delete body.metadata
   if (!preserveSystem) {
     const leftover = stripCliOwnedSystem(body.system, { preserveCallerEnvironment })

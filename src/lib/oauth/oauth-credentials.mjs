@@ -128,12 +128,24 @@ export function slotWorkerCredentialPath(homeDir) {
 /**
  * Official CLI reads ~/.claude/.credentials.json. One store: symlink
  * that name onto host-owned credentials.json so wrap cannot copy RT.
+ * A fresh slot has neither file. Create the worker file first; otherwise
+ * official login writes a separate .credentials.json that the worker never reads.
  */
-export function ensureOfficialCredentialLink(homeDir, { uid, gid } = {}) {
+export function ensureOfficialCredentialLink(homeDir, { uid, gid, create = false } = {}) {
   const claudeDir = path.join(homeDir || '', '.claude')
   const workerFile = path.join(claudeDir, 'credentials.json')
   const officialFile = path.join(claudeDir, '.credentials.json')
-  if (!homeDir || !fs.existsSync(workerFile)) return { wrote: false, error: 'worker credentials.json missing' }
+  if (!homeDir) return { wrote: false, error: 'home missing' }
+  if (!fs.existsSync(workerFile)) {
+    if (!create) return { wrote: false, error: 'worker credentials.json missing' }
+    fs.mkdirSync(claudeDir, { recursive: true, mode: 0o700 })
+    fs.writeFileSync(workerFile, '{}\n', { mode: 0o600 })
+    if (uid != null && gid != null) {
+      try {
+        fs.chownSync(workerFile, uid, gid)
+      } catch {}
+    }
+  }
   fs.mkdirSync(claudeDir, { recursive: true })
   try {
     const st = fs.lstatSync(officialFile)

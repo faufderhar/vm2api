@@ -21,12 +21,15 @@ export class SocketRelay {
   /**
    * `remotePath` may be an async function: slot relays resolve the node's HOME
    * on first use, so they can listen at boot before the SSH link is up.
-   * @param {{ socketPath: string, remotePath: string|(() => Promise<string>), getClient: () => import('ssh2').Client|null, logger?: Pick<Console, 'warn'> }} opts
+   * `dialDirect` (slot relays on a node with a direct link) returns `{ sock, ready }`
+   * from dialGate, or null to use the SSH link.
+   * @param {{ socketPath: string, remotePath: string|(() => Promise<string>), getClient: () => import('ssh2').Client|null, dialDirect?: () => Promise<{ sock: import('node:net').Socket, ready: Promise<unknown> }|null>, logger?: Pick<Console, 'warn'> }} opts
    */
-  constructor({ socketPath, remotePath, getClient, logger = console }) {
+  constructor({ socketPath, remotePath, getClient, dialDirect = null, logger = console }) {
     this.socketPath = socketPath
     this.remotePath = remotePath
     this.getClient = getClient
+    this.dialDirect = dialDirect
     this.logger = logger
     this.server = null
     this.listening = false
@@ -92,6 +95,13 @@ export class SocketRelay {
     this.active.add(local)
     local.once('close', () => this.active.delete(local))
     local.on('error', () => {})
+    if (this.dialDirect) {
+      const direct = await this.dialDirect().catch(() => null)
+      if (direct) {
+        this._pipeDirect(local, direct)
+        return
+      }
+    }
     const client = this.getClient()
     if (!client) {
       local.destroy()
@@ -117,6 +127,29 @@ export class SocketRelay {
     local.on('close', () => remote.close())
     local.pipe(remote)
     remote.pipe(local)
+  }
+
+  /**
+   * The request body goes out at once (the gate buffers it behind the preface);
+   * the reply is piped back only after the gate's OK. A refusal at that point
+   * (missing slot socket) drops the local connection, like a refused streamlocal.
+   */
+  _pipeDirect(local, { sock, ready }) {
+    if (local.destroyed) {
+      sock.destroy()
+      return
+    }
+    sock.on('error', () => local.destroy())
+    local.on('close', () => sock.destroy())
+    // pipe() forwards each half-close as end(); see the half-open note in _listen.
+    local.pipe(sock)
+    ready.then(
+      () => {
+        sock.pipe(local)
+        sock.resume()
+      },
+      () => local.destroy(),
+    )
   }
 
   async stop() {

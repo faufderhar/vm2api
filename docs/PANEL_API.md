@@ -83,7 +83,7 @@
 | POST | `/vms/:id/oauth/generate-auth-url` | PKCE 授权链接；无 SOCKS5 拒绝。`{ flavor: "claude_code" }` 为官方 Claude Code 授权页。`{ flavor: "setup_token" }` 为 inference-only PKCE，不启槽内 CLI |
 | POST | `/vms/:id/oauth/exchange-code` | 粘贴授权码，经槽代理换票。完整 OAuth 才排队初装。flavor 以 session 为准 |
 | GET/POST | `/vms/:id/official-cc-bootstrap` | 初装进度 / `{ manual:true }` 再跑 |
-| GET/PUT | `/vms/:id/seed-settings` | 播种；强制保留 telemetry/bedrock/vertex 等 env |
+| GET/PUT | `/vms/:id/seed-settings` | 播种；面板默认锁定，解锁后改、播种前确认。`settings.json` 可编辑 env（经 `extra_env`）与 `theme`；`autoUpdates`/`grove_enabled` 与 TZ/LANG/LC_ALL、telemetry/bedrock/vertex 等契约 env 只读展示，TZ/LANG 经 PUT `timezone` / `timezone_follow_proxy` / `locale` 写入槽位后再播种，不经 `extra_env`；`claude_setting` 可编辑。`GET ?debug=1` 额外返回 `telemetry_log`（最近 40 行脱敏上传审计，默认不带） |
 | POST | `/vms/:id/collect-identity` | guest 采集（locale/tz/`guest_machine_id`） |
 | POST | `/vms/:id/reload` | 重载该槽 worker |
 | GET | `/wrap-cli` | kernel / wrap 样本 inspect：`ok, dir, kernel_bin, glibc_shim, wrapper, meta, kernel`。`kernel.source` 为 `configured`（仓内 `KIN_KERNEL_BIN` / `bin/kin-kernel`）或 `sample` |
@@ -103,7 +103,7 @@
 | POST | `/vms/create` | 种子 VM + Claude Code home；依赖私有 `kin-computer`。未安装返回 400 `computer_service_missing`，身份生成失败返回 400 `computer_create_failed`。Docker 槽可在 `machine` 里可选传 `docker_cpus`（见下） |
 | POST | `/vms/import` | sessionKey 导入（必须已有 VM+代理） |
 | GET | `/vms/fleet-status` | 全槽更新状态 |
-| POST | `/vms/fleet-update` | 全槽 roll / 采集 |
+| POST | `/vms/fleet-update` | 全槽 roll / 采集；`action=telemetry` 只更新 Go telemetry/egress 服务，不重建 VM |
 | POST | `/vms/reconcile-fingerprints` | 用官方 `~/.claude.json` 对齐指纹 |
 | POST | `/probe` | 全量额度探测 |
 | GET/POST | `/health-probe` | 读/跑官方 hello 健康探测缓存 |
@@ -219,8 +219,17 @@ Claude PATCH `max_sessions` 返回 400 `claude_max_sessions_forbidden`；OpenAI 
 | `codex.catalog_client_version` | `auto` | 模型目录同步的客户端版本，与推理 UA 分开 |
 | `codex.client_features.enabled` | `false` | 显式开启后上送槽位独立安装 UUID 与官方 `client_metadata`；不使用 VM/硬件指纹 |
 | `codex.analytics.enabled` | `false` | 显式开启后独立上报运行环境 Analytics，不是推理成功的前提 |
+| `codex.model_mappings` | 见下 | 入站 `model` 精确别名 → 上游 GPT id（对标 [codex-proxy-rs `modelMappings`](https://github.com/zyycn/codex-proxy-rs)）；保存后随 `routing.json` 热读，无需重启 Node |
 
-任一 WS 闸关闭时，新 WS 握手被拒绝，HTTP/SSE 入口继续可用且上游强制 HTTP。传输、UA 与隐私选项通过每次内部 envelope 的 `options` 生效，不为修改这些设置而重启共享 kernel；已开始的请求保留其选定策略。
+**`codex.model_mappings`（MVP）**：键为客户端请求的模型 id（精确匹配，含 Codex CLI 硬编码的 `codex-auto-review`），值为出站 GPT 模型 id。未配置或空对象时仍应用内置默认：`codex-auto-review` → `gpt-6-luna`；若显式将该键设为空字符串，则回退 `gpt-6.1-sol`。其它别名需自行添加映射；未命中键的请求模型保持原样（不会默认透传未知 id）。目标必须是已启用的 `gpt*`；否则 400（`codex_model_mapping_invalid` / `model_disabled`），且不会误判为 Anthropic。映射在 `detectInboundPlatform` 之前执行；日志 `requested_model` 保留客户端值，`upstream_model` 为映射结果，计费按上游模型。
+
+示例（仅文档，可按需合并进 `routing.json`）：
+
+```json
+{"codex":{"model_mappings":{"codex-auto-review":"gpt-6-luna","my-alias":"gpt-6.1-sol"}}}
+```
+
+任一 WS 闸关闭时，新 WS 握手被拒绝，HTTP/SSE 入口继续可用且上游强制 HTTP。传输、UA 与隐私选项通过每次内部 envelope 的 `options` 生效，不为修改这些 settings 而重启共享 kernel；已开始的请求保留其选定策略。
 
 安装 UUID 存在槽位 `run/codex-installation-id`，不取 MAC、主机名、machine-id 或调用方安装 ID。每次 envelope 的 `options.installation_id` 使用该文件的 UUID，覆盖运行中 kernel 的旧启动身份；非法安装 ID 在拨号前拒绝，避免复用旧进程时重新上传 VM 指纹。关闭安装元数据时，不生成 `client_metadata`，并从调用方的 turn 元数据移除安装 ID；会话路由所需信息保留。
 
@@ -499,6 +508,7 @@ sessionKey / 授权码导入必须走该槽 SOCKS5。
 | PATCH | `/cluster/nodes/:id` | 编辑名称或 SSH 配置，必须带 `expected_updated_at`（取列表中的 `updated_at`）；返回更新后的公开节点信息 |
 | POST | `/cluster/nodes/:id/probe` | 与 PATCH 同体；使用已保存的未更换凭证及原主机指纹测试候选配置，不保存、不切断原连接；返回 `{ host_key, docker, vm_count, dependent_count }` |
 | POST | `/cluster/nodes/:id/reconnect` | 清掉 `error` 与退避，立刻重连 |
+| PUT / DELETE | `/cluster/nodes/:id/direct-link` | 直连通道：PUT `{ address, port? }`（节点 IP 字面量，端口默认 7790）启用或修改，DELETE 关闭并删除节点上的 `kin-slot-gate`；返回节点（含 `direct_link`） |
 | POST | `/cluster/nodes/:id/shell-ticket` | 30 秒一次性终端票据 |
 | WS | `/cluster/nodes/:id/shell?ticket=&cols=&rows=` | 客户端发 `{"t":"d","d":"…"}` 输入、`{"t":"r","c":列,"r":行}` 改尺寸；服务端二进制帧为终端输出，文本帧 `{"t":"exit"\|"error"}` |
 | GET | `/cluster/nodes/:id/docker/info` | 版本 / 系统 / 容器数 |
@@ -514,6 +524,7 @@ sessionKey / 授权码导入必须走该槽 SOCKS5。
 - 仅改名无需 SSH 连接，也不重连。SSH 配置保存时服务端会重新验证，不能以先前 probe 成功代替：先使用原指纹建立候选连接，验证成功再保存并接管原链路；失败保留原配置和连接。已有终端和转发连接可能在切换时断开，远端 VM 容器不会被重建。这里只修改控制面保存的连接配置，不修改远端 sshd、密码或 authorized_keys。
 - 省略凭证字段表示保留。切换认证方式必须提供新密码或新私钥，并清理旧方式的凭证；新私钥不继承旧私钥的口令，`passphrase: ""` 表示清空。空密码/空私钥不是“保持不变”，会校验失败；响应不返回凭证。
 - 已有 VM 的节点不能修改登录用户（`node_username_in_use`）。候选连接必须仍能访问现有 VM 容器、挂载目录及匹配的 UID/GID（否则 `node_runtime_mismatch`）；不用于将已有节点迁移到另一台 VPS。被其他节点用作跳板、正在安装 Docker、构建镜像、处理调度请求或有 `withVmLock` 操作（如 VM 重置）尚未完成时拒绝修改连接配置，仍可改名。主机密钥轮换、跳板拓扑修改和 VM 迁移不在此接口范围。
+- 直连通道：远程槽的 kernel / worker 请求默认在节点那一条 SSH 长连接里各开一个通道，长时间零碎流量会让这条连接的拥塞窗口卡在很低的值（实测约 17KB/s），突发的请求正文全部排队。`PUT /direct-link` 后控制面经 SSH 在节点上建 `kin-slot-gate`（宿主网络、只读挂载 `<root>/vms`、监听 `0.0.0.0:<port>`），之后每个槽连接是一条独立的 TLS 1.3 连接。gate 首次启动自签证书（`<root>/gate/tls/`），控制面经已固定主机密钥的 SSH 读取并固定其 SHA-256，指纹不符即不发令牌；每节点随机令牌加密存库，令牌与指纹任何响应都不回传。请求正文紧跟前言发出，不等 gate 应答。gate 只连 `<root>/vms/<vm>/run/{kernel,worker}.sock`，以 `O_PATH|O_NOFOLLOW` 打开，不跟随槽内植入的符号链接。连不上、证书不符或令牌被拒时该节点退回 SSH 30 秒，健康检查 ping 成功即恢复；Docker、终端、健康检查始终走 SSH。**节点防火墙应只对控制面出口 IP 放行该端口**（令牌之外的第二道门）。`direct_link.state`：`ok` 直连、`down` 已退回 SSH（`error` 为原因）、`pending` 尚未检查或尚未固定证书；`gate_error` 为节点端创建失败原因（如节点上还没有槽位镜像）。
 - 本机 Docker 桥：每个节点在 `<data>/cluster/<id>/docker.sock`（0600）监听，`docker -H unix://…/docker.sock ps` 直接操作远端 daemon。数据目录所在文件系统不支持 unix socket（如 WSL `/mnt/*`）时设 `VM2API_CLUSTER_SOCKET_DIR`。
 
 ## 管理口（master）

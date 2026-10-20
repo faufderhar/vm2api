@@ -50,10 +50,16 @@ export function WsTerminal({
   ticketPath,
   socketPath,
   commands,
+  startupCommand,
+  officialLogin,
 }: {
   ticketPath: string
   socketPath: string
   commands?: SlashCommand[]
+  /** Sent once after the socket opens. The shell executes it; paste stays in the terminal. */
+  startupCommand?: string
+  /** Official login: the slot shell runs `claude auth login` after its prompt exists. */
+  officialLogin?: boolean
 }) {
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
@@ -159,9 +165,10 @@ export function WsTerminal({
       send({ t: 'r', c: cols, r: rows })
     )
     const observer = new ResizeObserver(() => fit.fit())
-    observer.observe(host)
-
-    api<{ ticket: string }>(ticketPath, { method: 'POST' })
+    api<{ ticket: string }>(ticketPath, {
+      method: 'POST',
+      body: officialLogin ? JSON.stringify({ login: true }) : undefined,
+    })
       .then(({ ticket }) => {
         if (disposed) return
         const base = new URL(apiBase() || window.location.origin)
@@ -171,12 +178,15 @@ export function WsTerminal({
           ticket,
           cols: String(term.cols),
           rows: String(term.rows),
+          ...(officialLogin ? { login: '1' } : {}),
         }).toString()
         ws = new WebSocket(base.toString())
         ws.binaryType = 'arraybuffer'
         ws.onopen = () => {
           setPhase('open')
           term.focus()
+          if (startupCommand && !officialLogin)
+            send({ t: 'd', d: `${startupCommand}\r` })
         }
         ws.onmessage = (e) => {
           if (typeof e.data !== 'string') {
@@ -211,7 +221,7 @@ export function WsTerminal({
       termRef.current = null
       term.dispose()
     }
-  }, [ticketPath, socketPath, session, execute])
+  }, [ticketPath, socketPath, session, execute, startupCommand, officialLogin])
 
   return (
     <div className='flex h-full min-h-0 flex-col gap-2'>

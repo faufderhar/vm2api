@@ -18,6 +18,7 @@ RUN cd worker && go build -buildvcs=false -trimpath -ldflags="-s -w" -o /out/kin
     && go build -buildvcs=false -trimpath -ldflags="-s -w" -o /out/kin-worker ./cmd/kin-worker \
     && GOARCH=amd64 go build -buildvcs=false -trimpath -o /out/amd64/kin-egress ./cmd/kin-egress \
     && GOARCH=amd64 go build -buildvcs=false -trimpath -o /out/amd64/kin-worker ./cmd/kin-worker \
+    && CGO_ENABLED=0 GOARCH=amd64 go build -buildvcs=false -trimpath -o /out/amd64/kin-slot-gate ./cmd/kin-slot-gate \
     && cd ../api-kernel && go build -buildvcs=false -trimpath -ldflags="-s -w" -o /out/kin-api-kernel ./cmd/kin-api-kernel
 
 FROM --platform=linux/arm64 ${NODE_IMAGE} AS web
@@ -79,6 +80,7 @@ ENV NODE_ENV=production \
     KIN_API_KERNEL_BIN=/opt/vm2api/bin/kin-api-kernel \
     KIN_CLUSTER_WORKER_BIN=/opt/vm2api/cluster-bin-amd64/kin-worker \
     KIN_CLUSTER_EGRESS_BIN=/opt/vm2api/cluster-bin-amd64/kin-egress \
+    KIN_CLUSTER_GATE_BIN=/opt/vm2api/cluster-bin-amd64/kin-slot-gate \
     DOCKER_DEFAULT_PLATFORM=linux/amd64
 EXPOSE 8787
 ENTRYPOINT ["/usr/local/bin/vm2api-entrypoint"]

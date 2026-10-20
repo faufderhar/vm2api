@@ -6,6 +6,7 @@ docker-compose.yml text eol=lf
 .dockerignore text eol=lf
 bin/kin-kernel binary
 bin/kin-egress binary
+bin/kin-slot-gate binary
 bin/kin-worker binary
 bin/kin-codex-kernel binary
 bin/kin-oauth-auth binary
