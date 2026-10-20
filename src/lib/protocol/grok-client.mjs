@@ -1,12 +1,13 @@
 /**
- * Outbound identity for the Grok hop, taken from the installed stable Grok CLI.
- * `grok update --check` on 2026-10-19 reported current and latest 1.0.62.
+ * Grok Build 1.0.62 sampler headers, mirrored for the request log.
+ * The slot kernel attaches these on the wire. Node does not send them itself
+ * and never puts the access token in the kernel envelope.
  *
- * Sampler (`xai-grok-sampler` client.rs) sends the version and client id on
- * every cli-chat-proxy call, and puts the conversation on `x-grok-session-id`
- * / `x-grok-conv-id`. The log column "出站 Session" is that id.
+ * `user_agent_string_for`: `grok-shell/{version} ({os}; {arch})`.
+ * `GrokRequestHeaders::apply` always sends conv/req/model/session/agent, even when empty.
  */
 import crypto from 'node:crypto'
+import os from 'node:os'
 import {
   extractCallerSession,
   extractFirstUserIdentity,
@@ -17,46 +18,42 @@ import { clientIp } from '../pool/sticky-router.mjs'
 
 export const GROK_CLI_VERSION = '1.0.62'
 export const GROK_CLI_IDENTIFIER = 'grok-shell'
-export const GROK_CLI_USER_AGENT_PREFIX = 'xai-grok-workspace'
-export const GROK_CLI_TOKEN_AUTH = 'xai-grok-cli'
-export const GROK_CLI_AUTHENTICATE_RESPONSE = 'authenticate-response'
+export const GROK_BILLING_CLIENT_MODE = 'headless'
 
-export function grokCliUserAgent(version = GROK_CLI_VERSION) {
-  return `${GROK_CLI_USER_AGENT_PREFIX}/${version}`
+/** macos / windows / linux, and arm64 written as aarch64. Same buckets as the kernel. */
+export function grokPlatformInfo(platform = os.platform(), arch = os.arch()) {
+  const osName = platform === 'darwin' ? 'macos' : platform === 'win32' ? 'windows' : 'linux'
+  const cpu = arch === 'arm64' ? 'aarch64' : arch === 'x64' ? 'x86_64' : arch
+  return { os: osName, arch: cpu }
 }
 
-/** Static CLI identity. No conversation id; safe for GET /v1/models. */
-export function grokCliIdentityHeaders(version = GROK_CLI_VERSION) {
-  return {
-    'user-agent': grokCliUserAgent(version),
-    'x-grok-client-version': version,
-    'x-grok-client-identifier': GROK_CLI_IDENTIFIER,
-    'x-xai-token-auth': GROK_CLI_TOKEN_AUTH,
-    'x-authenticateresponse': GROK_CLI_AUTHENTICATE_RESPONSE,
-  }
+export function grokCliUserAgent(version = GROK_CLI_VERSION, platform = grokPlatformInfo()) {
+  return `grok-shell/${version} (${platform.os}; ${platform.arch})`
 }
 
 /**
- * Headers for one inference call. Empty optional values are omitted so the
- * kernel does not forward blank header lines.
+ * Inference headers the kernel will send, without Authorization.
+ * Billing (`x-grok-client-mode`) and device login (`x-grok-client-surface`) stay off this set.
  */
 export function grokCliRequestHeaders({
   model = '',
   sessionId = '',
   requestId = '',
+  agentId = '',
   version = GROK_CLI_VERSION,
 } = {}) {
-  const headers = grokCliIdentityHeaders(version)
-  const modelId = String(model || '').trim()
-  const session = String(sessionId || '').trim()
-  const request = String(requestId || '').trim()
-  if (modelId) headers['x-grok-model-override'] = modelId
-  if (session) {
-    headers['x-grok-conv-id'] = session
-    headers['x-grok-session-id'] = session
+  const session = String(sessionId ?? '')
+  return {
+    'content-type': 'application/json',
+    'user-agent': grokCliUserAgent(version),
+    'x-grok-client-version': version,
+    'x-grok-client-identifier': GROK_CLI_IDENTIFIER,
+    'x-grok-conv-id': session,
+    'x-grok-req-id': String(requestId ?? ''),
+    'x-grok-model-override': String(model ?? ''),
+    'x-grok-session-id': session,
+    'x-grok-agent-id': String(agentId ?? ''),
   }
-  if (request) headers['x-grok-req-id'] = request
-  return headers
 }
 
 function firstUserText(body = {}) {

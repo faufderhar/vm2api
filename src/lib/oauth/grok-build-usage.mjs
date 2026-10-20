@@ -7,14 +7,13 @@
  * grok.com/billing is the website and returns 404. xAI still does not publish
  * Claude-style 5h / 7d windows.
  */
-import { grokCliIdentityHeaders } from '../protocol/grok-client.mjs'
-import { ensureGrokAccessToken } from './grok-token.mjs'
 import { isLocalEgressProxy } from '../vm/egress.mjs'
-import { persistGrokBuildUsage, readGrokAccount } from '../vm/grok-slot.mjs'
+import { persistGrokBuildUsage } from '../vm/grok-slot.mjs'
 import { hostProxyUrlForVm } from '../vm/slot-host.mjs'
 import { getVm } from '../vm/vm-registry.mjs'
 import { isGrokVm } from '../vm/vm-kind.mjs'
-import { makeProxyFetch, readFetchBody } from '../transport/proxy-fetch.mjs'
+import { callGrokKernel, grokKernelEnvelope, readGrokKernelJson } from '../transport/grok-kernel-client.mjs'
+import { ensureGrokKernel, writeGrokKernelConfig } from '../transport/grok-kernel-supervisor.mjs'
 import { DEFAULT_USAGE_PROBE } from './usage-probe-monitor.mjs'
 
 export const GROK_BUILD_CREDITS_URL = 'https://cli-chat-proxy.grok.com/v1/billing?format=credits'
@@ -132,18 +131,17 @@ export function grokBuildUsageFresh(usage, now = Date.now(), staleMs = GROK_BUIL
   return Number.isFinite(probedAt) && now - probedAt < staleMs
 }
 
-async function fetchGrokBuildDocument({ url, accessToken, proxyUrl, fetchImpl }) {
-  const fetchFn = fetchImpl || makeProxyFetch(proxyUrl, 20_000)
+async function fetchGrokBuildDocument({ projectRoot, vm, query = '', forward }) {
+  const call =
+    forward ||
+    (async (envelope) => {
+      const ready = await ensureGrokKernel({ projectRoot, vmId: vm.id })
+      if (!ready?.ok) return { kernelError: true, statusCode: 503, async *[Symbol.asyncIterator]() {} }
+      return callGrokKernel({ projectRoot, vmId: vm.id, envelope })
+    })
   let response
   try {
-    response = await fetchFn(url, {
-      method: 'GET',
-      headers: {
-        authorization: `Bearer ${accessToken}`,
-        accept: 'application/json',
-        ...grokCliIdentityHeaders(),
-      },
-    })
+    response = await call(grokKernelEnvelope({ method: 'GET', path: '/v1/billing', query, purpose: 'billing' }))
   } catch (error) {
     const aborted = error?.name === 'AbortError' || /aborted/i.test(String(error?.message || error))
     return fail(
@@ -152,8 +150,15 @@ async function fetchGrokBuildDocument({ url, accessToken, proxyUrl, fetchImpl })
       502,
     )
   }
-  const status = Number(response?.status) || 0
-  const payload = await readFetchBody(response)
+  const status = Number(response?.statusCode || response?.status) || 0
+  const payload = await readGrokKernelJson(response).catch(() => null)
+  if (response?.kernelError) {
+    const code = String(payload?.error?.code || 'kernel_error')
+    if (/credential|token|refresh|unauthorized/i.test(code)) {
+      return fail('upstream_auth', 'Grok Build 账单需要重新登录', 401)
+    }
+    return fail('fetch_failed', 'Grok 出站内核没有返回账单', 502)
+  }
   if (status === 401 || status === 403) {
     return fail('upstream_auth', 'Grok Build 账单需要重新登录', status)
   }
@@ -161,15 +166,6 @@ async function fetchGrokBuildDocument({ url, accessToken, proxyUrl, fetchImpl })
     return fail('upstream_error', `Grok Build 账单返回 ${status || 0}`, status >= 400 && status < 500 ? status : 502)
   }
   return { ok: true, payload }
-}
-
-function usableAccess(projectRoot, vmId, now) {
-  const account = readGrokAccount(projectRoot, vmId)
-  const access = text(account?.access_token)
-  if (!access) return ''
-  const expiresAt = Number(account?.expires_at) || 0
-  if (expiresAt && expiresAt <= now) return ''
-  return access
 }
 
 /**
@@ -182,7 +178,7 @@ export async function queryGrokBuildUsage({
   vmId,
   routing = {},
   force = false,
-  fetchImpl,
+  forward,
   proxyUrl,
   now = Date.now(),
   staleMs = GROK_BUILD_USAGE_STALE_MS,
@@ -190,29 +186,25 @@ export async function queryGrokBuildUsage({
   const vm = getVm(projectRoot, vmId)
   if (!vm || !isGrokVm(vm)) return fail('not_grok_slot', '只有 Grok 槽同步 Grok Build 用量', 400)
   const local = isLocalEgressProxy(vm.proxy)
+  const onNode = !!vm.node_id
   const exitUrl = proxyUrl === undefined ? String(hostProxyUrlForVm(vm) || '') : String(proxyUrl || '')
-  if (!exitUrl && !local && !fetchImpl) return fail('proxy_required', 'Grok 槽未绑定出口', 400)
+  // A node slot's local egress is that node's route. Empty URL must not dial from here.
+  if (!exitUrl && !(local && !onNode) && !forward) return fail('proxy_required', 'Grok 槽未绑定出口', 400)
   const stored = vm.grok?.build_usage
   const freshFor = Number(staleMs) > 0 ? Number(staleMs) : GROK_BUILD_USAGE_STALE_MS
   if (!force && grokBuildUsageFresh(stored, now, freshFor)) {
     return { ok: true, skipped: true, usage: stored, source: 'grok-build' }
   }
-  const token = await ensureGrokAccessToken({
+  writeGrokKernelConfig(projectRoot, vm, {
+    proxyUrl: local && !onNode ? '' : exitUrl,
+    proxyRequired: !(local && !onNode),
+    routing,
+  })
+  const credits = await fetchGrokBuildDocument({
     projectRoot,
     vm,
-    routing,
-    proxyUrl: exitUrl,
-    fetchImpl,
-  })
-  const access = token.ok ? token.access_token : usableAccess(projectRoot, vmId, now)
-  if (!access) {
-    return fail(token.code || 'grok_no_credential', 'Grok 凭证不可用，请重新导入', 401)
-  }
-  const credits = await fetchGrokBuildDocument({
-    url: GROK_BUILD_CREDITS_URL,
-    accessToken: access,
-    proxyUrl: exitUrl,
-    fetchImpl,
+    query: 'format=credits',
+    forward,
   })
   const probedAt = new Date(now).toISOString()
   if (!credits.ok) {
@@ -225,10 +217,9 @@ export async function queryGrokBuildUsage({
     return credits
   }
   const ledger = await fetchGrokBuildDocument({
-    url: GROK_BUILD_LEDGER_URL,
-    accessToken: access,
-    proxyUrl: exitUrl,
-    fetchImpl,
+    projectRoot,
+    vm,
+    forward,
   })
   const parsed = parseGrokBuildBilling(credits.payload, ledger.ok ? ledger.payload : null)
   if (!parsed) {

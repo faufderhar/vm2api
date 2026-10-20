@@ -117,30 +117,34 @@ test('query stores Grok Build billing and keeps the last good sample after a fai
     expires_at: Date.now() + 60 * 60 * 1000,
   })
   const calls = []
-  const fetchImpl = async (url) => {
-    calls.push(url)
-    if (String(url).includes('/v1/billing') && !String(url).includes('format=credits')) {
-      return {
-        status: 200,
-        json: async () => ({
-          config: {
-            monthlyLimit: { val: 20 },
-            history: [{ billingCycle: { year: 2026, month: 10 }, includedUsed: { val: 4 }, totalUsed: { val: 4 } }],
-          },
-        }),
-      }
-    }
+  const forward = async (envelope) => {
+    calls.push(envelope)
+    const body =
+      envelope.query === 'format=credits'
+        ? {
+            config: {
+              creditUsagePercent: 37,
+              monthlyLimit: 20,
+              currentPeriod: { end: '2026-10-26T00:00:00.000Z' },
+              history: [{ includedUsed: 4, totalUsed: 4 }],
+            },
+            subscription_tier: 'super',
+          }
+        : {
+            config: {
+              monthlyLimit: { val: 20 },
+              history: [{ billingCycle: { year: 2026, month: 10 }, includedUsed: { val: 4 }, totalUsed: { val: 4 } }],
+            },
+          }
+    assert.equal(envelope.purpose, 'billing')
+    assert.equal(envelope.path, '/v1/billing')
+    assert.equal('authorization' in envelope, false)
+    assert.equal('access_token' in envelope, false)
     return {
-      status: 200,
-      json: async () => ({
-        config: {
-          creditUsagePercent: 37,
-          monthlyLimit: 20,
-          currentPeriod: { end: '2026-10-26T00:00:00.000Z' },
-          history: [{ includedUsed: 4, totalUsed: 4 }],
-        },
-        subscription_tier: 'super',
-      }),
+      statusCode: 200,
+      async *[Symbol.asyncIterator]() {
+        yield Buffer.from(JSON.stringify(body))
+      },
     }
   }
   const now = Date.parse('2026-10-19T03:00:00.000Z')
@@ -148,15 +152,14 @@ test('query stores Grok Build billing and keeps the last good sample after a fai
     projectRoot: root,
     vmId: 'heavy',
     proxyUrl: '',
-    fetchImpl,
+    forward,
     now,
   })
   assert.equal(first.ok, true)
   assert.equal(first.usage.credit_usage_percent, 37)
   assert.equal(calls.length, 2)
-  assert.match(calls[0], /\/billing\?format=credits/)
-  assert.match(calls[0], /cli-chat-proxy\.grok\.com/)
-  assert.match(calls[1], /\/v1\/billing$/)
+  assert.equal(calls[0].query, 'format=credits')
+  assert.equal(calls[1].query, '')
   const stored = getVm(root, 'heavy').grok.build_usage
   assert.equal(stored.credit_usage_percent, 37)
   assert.equal(stored.included_used, 4)
@@ -166,18 +169,23 @@ test('query stores Grok Build billing and keeps the last good sample after a fai
     projectRoot: root,
     vmId: 'heavy',
     proxyUrl: '',
-    fetchImpl,
+    forward,
     now: now + 60_000,
   })
   assert.equal(skipped.skipped, true)
   assert.equal(calls.length, 2)
 
-  const failedFetch = async () => ({ status: 500, json: async () => ({}) })
+  const failedForward = async () => ({
+    statusCode: 500,
+    async *[Symbol.asyncIterator]() {
+      yield Buffer.from('{}')
+    },
+  })
   const failed = await queryGrokBuildUsage({
     projectRoot: root,
     vmId: 'heavy',
     proxyUrl: '',
-    fetchImpl: failedFetch,
+    forward: failedForward,
     force: true,
     now: now + 120_000,
   })

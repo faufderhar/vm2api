@@ -9,6 +9,12 @@ RUN pnpm install --frozen-lockfile
 COPY web/ ./
 RUN pnpm build
 
+FROM --platform=$BUILDPLATFORM rust:1.88-bookworm AS grok
+WORKDIR /src/grok-kernel
+COPY grok-kernel/Cargo.toml grok-kernel/Cargo.lock ./
+COPY grok-kernel/src ./src
+RUN cargo build --release --locked
+
 FROM --platform=$BUILDPLATFORM golang:1.25-bookworm AS helpers
 ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
 WORKDIR /src
@@ -45,6 +51,7 @@ COPY docker/kin-kvm ./docker/kin-kvm
 COPY --from=web /src/web/dist ./web/dist
 COPY --from=payload /payload/bin/ /opt/vm2api/image-bin/
 COPY --from=helpers /out/ /opt/vm2api/image-bin/
+COPY --from=grok /src/grok-kernel/target/release/kin-grok-kernel /opt/vm2api/image-bin/kin-grok-kernel
 COPY share/wrap-cli /opt/vm2api/image-wrap-cli
 COPY --from=payload /payload/share/wrap-cli/ /opt/vm2api/image-wrap-cli/
 COPY --from=payload /payload/share/crag/ /opt/vm2api/image-crag/
@@ -64,6 +71,7 @@ ENV NODE_ENV=production \
     KIN_CODEX_KERNEL_BIN=/opt/vm2api/bin/kin-codex-kernel \
     KIN_OAUTH_AUTH_BIN=/opt/vm2api/bin/kin-oauth-auth \
     KIN_COMPUTER_BIN=/opt/vm2api/bin/kin-computer \
-    KIN_API_KERNEL_BIN=/opt/vm2api/bin/kin-api-kernel
+    KIN_API_KERNEL_BIN=/opt/vm2api/bin/kin-api-kernel \
+    KIN_GROK_KERNEL_BIN=/opt/vm2api/bin/kin-grok-kernel
 EXPOSE 8787
 ENTRYPOINT ["/usr/local/bin/vm2api-entrypoint"]

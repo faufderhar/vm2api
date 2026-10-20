@@ -21,6 +21,12 @@ RUN cd worker && go build -buildvcs=false -trimpath -ldflags="-s -w" -o /out/kin
     && CGO_ENABLED=0 GOARCH=amd64 go build -buildvcs=false -trimpath -o /out/amd64/kin-slot-gate ./cmd/kin-slot-gate \
     && cd ../api-kernel && go build -buildvcs=false -trimpath -ldflags="-s -w" -o /out/kin-api-kernel ./cmd/kin-api-kernel
 
+FROM --platform=linux/arm64 rust:1.88-bookworm AS grok
+WORKDIR /src/grok-kernel
+COPY grok-kernel/Cargo.toml grok-kernel/Cargo.lock ./
+COPY grok-kernel/src ./src
+RUN cargo build --release --locked
+
 FROM --platform=linux/arm64 ${NODE_IMAGE} AS web
 RUN npm install -g pnpm@10
 WORKDIR /src/web
@@ -60,6 +66,7 @@ COPY --from=amd64-runtime /usr/lib64/ /usr/lib64/
 RUN test -e /lib64 || ln -s usr/lib64 /lib64
 # The standard entrypoint refreshes bind-mounted helpers from image-bin on boot.
 COPY --from=helpers /out/kin-egress /out/kin-worker /out/kin-api-kernel /opt/vm2api/image-bin/
+COPY --from=grok /src/grok-kernel/target/release/kin-grok-kernel /opt/vm2api/image-bin/kin-grok-kernel
 COPY scripts/docker-entrypoint.sh /usr/local/bin/vm2api-entrypoint
 RUN chmod 755 /usr/local/bin/vm2api-entrypoint /opt/vm2api/image-bin/* \
     /opt/vm2api/image-wrap-cli/cli-node /opt/vm2api/image-wrap-cli/cc-node \
@@ -78,6 +85,7 @@ ENV NODE_ENV=production \
     KIN_OAUTH_AUTH_BIN=/opt/vm2api/bin/kin-oauth-auth \
     KIN_COMPUTER_BIN=/opt/vm2api/bin/kin-computer \
     KIN_API_KERNEL_BIN=/opt/vm2api/bin/kin-api-kernel \
+    KIN_GROK_KERNEL_BIN=/opt/vm2api/bin/kin-grok-kernel \
     KIN_CLUSTER_WORKER_BIN=/opt/vm2api/cluster-bin-amd64/kin-worker \
     KIN_CLUSTER_EGRESS_BIN=/opt/vm2api/cluster-bin-amd64/kin-egress \
     KIN_CLUSTER_GATE_BIN=/opt/vm2api/cluster-bin-amd64/kin-slot-gate \

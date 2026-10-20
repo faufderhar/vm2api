@@ -17,6 +17,9 @@ import {
   repairVmProxyCliEnabled,
 } from '../../src/lib/vm/vm-registry.mjs'
 
+// Slot fixtures use an RFC1918 SOCKS row. Production still blocks that unless the operator opts in.
+process.env.VM2API_ALLOW_PRIVATE_PROXY = '1'
+
 function tmpRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'kin-332-'))
 }

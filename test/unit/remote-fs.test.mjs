@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import ssh2 from 'ssh2'
-import { connectSsh } from '../../src/lib/cluster/ssh-link.mjs'
+import { connectSsh, learnHostKey } from '../../src/lib/cluster/ssh-link.mjs'
 import { openSftp, writeRemoteFile } from '../../src/lib/cluster/remote-fs.mjs'
 
 const { Server, utils } = ssh2
@@ -69,12 +69,15 @@ test('remote atomic writes preserve UTF-8 byte offsets and do not follow destina
     fs.rmSync(root, { recursive: true, force: true })
   })
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const port = server.address().port
+  const learned = await learnHostKey({ host: '127.0.0.1', port })
   const { client } = await connectSsh({
     host: '127.0.0.1',
-    port: server.address().port,
+    port,
     username: 'u',
     authType: 'password',
     password: 'x',
+    expectedSha256: learned.sha256,
   })
   const sftp = await openSftp(client)
   // ssh2's server implements our handler but does not advertise extensions.

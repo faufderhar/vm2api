@@ -188,7 +188,18 @@ test('existing get/list and join probe keep their public read contract without a
   })
   assert.equal(result.existing_id, 'node-a')
   assert.equal(result.host_key.sha256, f.sha256)
-  assert.equal(result.docker.ok, true)
+  assert.equal(result.confirm_required, true)
+  assert.equal(result.docker, null)
+  const confirmed = await f.manager.probe({
+    host: '127.0.0.1',
+    port: f.port,
+    username: 'u',
+    auth_type: 'password',
+    password: 'old-password',
+    host_key_sha256: result.host_key.sha256,
+  })
+  assert.equal(confirmed.existing_id, 'node-a')
+  assert.equal(confirmed.docker.ok, true)
 })
 
 test('rename changes only metadata, even when the node has VMs or jump dependents', async (t) => {

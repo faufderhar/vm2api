@@ -5,6 +5,7 @@
  *   super  — overview / cluster / logs / statistics + VM page (schedule only)
  *   user   — tenant: vm / proxies / keys / billing / logs / statistics (owner-scoped)
  */
+import { masterMayAdminister } from '../core/security.mjs'
 
 export const PANEL_VIEWS = [
   'overview',
@@ -76,7 +77,8 @@ export function canViewPage(role, view) {
 }
 
 export function panelIdentity(req) {
-  if (req?.apiKeyKind === 'master') {
+  // A remote master key is an inference credential, not a panel administrator.
+  if (req?.apiKeyKind === 'master' && masterMayAdminister(req)) {
     return { user: 'master', role: 'admin', source: 'master_key' }
   }
   return {

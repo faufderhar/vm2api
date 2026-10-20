@@ -36,7 +36,27 @@
     }
   },
   "linter": {
-    "enabled": false
+    "enabled": true,
+    "rules": {
+      "recommended": false,
+      "correctness": {
+        "noUnusedImports": "warn",
+        "noUnusedVariables": "warn",
+        "noUndeclaredVariables": "error",
+        "noUnreachable": "warn",
+        "noConstAssign": "error",
+        "noInvalidUseBeforeDeclaration": "error"
+      },
+      "suspicious": {
+        "noAssignInExpressions": "warn",
+        "noDuplicateObjectKeys": "error",
+        "noDuplicateCase": "error",
+        "noRedeclare": "error",
+        "useIterableCallbackReturn": "warn",
+        "noFallthroughSwitchClause": "warn",
+        "noDoubleEquals": "warn"
+      }
+    }
   },
   "assist": {
     "enabled": false

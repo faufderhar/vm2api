@@ -11,7 +11,7 @@ import path from 'node:path'
 import { getDb, isDbOpen } from '../db/database.mjs'
 import { SettingsRepo } from '../db/repos/settings-repo.mjs'
 import { socksProxyUrl } from './socks-address.mjs'
-import { assertProxyAllowed, proxyBlockedReason } from './proxy-policy.mjs'
+import { assertProxyAllowed, proxyBlockedReason, proxyResolvedBlockReason } from './proxy-policy.mjs'
 
 export const EGRESS_BIN = process.env.KIN_EGRESS_BIN || '/opt/kin-gateway/bin/kin-egress'
 export const LOCAL_EGRESS_ID = 'px-local'
@@ -800,7 +800,8 @@ export async function startProxyEgress(
   } = {},
 ) {
   const blocked = proxyBlockedReason(proxy)
-  if (blocked) return { ok: false, error: blocked }
+  const resolved = blocked || (await proxyResolvedBlockReason(proxy))
+  if (resolved) return { ok: false, error: resolved }
   const proxyId = proxy?.id
   const proxyUrl = boundProxyUrl(proxy)
   if (!proxyId || !proxyUrl) return { ok: false, error: 'bound SOCKS5 id and url required; refusing fallback' }

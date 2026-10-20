@@ -5,6 +5,7 @@ src/config/gateway-v2.public.json
 src/captures/
 src/data/
 /data/
+/secrets/
 vms/
 hypervisor/*.env
 **/*.key

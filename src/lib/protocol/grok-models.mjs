@@ -1,45 +1,30 @@
 /**
- * Live Grok model list. The control-plane api-kernel calls GET /v1/models
- * through the slot SOCKS5. Node never dials the Grok Build upstream itself.
+ * Live Grok model list. The slot kernel calls GET /v1/models through the slot
+ * exit and attaches the access token. Node never dials Grok Build itself.
  */
 import { listVms, getVm } from '../vm/vm-registry.mjs'
 import { isGrokVm } from '../vm/vm-kind.mjs'
 import { hostProxyUrlForVm } from '../vm/slot-host.mjs'
 import { isLocalEgressProxy } from '../vm/egress.mjs'
-import { ensureGrokAccessToken } from '../oauth/grok-token.mjs'
-import { DEFAULT_GROK_BASE_URL, grokBaseUrl } from './grok-route.mjs'
 import { isGrokSeriesId } from './grok-ids.mjs'
-import { forwardApi, readApiJson } from '../transport/api-kernel-client.mjs'
-import { grokCliIdentityHeaders } from './grok-client.mjs'
+import { callGrokKernel, grokKernelEnvelope, readGrokKernelJson } from '../transport/grok-kernel-client.mjs'
+import { ensureGrokKernel, writeGrokKernelConfig } from '../transport/grok-kernel-supervisor.mjs'
 
 const HARD_DOWN = new Set(['stopped', 'dead', 'error', 'disabled'])
 
-export async function fetchGrokUpstreamModels({
-  cfg,
-  baseUrl,
-  token,
-  proxyUrl,
-  allowDirect = false,
-  forward = forwardApi,
-  readJson = readApiJson,
-} = {}) {
-  const access = String(token || '').trim()
-  const px = String(proxyUrl || '').trim()
-  if (!access) return { ok: false, error: 'no_token', ids: [] }
-  if (!px && !allowDirect) return { ok: false, error: 'proxy_required', ids: [] }
-  const root = String(baseUrl || DEFAULT_GROK_BASE_URL).replace(/\/+$/, '')
+export async function fetchGrokUpstreamModels({ projectRoot, vm, forward, readJson = readGrokKernelJson } = {}) {
+  const call =
+    forward ||
+    (async (envelope) => {
+      const ready = await ensureGrokKernel({ projectRoot, vmId: vm.id })
+      if (!ready?.ok) {
+        return { kernelError: true, statusCode: 503, headers: {}, async *[Symbol.asyncIterator]() {} }
+      }
+      return callGrokKernel({ projectRoot, vmId: vm.id, envelope })
+    })
   let res
   try {
-    res = await forward({
-      cfg,
-      method: 'GET',
-      url: `${root}/v1/models`,
-      headers: { authorization: `Bearer ${access}`, accept: 'application/json', ...grokCliIdentityHeaders() },
-      body: '',
-      proxyUrl: px,
-      requireProxy: Boolean(px),
-      timeoutMs: 30_000,
-    })
+    res = await call(grokKernelEnvelope({ method: 'GET', path: '/v1/models', purpose: 'models' }))
   } catch (error) {
     return { ok: false, error: 'kernel_unreachable', message: String(error?.message || error).slice(0, 200), ids: [] }
   }
@@ -71,28 +56,28 @@ function grokTargets(projectRoot, vmId = '') {
 }
 
 /** One live catalog pull. Does not write the policy; callers decide whether to sync. */
-export async function probeGrokModels({ projectRoot, routing, cfg, vmId = '', fetchImpl } = {}) {
+export async function probeGrokModels({ projectRoot, routing, vmId = '' } = {}) {
   const targets = grokTargets(projectRoot, vmId)
   if (!targets.length) return { ok: false, error: 'no_grok_slot', ids: [] }
   let lastError = 'no_token'
   for (const vm of targets) {
     const proxyUrl = hostProxyUrlForVm(vm)
-    const direct = !proxyUrl && isLocalEgressProxy(vm?.proxy)
+    const localExit = isLocalEgressProxy(vm?.proxy)
+    const onNode = !!vm?.node_id
+    // Node slots never dial from this host. An empty URL is a missing exit.
+    const direct = localExit && !onNode
     if (!proxyUrl && !direct) {
       lastError = 'proxy_required'
       continue
     }
-    const token = await ensureGrokAccessToken({ projectRoot, vm, routing, proxyUrl, fetchImpl })
-    if (!token.ok) {
-      lastError = token.code || 'grok_no_credential'
-      continue
-    }
+    writeGrokKernelConfig(projectRoot, vm, {
+      proxyUrl: localExit && !onNode ? '' : proxyUrl,
+      proxyRequired: !(localExit && !onNode),
+      routing,
+    })
     const live = await fetchGrokUpstreamModels({
-      cfg,
-      baseUrl: grokBaseUrl(routing),
-      token: token.access_token,
-      proxyUrl,
-      allowDirect: direct,
+      projectRoot,
+      vm,
     })
     if (!live.ok) {
       lastError = live.error || 'models_failed'

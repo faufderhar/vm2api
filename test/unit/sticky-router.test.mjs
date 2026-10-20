@@ -12,6 +12,9 @@ import {
 } from '../../src/lib/pool/sticky-router.mjs'
 import { ProxyPool } from '../../src/lib/vm/proxy-pool.mjs'
 
+// Sticky fixtures import RFC1918 proxies. Production still blocks them unless the operator opts in.
+process.env.VM2API_ALLOW_PRIVATE_PROXY = '1'
+
 function tmpDir(prefix = 'kin-sticky-') {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix))
 }

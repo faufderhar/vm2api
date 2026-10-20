@@ -275,6 +275,51 @@ export function revokePanelSessionsForUser(username, { exceptToken } = {}) {
 }
 
 /**
+ * A stored session role is not authority. Disabled accounts and role changes
+ * drop the token; the caller must also revoke it.
+ * @returns {{ ok: true, role: string, id: string|null, quota: number } | { ok: false, reason: string }}
+ */
+export function panelSessionAccess(session, record) {
+  if (!session) return { ok: false, reason: 'missing' }
+  if (!record) return { ok: true, role: session.role || 'user', id: null, quota: 0 }
+  if (record.enabled === false) return { ok: false, reason: 'disabled' }
+  const role = record.role || 'user'
+  if (session.role && session.role !== role) return { ok: false, reason: 'role_changed' }
+  return { ok: true, role, id: record.id || null, quota: record.vm_create_quota ?? 0 }
+}
+
+function trustProxy(env = process.env) {
+  return String(env.TRUST_PROXY || env.VM2API_TRUST_PROXY || '').trim() === '1'
+}
+
+function forwardedClient(req) {
+  const raw = String(req?.headers?.['x-forwarded-for'] || '')
+    .split(',')[0]
+    .trim()
+  return raw || ''
+}
+
+/**
+ * Login limits are per account, not one bucket for every browser behind a proxy.
+ * A shared TCP peer is ignored unless the operator trusted the proxy and it sent
+ * a client address. Direct connections still count the peer address.
+ */
+export function loginRateLimited(limiter, req, username, env = process.env) {
+  const name = String(username || '')
+    .trim()
+    .toLowerCase()
+  const peer = String(req?.socket?.remoteAddress || 'unknown')
+  const forwarded = forwardedClient(req)
+  const client = trustProxy(env) && forwarded ? forwarded : peer
+  const accountLimited = limiter(`user:${name || '-'}`)
+  // An untrusted X-Forwarded-For is the proxy's address for every user. Do not
+  // let one account fill that shared bucket.
+  const sharedProxy = !trustProxy(env) && !!forwarded
+  const clientLimited = sharedProxy ? false : limiter(`client:${client}`)
+  return accountLimited || clientLimited
+}
+
+/**
  * @returns {{ username: string, role: string, id?: string } | null}
  */
 export async function verifyPanelLogin(username, password) {

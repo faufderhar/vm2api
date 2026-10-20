@@ -15,22 +15,84 @@ import path from 'node:path'
 const PREFIX = 'enc:v1:'
 let persistedSecret
 
+function dataDir() {
+  return process.env.KIN_DATA_DIR || process.env.VM2API_DATA_DIR || ''
+}
+
+/** Key lives beside the data directory, not inside the file that it encrypts. */
+export function dbSecretPath(dir = dataDir()) {
+  if (!dir) return ''
+  return path.join(path.dirname(dir), 'secrets', 'db.secret')
+}
+
+function legacyDbSecretPath(dir = dataDir()) {
+  if (!dir) return ''
+  return path.join(dir, 'db.secret')
+}
+
 function dbSecret() {
   return process.env.VM2API_DB_SECRET || process.env.KIN_DB_SECRET || readPersistedDbSecret()
 }
 
-/** data/db.secret is written at boot when no env secret was set. Env always wins. */
+/** Env always wins. Then secrets/db.secret, then a leftover data/db.secret. */
 function readPersistedDbSecret() {
   if (persistedSecret) return persistedSecret
-  const dir = process.env.KIN_DATA_DIR || process.env.VM2API_DATA_DIR || ''
-  if (!dir) return ''
+  for (const file of [dbSecretPath(), legacyDbSecretPath()]) {
+    if (!file) continue
+    try {
+      const secret = fs.readFileSync(file, 'utf8').trim()
+      if (!secret) continue
+      persistedSecret = secret
+      return secret
+    } catch {
+      // try the next location
+    }
+  }
+  return ''
+}
+
+function readSecretFile(file) {
   try {
-    const secret = fs.readFileSync(path.join(dir, 'db.secret'), 'utf8').trim()
-    if (secret) persistedSecret = secret
-    return secret
+    return fs.readFileSync(file, 'utf8').trim()
   } catch {
     return ''
   }
+}
+
+function writeSecretFile(file, secret) {
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, `${secret}\n`, { mode: 0o600 })
+  try {
+    fs.chmodSync(file, 0o600)
+  } catch {
+    // mode on writeFile already asked for 0600
+  }
+}
+
+/**
+ * Create the at-rest key outside the SQLite directory.
+ * An older data/db.secret is copied once and removed so a data-dir copy no longer includes it.
+ */
+export function ensureDbSecretFile(dir) {
+  if (process.env.VM2API_DB_SECRET || process.env.KIN_DB_SECRET) return
+  const next = dbSecretPath(dir)
+  const previous = legacyDbSecretPath(dir)
+  if (!next) return
+  if (readSecretFile(next)) return
+  const legacy = readSecretFile(previous)
+  const secret = legacy || crypto.randomBytes(32).toString('hex')
+  writeSecretFile(next, secret)
+  persistedSecret = secret
+  if (legacy) {
+    try {
+      fs.rmSync(previous)
+    } catch {
+      // The new file is already the one readers prefer.
+    }
+    console.warn('[db] moved data/db.secret to secrets/db.secret so a data-directory copy does not include the key')
+    return
+  }
+  console.warn('[db] wrote secrets/db.secret; credential columns are encrypted at rest')
 }
 
 export function encryptionEnabled() {

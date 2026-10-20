@@ -102,6 +102,7 @@ export async function startGateway(opts = {}) {
     KIN_MOCK_TRACE_FILE: traceFile,
     KIN_MOCK_TEXT: opts.mockText || 'pong',
     KIN_CRS_MOCK: '1',
+    VM2API_ALLOW_PRIVATE_PROXY: '1',
   }
   if (opts.env) Object.assign(env, opts.env)
 

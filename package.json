@@ -15,6 +15,7 @@
     "build:worker": "mkdir -p bin && cd worker && CGO_ENABLED=0 go build -trimpath -o ../bin/kin-worker ./cmd/kin-worker",
     "build:egress": "mkdir -p bin && cd worker && CGO_ENABLED=0 go build -trimpath -o ../bin/kin-egress ./cmd/kin-egress",
     "build:gate": "mkdir -p bin && cd worker && CGO_ENABLED=0 go build -trimpath -o ../bin/kin-slot-gate ./cmd/kin-slot-gate",
+    "build:grok-kernel": "mkdir -p bin && cargo build --release --locked --manifest-path grok-kernel/Cargo.toml && cp grok-kernel/target/release/kin-grok-kernel bin/kin-grok-kernel",
     "build:web": "pnpm -C web build",
     "fetch:payload": "node scripts/fetch-payload.mjs",
     "test:web": "pnpm -C web test",

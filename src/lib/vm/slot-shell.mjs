@@ -10,6 +10,7 @@
 
 import crypto from 'node:crypto'
 import { WebSocketServer } from 'ws'
+import { selectTicketProtocol, ticketFromUpgrade } from '../http/ws-ticket.mjs'
 import { execDetached, inspectExec, openExecTty, resizeExec } from '../cluster/docker-remote.mjs'
 import { slotContainerName } from '../transport/rust-kernel-supervisor.mjs'
 import { slotHost } from './slot-host.mjs'
@@ -295,7 +296,11 @@ export function createSlotShell({ projectRoot, logger = console, importOauth = n
   const tickets = new Map()
   const liveTokens = new Set()
   let sessions = 0
-  const wss = new WebSocketServer({ noServer: true, maxPayload: 1 << 20 })
+  const wss = new WebSocketServer({
+    noServer: true,
+    maxPayload: 1 << 20,
+    handleProtocols: selectTicketProtocol,
+  })
 
   function issueTicket(vmId, { login = false } = {}) {
     const vm = getVm(projectRoot, vmId)
@@ -337,7 +342,7 @@ export function createSlotShell({ projectRoot, logger = console, importOauth = n
     const sm = SHELL_RE.exec(url.pathname)
     if (!sm) return false
     const vmId = decodeURIComponent(sm[1])
-    const ticket = url.searchParams.get('ticket') || ''
+    const ticket = ticketFromUpgrade(req, url)
     const entry = consumeTicket(ticket, vmId)
     if (!entry) {
       rejectUpgrade(socket, 401, 'Unauthorized')

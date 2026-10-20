@@ -16,11 +16,10 @@ function openDb(gw) {
   return new DatabaseSync(path.join(gw.project, 'data', 'kin.db'), { readOnly: true })
 }
 
-/** Boot writes data/db.secret, so vm_json is ciphertext unless an env secret overrides it. */
 function readVmJson(gw, row) {
   assert.equal(row.encrypted, 1)
   assert.equal(isEncrypted(row.vm_json), true)
-  const secret = fs.readFileSync(path.join(gw.project, 'data', 'db.secret'), 'utf8').trim()
+  const secret = fs.readFileSync(path.join(gw.project, 'secrets', 'db.secret'), 'utf8').trim()
   return JSON.parse(decryptString(row.vm_json, secret))
 }
 

@@ -6,6 +6,9 @@ import path from 'node:path'
 import net from 'node:net'
 import { ProxyPool, MAX_VMS_PER_PROXY, clampBindLimit } from '../../src/lib/vm/proxy-pool.mjs'
 
+// Probe fixtures listen on 127.0.0.1. Production still blocks that unless the operator opts in.
+process.env.VM2API_ALLOW_PRIVATE_PROXY = '1'
+
 function tmpDir(prefix = 'kin-px-') {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix))
 }

@@ -60,10 +60,11 @@ import {
   localEgressProxyUrl,
   stopEgressProcess,
 } from './egress.mjs'
-import { isCodexVm, isHeadlessSlotVm } from './vm-kind.mjs'
+import { isCodexVm, isGrokVm, isHeadlessSlotVm } from './vm-kind.mjs'
 import { nodeEgressProxyUrl } from '../cluster/node-egress-socks.mjs'
 import { isKvmRuntime } from './runtime-kind.mjs'
 import { stopCodexKernel } from '../transport/codex-kernel-supervisor.mjs'
+import { stopGrokKernel } from '../transport/grok-kernel-supervisor.mjs'
 
 const noop = async () => ({ skipped: true })
 
@@ -101,8 +102,22 @@ const LOCAL_HOST = Object.freeze({
         child.once('exit', exited)
       })
     }
-    // Grok runs in the shared host api-kernel: no per-slot process to stop.
-    if (isHeadlessSlotVm(vm)) return { ok: true }
+    if (isGrokVm(vm)) {
+      if (enabled) return { ok: true }
+      const child = stopGrokKernel(vm.id)
+      if (!child || child.exitCode !== null || child.signalCode !== null) return { ok: true }
+      return new Promise((resolve) => {
+        const exited = () => {
+          clearTimeout(timeout)
+          resolve({ ok: true })
+        }
+        const timeout = setTimeout(() => {
+          child.off('exit', exited)
+          resolve({ ok: false, error: 'grok_stop_timeout' })
+        }, 2000)
+        child.once('exit', exited)
+      })
+    }
     if (enabled) return await ensureProxyEgress(projectRoot, vm.proxy)
     const stopped = stopEgressProcess(projectRoot, vm.proxy?.id)
     if (!stopped.ok) return stopped

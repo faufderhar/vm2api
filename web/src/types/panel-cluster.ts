@@ -130,8 +130,9 @@ export type ClusterNodeInput = {
 
 export type ClusterProbeResult = {
   host_key: { alg: string; sha256: string }
-  docker: { ok: boolean; error: string | null }
+  docker: { ok: boolean; error: string | null } | null
   uname: string | null
+  confirm_required?: boolean
   existing_id: string | null
 }
 

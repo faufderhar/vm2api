@@ -10,7 +10,6 @@
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
-import crypto from 'node:crypto'
 import { loadConfig, reloadActiveVm, routingConfigFile } from './lib/core/config.mjs'
 import {
   extractApiKey,
@@ -21,6 +20,8 @@ import {
   attachPanelAuth,
   getPanelAdmin,
   isLoopbackRequest,
+  panelSessionAccess,
+  revokePanelSession,
 } from './lib/core/security.mjs'
 import { loadModelPolicy } from './lib/protocol/model-policy.mjs'
 import { gatewayModelCatalog } from './lib/protocol/models.mjs'
@@ -78,6 +79,7 @@ import { syncIpv6ProxyEgress } from './lib/vm/proxy-policy-runtime.mjs'
 import { GATEWAY_CAPABILITIES } from './lib/vm/execution-context.mjs'
 import { isTelemetryPath, telemetryInterceptResponse } from './lib/identity/telemetry-rewrite.mjs'
 import { openDatabase, closeDatabase } from './lib/db/database.mjs'
+import { ensureDbSecretFile } from './lib/db/secure.mjs'
 import { runLegacyImport } from './lib/db/legacy-import.mjs'
 import { initVmDbSync, stopVmWatch } from './lib/vm/vm-db-sync.mjs'
 import { BackupService } from './lib/admin/backup-service.mjs'
@@ -140,7 +142,7 @@ if (!getPanelAdmin().password) {
   throw new Error('VM2API_ADMIN_PASSWORD must be set; insecure default panel credentials are disabled')
 }
 if (getPanelAdmin().password === '123456') {
-  console.warn('[panel] VM2API_ADMIN_PASSWORD is still the public default 123456. Change it before exposing the panel.')
+  throw new Error('VM2API_ADMIN_PASSWORD must not be the public default 123456')
 }
 fs.mkdirSync(cfg.paths.captures, { recursive: true })
 
@@ -154,24 +156,6 @@ const dataDir = cfg.paths.data || path.join(cfg.paths.root, 'data')
 ensureDbSecretFile(dataDir)
 openDatabase({ dataDir })
 
-function ensureDbSecretFile(dir) {
-  if (process.env.VM2API_DB_SECRET || process.env.KIN_DB_SECRET) return
-  const file = path.join(dir, 'db.secret')
-  try {
-    if (fs.readFileSync(file, 'utf8').trim()) return
-  } catch {
-    // Missing file: generate one below.
-  }
-  const secret = crypto.randomBytes(32).toString('hex')
-  fs.mkdirSync(dir, { recursive: true })
-  fs.writeFileSync(file, `${secret}\n`, { mode: 0o600 })
-  try {
-    fs.chmodSync(file, 0o600)
-  } catch {
-    // mode on writeFile already asked for 0600.
-  }
-  console.warn('[db] wrote data/db.secret; credential columns are encrypted at rest')
-}
 try {
   loadModelPolicy()
 } catch (e) {
@@ -766,6 +750,21 @@ function requireAuth(req, res) {
   // Panel session
   const session = verifyPanelSession(token)
   if (session) {
+    const rec = panelUsers.getByUsername(session.user)
+    const access = panelSessionAccess(session, rec)
+    if (!access.ok) {
+      revokePanelSession(token)
+      return rejectAuth(
+        req,
+        res,
+        makeError({
+          type: ErrorType.AUTH,
+          code: ErrorCode.INVALID_API_KEY,
+          message: 'Panel session is no longer valid. Log in again.',
+          status: 401,
+        }),
+      )
+    }
     if (!allowRate('panel:' + session.user)) {
       return rejectAuth(
         req,
@@ -779,10 +778,9 @@ function requireAuth(req, res) {
       )
     }
     req.panelUser = session.user
-    req.panelRole = session.role || panelUsers.getByUsername(session.user)?.role || 'user'
-    const rec = panelUsers.getByUsername(session.user)
-    req.panelUserId = rec?.id || null
-    req.panelVmCreateQuota = rec?.vm_create_quota ?? 0
+    req.panelRole = access.role
+    req.panelUserId = access.id
+    req.panelVmCreateQuota = access.quota
     return true
   }
   // Master env API key — unlimited admin
@@ -1124,10 +1122,6 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, {
         status: 'ok',
         service: 'vm2api',
-        active_vm: getActiveVmId(cfg.paths.project),
-        features: FEATURES,
-        capabilities: GATEWAY_CAPABILITIES,
-        limitations: LIMITATIONS,
       })
     }
 

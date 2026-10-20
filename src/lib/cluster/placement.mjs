@@ -46,8 +46,9 @@ export function vmNodeId(vm) {
  * What a node slot can do (see vm/slot-host.mjs). Official CC init, setup-token
  * PTY, wrap repair/promote and engine switching drive host-side processes or
  * the host's .kin copy; those stay local. Codex and Grok are allowed: their
- * inference runs on the control plane (Codex kernel / shared api-kernel). The node
- * container only holds identity and the slot network, same as a local headless slot.
+ * inference runs on the control plane (one Codex or Grok kernel per slot). The node
+ * container only holds identity and the slot network. A Grok kernel still dials
+ * through that node's SOCKS exit, not the control plane's own route.
  */
 export const SLOT_CAPS_NODE = new Set(['codex', 'grok'])
 

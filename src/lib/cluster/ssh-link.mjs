@@ -59,7 +59,8 @@ export function privateKeyProblem(privateKey, passphrase) {
 
 /**
  * Open and authenticate one SSH connection.
- * `expectedSha256` null = probe mode: accept and report the host key.
+ * `expectedSha256` is required before credentials are offered. A mismatch aborts
+ * during key exchange, before the password or private key is sent.
  * @returns {Promise<{ client: import('ssh2').Client, hostKey: { alg: string, sha256: string } }>}
  */
 export function connectSsh({
@@ -116,13 +117,55 @@ export function connectSsh({
       keepaliveCountMax: KEEPALIVE_COUNT_MAX,
       hostVerifier: (keyBlob) => {
         hostKey = { alg: hostKeyAlgorithm(keyBlob), sha256: hostKeyDigest(keyBlob) }
-        if (expectedSha256 && hostKey.sha256 !== expectedSha256) {
+        if (!expectedSha256 || hostKey.sha256 !== expectedSha256) {
           mismatch = true
           return false
         }
         return true
       },
       authHandler: createAuthHandler({ username, authType, password, privateKey, passphrase }),
+    })
+  })
+}
+
+/**
+ * Read the host key and disconnect before any userauth. The first probe uses this
+ * so a password is not sent to a host the operator has not confirmed.
+ */
+export function learnHostKey({ host, port, sock = null, readyTimeoutMs = READY_TIMEOUT_MS }) {
+  return new Promise((resolve, reject) => {
+    const client = new Client()
+    let hostKey = null
+    let settled = false
+    const finish = (err) => {
+      if (settled) return
+      settled = true
+      client.end()
+      if (!hostKey) {
+        reject(err || new ClusterError(502, 'ssh_connect_failed', `SSH 连接失败（${host}:${port}）`))
+        return
+      }
+      resolve(hostKey)
+    }
+    client.on('error', (err) => {
+      if (hostKey) return finish()
+      if (err?.level === 'client-timeout') {
+        return finish(new ClusterError(504, 'ssh_timeout', `SSH 握手超时（${host}:${port}）`))
+      }
+      finish(new ClusterError(502, 'ssh_connect_failed', `SSH 连接失败：${err?.message || err}`))
+    })
+    client.once('close', () => finish())
+    client.connect({
+      host,
+      port,
+      username: 'probe',
+      ...(sock ? { sock } : {}),
+      readyTimeout: readyTimeoutMs,
+      hostVerifier: (keyBlob) => {
+        hostKey = { alg: hostKeyAlgorithm(keyBlob), sha256: hostKeyDigest(keyBlob) }
+        return false
+      },
+      authHandler: (_methods, _partial, next) => next(false),
     })
   })
 }

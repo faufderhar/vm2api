@@ -175,12 +175,11 @@ export function WsTerminal({
         base.protocol = base.protocol === 'https:' ? 'wss:' : 'ws:'
         base.pathname = socketPath
         base.search = new URLSearchParams({
-          ticket,
           cols: String(term.cols),
           rows: String(term.rows),
           ...(officialLogin ? { login: '1' } : {}),
         }).toString()
-        ws = new WebSocket(base.toString())
+        ws = new WebSocket(base.toString(), [`vm2api-ticket.${ticket}`])
         ws.binaryType = 'arraybuffer'
         ws.onopen = () => {
           setPhase('open')

@@ -8,6 +8,9 @@ import { resolveImportProxy } from '../../src/lib/vm/proxy-resolve.mjs'
 import { hostProxyUrlForVm } from '../../src/lib/vm/slot-host.mjs'
 import { startNodeEgressSocks, stopNodeEgressSocks } from '../../src/lib/cluster/node-egress-socks.mjs'
 
+// These fixtures use lab addresses. Production still blocks them unless the operator opts in.
+process.env.VM2API_ALLOW_PRIVATE_PROXY = '1'
+
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'kin-resolve-'))
 }

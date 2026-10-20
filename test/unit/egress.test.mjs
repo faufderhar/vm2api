@@ -414,8 +414,8 @@ test('host hops: local Codex follows the deployment proxy, local Claude stays di
   assert.equal(hostProxyUrlForVm({ id: 'vm-gpt', platform: 'openai', proxy: local }), 'http://proxy.test:8443')
   assert.equal(hostProxyUrlForVm({ id: 'vm-cc', platform: 'anthropic', proxy: local }), '')
   assert.equal(
-    hostProxyUrlForVm({ id: 'vm-gpt', platform: 'openai', proxy: { host: '10.0.0.5', port: 1080 } }),
-    'socks5h://10.0.0.5:1080',
+    hostProxyUrlForVm({ id: 'vm-gpt', platform: 'openai', proxy: { host: '203.0.113.5', port: 1080 } }),
+    'socks5h://203.0.113.5:1080',
   )
 })
 
@@ -543,11 +543,11 @@ test('egress config carries dns_upstream only when configured', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'egress-dns-'))
   const base = {
     projectRoot: root,
-    proxyUrl: 'socks5h://127.0.0.1:1',
+    proxyUrl: 'socks5h://203.0.113.1:1',
     tcpPort: 20000,
     dnsPort: 20001,
     listenHost: '127.0.0.1',
-    bin: '/bin/true',
+    bin: '/bin/cat',
   }
   const a = await startEgressProcess({ ...base, proxyId: 'px-a', dnsUpstream: '' })
   assert.equal(a.ok, true)

@@ -16,6 +16,7 @@ import {
   getPanelAdmin,
   createAttemptLimiter,
   masterMayAdminister,
+  loginRateLimited,
 } from '../core/security.mjs'
 import { loadDistillRules, saveDistillRules, validateDistillPatch } from '../core/distill-detect.mjs'
 import { applyRefusalGuardPatch, refusalGuardPolicy } from '../core/refusal-guard.mjs'
@@ -1353,10 +1354,10 @@ export function createPanelHandler(ctx) {
     // ========== Panel login (public) ==========
     if (req.method === 'POST' && p === '/api/panel/login') {
       const body = await readBody(req, 4096)
-      if (loginAttempts(req.socket?.remoteAddress || 'unknown')) {
+      const username = body.username || body.user || body.u || ''
+      if (loginRateLimited(loginAttempts, req, username)) {
         return json(res, 429, { ok: false, error: { message: '登录太频繁，请稍后再试', type: 'rate_limit' } })
       }
-      const username = body.username || body.user || body.u || ''
       const password = body.password || body.pass || body.p || ''
       const authed = await verifyPanelLogin(username, password)
       if (!authed) {
@@ -1541,10 +1542,17 @@ export function createPanelHandler(ctx) {
         const id = p.split('/').pop()
         const body = await readBody(req, 8192).catch(() => ({}))
         try {
+          const before = panelUsers.getById(id)
           const rec = panelUsers.update(id, body || {}, { actorId: req.panelUserId })
           if (!rec) return json(res, 404, { ok: false, error: { message: 'user not found' } })
-          if (body?.password) {
-            revokePanelSessionsForUser(rec.username, { exceptToken: extractPanelToken(req) })
+          const roleChanged = !!before && before.role !== rec.role
+          const disabled = !!before && before.enabled !== false && rec.enabled === false
+          if (body?.password || roleChanged || disabled) {
+            // Role and disable drop every token, including the actor's if they changed themselves.
+            revokePanelSessionsForUser(
+              rec.username,
+              body?.password && !roleChanged && !disabled ? { exceptToken: extractPanelToken(req) } : {},
+            )
           }
           return json(res, 200, panel.ok({ item: publicUserView(rec) }))
         } catch (e) {

@@ -78,29 +78,44 @@ test('malformed historical IPv6 hosts cannot silently probe localhost', async (t
   const {
     items: [proxy],
   } = pool.importLines(`127.0.0.1:${server.address().port}`)
-  pool.db.prepare('UPDATE proxies SET host = ? WHERE id = ?').run('[::1', proxy.id)
+  assert.equal(proxy, undefined, 'loopback import is refused')
+  const imported = pool.importLines(`203.0.113.10:${server.address().port}`)
+  const kept = imported.items[0]
+  assert.ok(kept)
+  pool.db.prepare('UPDATE proxies SET host = ? WHERE id = ?').run('[::1', kept.id)
   pool.reload()
-  const result = await pool.probeById(proxy.id)
+  const result = await pool.probeById(kept.id)
   assert.equal(result.probe.error, 'invalid_proxy_host')
   assert.equal(connections, 0)
 })
 
-test('link-local and cloud metadata proxies are refused; loopback stays usable', () => {
+test('link-local, metadata, loopback and private proxies are refused unless opted in', () => {
   assert.equal(proxyBlockedReason({ host: '169.254.169.254', port: 80 }, true), 'proxy_host_blocked')
   assert.equal(proxyBlockedReason({ url: 'socks5://metadata.google.internal:80' }, true), 'proxy_host_blocked')
   assert.equal(proxyBlockedReason({ host: 'fe80::1', port: 1080 }, true), 'proxy_host_blocked')
-  assert.equal(proxyBlockedReason({ host: '127.0.0.1', port: 1080 }, true), null)
+  assert.equal(proxyBlockedReason({ host: '127.0.0.1', port: 1080 }, true), 'proxy_host_blocked')
+  assert.equal(proxyBlockedReason({ host: '10.1.2.3', port: 1080 }, true), 'proxy_host_blocked')
+  const previous = process.env.VM2API_ALLOW_PRIVATE_PROXY
+  process.env.VM2API_ALLOW_PRIVATE_PROXY = '1'
+  try {
+    assert.equal(proxyBlockedReason({ host: '127.0.0.1', port: 1080 }, true), null)
+    assert.equal(proxyBlockedReason({ host: '10.1.2.3', port: 1080 }, true), null)
+    assert.equal(proxyBlockedReason({ host: '169.254.169.254', port: 80 }, true), 'proxy_host_blocked')
+  } finally {
+    if (previous == null) delete process.env.VM2API_ALLOW_PRIVATE_PROXY
+    else process.env.VM2API_ALLOW_PRIVATE_PROXY = previous
+  }
 })
 
 test('IPv6 policy survives reload and preserves binding and health instead of reallocating', async (t) => {
   const pool = makePool(t)
   const {
     items: [ipv6],
-  } = pool.importLines('[2001:db8::1]:1080\n127.0.0.1:1080')
+  } = pool.importLines('[2001:db8::1]:1080\n203.0.113.10:1080')
   assert.equal(pool.bind(ipv6.id, 'vm-01').error, 'ipv6_disabled')
-  assert.equal(pool.allocateForVm('vm-02').host, '127.0.0.1')
+  assert.equal(pool.allocateForVm('vm-02').host, '203.0.113.10')
   assert.equal((await pool.detectGeo(ipv6.id)).error, 'ipv6_disabled')
-  assert.throws(() => boundProxyUrl({ host: '::1', port: 1080 }), { code: 'ipv6_disabled' })
+  assert.throws(() => boundProxyUrl({ host: '::1', port: 1080 }), { code: 'proxy_host_blocked' })
   pool.updateConfig({ ipv6_enabled: true })
   assert.equal(pool.bind(ipv6.id, 'vm-01').ok, true)
   const proxy = pool.state.proxies.find((p) => p.id === ipv6.id)
@@ -128,7 +143,7 @@ test('IPv6 policy survives reload and preserves binding and health instead of re
   )
   const vm = { id: 'vm-01', proxy: pool.getProxyByIdWithAuth(ipv6.id) }
   assert.equal(
-    resolveImportProxy({ vm, proxyPool: pool, overrideUrl: 'socks5h://127.0.0.1:1080' }).reason,
+    resolveImportProxy({ vm, proxyPool: pool, overrideUrl: 'socks5h://[2001:db8::2]:1080' }).reason,
     'ipv6_disabled',
   )
   assert.equal(evaluateSlotGate(vm).reason, 'ipv6_disabled')
@@ -142,6 +157,12 @@ test('IPv6 policy survives reload and preserves binding and health instead of re
 })
 
 test('URL-imported IPv6 probes connect only when enabled and closing cancels in-flight sockets', async (t) => {
+  const previous = process.env.VM2API_ALLOW_PRIVATE_PROXY
+  process.env.VM2API_ALLOW_PRIVATE_PROXY = '1'
+  t.after(() => {
+    if (previous == null) delete process.env.VM2API_ALLOW_PRIVATE_PROXY
+    else process.env.VM2API_ALLOW_PRIVATE_PROXY = previous
+  })
   const pool = makePool(t)
   const sockets = new Set()
   let connections = 0

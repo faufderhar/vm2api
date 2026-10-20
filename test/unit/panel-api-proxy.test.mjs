@@ -12,6 +12,9 @@ import {
 } from '../../src/lib/admin/panel-api.mjs'
 import { ProxyPool } from '../../src/lib/vm/proxy-pool.mjs'
 
+// Panel fixtures use RFC1918 proxies. Production still blocks them unless the operator opts in.
+process.env.VM2API_ALLOW_PRIVATE_PROXY = '1'
+
 function tmpDir(prefix = 'kin-panel-') {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix))
 }

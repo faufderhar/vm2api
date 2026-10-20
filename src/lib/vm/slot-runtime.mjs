@@ -11,6 +11,7 @@ import {
   writeKernelConfig,
 } from '../transport/rust-kernel-supervisor.mjs'
 import { ensureCodexKernel, stopCodexKernel, writeCodexKernelConfig } from '../transport/codex-kernel-supervisor.mjs'
+import { ensureGrokKernel, stopGrokKernel, writeGrokKernelConfig } from '../transport/grok-kernel-supervisor.mjs'
 import { runtimeKind, isKvmRuntime } from './runtime-kind.mjs'
 import { getVm, listVms, isCodexVm, persistVmRuntime } from './vm-registry.mjs'
 import { isClaudeVm, isGrokVm } from './vm-kind.mjs'
@@ -62,7 +63,8 @@ export async function startSlotReady(vm, projectRoot, opts = {}) {
     if (!boot?.ok) return boot
     persistNodeRuntime(vm, projectRoot, boot)
     const kernel = await ensureSlotInferenceRuntime(vm, projectRoot, opts)
-    return { ok: true, engine: kernel.engine, docker: boot, kernel }
+    if (!kernel.ok) return kernel
+    return { ok: true, engine: 'grok', docker: boot, kernel }
   }
   const boot = await startSlot(vm, projectRoot, opts)
   if (!boot?.ok) return boot
@@ -72,6 +74,7 @@ export async function startSlotReady(vm, projectRoot, opts = {}) {
 
 export async function stopSlot(vm) {
   if (isCodexVm(vm)) stopCodexKernel(vm.id)
+  if (isGrokVm(vm)) stopGrokKernel(vm.id)
   return slotHost(vm).stop(vm)
 }
 
@@ -116,8 +119,26 @@ function wrapUsesSlotKernel(wrap) {
 export async function ensureSlotInferenceRuntime(vm, projectRoot, opts = {}) {
   const routing = opts.routing || {}
   const eager = routing?.inference?.eager_start !== false
-  // Grok inference runs in the shared host api-kernel; the slot has no kernel of its own.
-  if (isGrokVm(vm)) return { ok: true, engine: 'api-kernel' }
+  if (isGrokVm(vm)) {
+    if (!eager) return { ok: true, skipped: true, reason: 'eager_start_off', engine: 'grok' }
+    const write = opts.ops?.writeGrokKernelConfig || writeGrokKernelConfig
+    const start = opts.ops?.ensureGrokKernel || ensureGrokKernel
+    const localExit = isLocalEgressProxy(vm?.proxy)
+    const proxyUrl = localExit && !vmNodeId(vm) ? '' : hostProxyUrlForVm(vm)
+    // Same rule as the hop: only a local slot on this host may dial with an empty proxy.
+    write(projectRoot, vm, { proxyUrl, proxyRequired: !(localExit && !vmNodeId(vm)), routing })
+    const kernel = await start({ projectRoot, vmId: vm.id, timeoutMs: opts.timeoutMs })
+    if (!kernel?.ok) {
+      return {
+        ok: false,
+        code: kernel?.reason || 'grok_kernel_start_failed',
+        error: kernel?.error || kernel?.reason || 'Grok kernel failed to start',
+        engine: 'grok',
+        kernel,
+      }
+    }
+    return { ok: true, engine: 'grok', kernel }
+  }
   if (isCodexVm(vm)) {
     if (!eager) return { ok: true, skipped: true, reason: 'eager_start_off', engine: 'codex' }
     const write = opts.ops?.writeCodexKernelConfig || writeCodexKernelConfig

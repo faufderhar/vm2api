@@ -27,7 +27,7 @@ import {
 import { slotImageAction, slotImageSpec } from '../../src/lib/cluster/slot-image.mjs'
 import { tarStream } from '../../src/lib/cluster/tar.mjs'
 import { SocketRelay } from '../../src/lib/cluster/socket-relay.mjs'
-import { connectSsh } from '../../src/lib/cluster/ssh-link.mjs'
+import { connectSsh, learnHostKey } from '../../src/lib/cluster/ssh-link.mjs'
 import { iptablesPlan } from '../../src/lib/vm/egress.mjs'
 import { PoolScheduler } from '../../src/lib/pool/pool-scheduler.mjs'
 import { getVm, listVms } from '../../src/lib/vm/vm-registry.mjs'
@@ -538,12 +538,15 @@ test('socket relay resolves the remote path lazily and reaches a unix socket ove
     })
   })
   await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  const port = server.address().port
+  const learned = await learnHostKey({ host: '127.0.0.1', port })
   const { client } = await connectSsh({
     host: '127.0.0.1',
-    port: server.address().port,
+    port,
     username: 'u',
     authType: 'password',
     password: 'x',
+    expectedSha256: learned.sha256,
   })
   const dir = tmpDir('kin-relay-')
   let target = '/remote/run/kernel.sock'

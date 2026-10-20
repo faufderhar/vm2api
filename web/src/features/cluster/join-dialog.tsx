@@ -73,7 +73,7 @@ function toInput(form: Form): ClusterNodeInput {
 }
 
 /**
- * 两步接入：先探测拿主机指纹（顺带验证认证和 Docker），确认后再固定指纹写入。
+ * 两步接入：先只读取主机指纹，确认前不登录。确认后再把指纹和凭证一起写入。
  * 表单里的凭证只在这两次请求里出现，服务端不回传。
  */
 export function JoinVpsDialog({
@@ -277,10 +277,11 @@ export function JoinVpsDialog({
               <div className='text-muted-foreground'>{probe.uname}</div>
             ) : null}
             <div className='text-muted-foreground'>
-              Docker：
-              {probe.docker.ok
-                ? '可用'
-                : `不可用（${probe.docker.error}），接入后可在面板安装`}
+              {probe.docker
+                ? probe.docker.ok
+                  ? 'Docker：可用'
+                  : `Docker：不可用（${probe.docker.error}），接入后可在面板安装`
+                : '指纹尚未确认，还没有登录，所以没有检查 Docker。'}
             </div>
           </div>
         ) : null}

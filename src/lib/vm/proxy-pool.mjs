@@ -28,7 +28,7 @@ import {
   validDnsPrimary,
 } from './egress.mjs'
 import { normalizeSocksHost, socksEndpoint, socksProxyUrl, socksProxyFamily } from './socks-address.mjs'
-import { proxyBlockedReason } from './proxy-policy.mjs'
+import { proxyBlockedReason, proxyResolvedBlockReason } from './proxy-policy.mjs'
 import { canRevealClusterNodes, annotatePublicLocalProxy } from './local-proxy-nodes.mjs'
 
 export const MAX_VMS_PER_PROXY = 5
@@ -677,6 +677,14 @@ export class ProxyPool extends EventEmitter {
           })
         continue
       }
+      if (proxyBlockedReason(parsed, true) === 'proxy_host_blocked') {
+        skipped.push({
+          line: socksEndpoint(parsed.host, parsed.port),
+          reason: 'proxy_host_blocked',
+          message: '代理地址不能指向本机、内网、链路本地地址或云主机元数据',
+        })
+        continue
+      }
       const key = proxyKey(parsed)
       if (existing.has(key)) {
         skipped.push({ line: socksEndpoint(parsed.host, parsed.port), reason: 'duplicate' })
@@ -1047,7 +1055,8 @@ export class ProxyPool extends EventEmitter {
    */
   async probeOne(proxy) {
     const blocked = proxyBlockedReason(proxy, this.state.config.ipv6_enabled)
-    if (blocked) return { ok: false, scope: 'policy', error: blocked, latency_ms: null }
+    const resolved = blocked || (await proxyResolvedBlockReason(proxy))
+    if (resolved) return { ok: false, scope: 'policy', error: resolved, latency_ms: null }
     if (isLocalEgressProxy(proxy)) {
       const nodeId = localEgressNodeId(proxy.id)
       // Control plane: host default route. A down kin-egress is not "no proxy".

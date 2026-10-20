@@ -1,12 +1,12 @@
 /**
- * Grok (xAI) hop from handle-protocol. Requests leave through kin-api-kernel with the slot's
- * SOCKS5 as proxy_url (require_proxy), carrying the slot's OAuth bearer. Claude convert/pool and
- * the Codex kernel never run here.
+ * Grok (xAI) hop from handle-protocol. Node converts the body and picks the slot.
+ * The slot's kin-grok-kernel owns the access token, the Grok Build headers, and the
+ * SOCKS exit. Claude convert/pool and the Codex kernel never run here.
  */
 import { getVm, listVms } from '../vm/vm-registry.mjs'
 import { isValidVmId } from '../vm/vm-file.mjs'
 import { isGrokVm } from '../vm/vm-kind.mjs'
-import { grokBaseUrl, grokRoutingOf, isGrokProtocolAllowed } from './grok-route.mjs'
+import { grokRoutingOf, isGrokProtocolAllowed } from './grok-route.mjs'
 import { keyAllowsVm, keyScopeFromRequest, vmPoolDenial } from '../admin/key-scope.mjs'
 import { restrictCodexClient } from './codex-restriction.mjs'
 import {
@@ -19,11 +19,11 @@ import {
   stripCodexIdentity,
 } from './codex-convert.mjs'
 import { extractOpenaiUsage, openaiAnthropicUsageFromExtract, disjointOpenaiUsage } from './openai-usage.mjs'
-import { forwardApi } from '../transport/api-kernel-client.mjs'
+import { callGrokKernel, grokKernelEnvelope } from '../transport/grok-kernel-client.mjs'
+import { ensureGrokKernel, trackGrokKernel, writeGrokKernelConfig } from '../transport/grok-kernel-supervisor.mjs'
 import { hostProxyUrlForVm } from '../vm/slot-host.mjs'
 import { isLocalEgressProxy } from '../vm/egress.mjs'
 import { persistGrokRateLimit } from '../vm/grok-slot.mjs'
-import { ensureGrokAccessToken } from '../oauth/grok-token.mjs'
 import { scopeAccountFromVm } from './jev-intercept.mjs'
 import {
   grokSlotAllowsModel,
@@ -38,15 +38,9 @@ import { CLIENT_POOL_BUSY_MESSAGE, CLIENT_POOL_UNAVAILABLE_MESSAGE, ErrorCode } 
 import { applyOpenaiWashLog } from './openai-wash.mjs'
 import { redactHeaders } from '../admin/request-log.mjs'
 import { sessionIdForLog } from './log-fields.mjs'
-import {
-  grokCliIdentityHeaders,
-  grokCliRequestHeaders,
-  grokCliUserAgent,
-  grokRequestId,
-  resolveGrokOutboundSession,
-} from './grok-client.mjs'
+import { grokCliRequestHeaders, grokCliUserAgent, grokRequestId, resolveGrokOutboundSession } from './grok-client.mjs'
 
-export const GROK_VIA = 'grok-api'
+export const GROK_VIA = 'grok-kernel'
 
 const UPSTREAM_PATHS = Object.freeze({
   'openai.responses': '/v1/responses',
@@ -158,11 +152,11 @@ function parseJson(text) {
 }
 
 /**
- * One upstream call. Streams call onLine(line) per SSE line. Never throws for upstream/transport
- * failures; returns { ok, status, headers, body?, kernelError?, transportError?, emitted, ttftMs }.
+ * One upstream call through the slot kernel. Streams call onLine(line) per SSE line.
+ * Never throws for upstream/transport failures.
  */
-export async function grokUpstreamCall({ cfg, url, token, body, stream, proxyUrl, signal, idleMs, onLine, ops = {} }) {
-  const forward = ops.forwardApi || forwardApi
+export async function grokUpstreamCall({ projectRoot, vmId, envelope, stream, signal, idleMs, onLine, ops = {} }) {
+  const forward = ops.callGrokKernel || ((request) => callGrokKernel({ projectRoot, vmId, ...request }))
   const startedAt = Date.now()
   const idle = new AbortController()
   const onParentAbort = () => idle.abort()
@@ -180,23 +174,7 @@ export async function grokUpstreamCall({ cfg, url, token, body, stream, proxyUrl
     armIdle()
     let res
     try {
-      res = await forward({
-        cfg,
-        method: 'POST',
-        url,
-        headers: {
-          authorization: `Bearer ${token}`,
-          'content-type': 'application/json',
-          accept: stream ? 'text/event-stream' : 'application/json',
-          ...grokCliIdentityHeaders(),
-          ...(ops.headers || {}),
-        },
-        body: JSON.stringify(body),
-        proxyUrl,
-        signal: idle.signal,
-        stream,
-        requireProxy: Boolean(String(proxyUrl || '').trim()),
-      })
+      res = await forward({ envelope, signal: idle.signal })
     } catch (error) {
       return {
         ok: false,
@@ -212,14 +190,15 @@ export async function grokUpstreamCall({ cfg, url, token, body, stream, proxyUrl
       const text = await readAll(res)
       const payload = parseJson(text)
       const kernelCode = res.kernelError ? String(payload?.error?.code || 'kernel_error') : ''
+      const authFailure = /credential|token|refresh|unauthorized/i.test(kernelCode)
       return {
         ok: false,
-        status: res.kernelError ? (kernelCode === 'proxy_required' ? 503 : 502) : status,
+        status: res.kernelError ? (kernelCode === 'proxy_required' ? 503 : authFailure ? 401 : 502) : status,
         headers,
         kernelError: !!res.kernelError,
         emitted,
         body: res.kernelError
-          ? { error: { type: 'api_error', code: kernelCode, message: `api-kernel: ${kernelCode}` } }
+          ? { error: { type: 'api_error', code: kernelCode, message: `grok-kernel: ${kernelCode}` } }
           : normalizeErrorBody(status, payload, text),
       }
     }
@@ -482,25 +461,7 @@ function ingestGrokHop(projectRoot, vm, result, now = Date.now()) {
   if (result?.ok && Number.isFinite(bagUntil) && bagUntil > 0) persistGrokRateLimit(projectRoot, vm.id, { until: null })
 }
 
-function tokenFailure(code) {
-  const status = code === 'grok_oauth_not_configured' ? 503 : code === 'grok_oauth_discovery_failed' ? 502 : 401
-  const message =
-    code === 'grok_refresh_rejected'
-      ? 'Grok 槽位登录已失效，请重新登录'
-      : code === 'grok_oauth_not_configured'
-        ? 'xAI OAuth 未配置，无法刷新 Grok 令牌'
-        : code === 'grok_oauth_discovery_failed'
-          ? '读不到 xAI 授权地址，无法刷新 Grok 令牌'
-          : 'Grok 槽位没有可用凭证'
-  return { ok: false, status, body: { error: { type: 'authentication_error', code, message } } }
-}
-
-/**
- * One slot attempt: token, upstream call, a single forced refresh + retry after a 401 that
- * emitted nothing. `onLine` writes to the client; it is only called for 2xx streams.
- */
 export async function runGrokSlotHop({
-  cfg,
   projectRoot,
   vm,
   routing,
@@ -512,7 +473,6 @@ export async function runGrokSlotHop({
   headers = null,
 }) {
   const proxyUrl = String((ops.hostProxyUrlForVm || hostProxyUrlForVm)(vm) || '')
-  // '' is 本机出口: the kernel dials the Grok Build upstream on the slot host's own route.
   if (!proxyUrl && !isLocalEgressProxy(vm?.proxy)) {
     return {
       ok: false,
@@ -520,31 +480,56 @@ export async function runGrokSlotHop({
       body: { error: { type: 'api_error', code: 'grok_proxy_required', message: 'Grok 槽位没有可用的 SOCKS5 出口' } },
     }
   }
-  const ensure = ops.ensureGrokAccessToken || ensureGrokAccessToken
-  const url = `${grokBaseUrl(routing)}${outbound.path}`
+  const localExit = isLocalEgressProxy(vm?.proxy)
+  const onNode = !!vm?.node_id
+  const written = (ops.writeGrokKernelConfig || writeGrokKernelConfig)(projectRoot, vm, {
+    proxyUrl: localExit && !onNode ? '' : proxyUrl,
+    proxyRequired: !(localExit && !onNode),
+    routing,
+  })
+  if (!ops.callGrokKernel) {
+    const ready = await (ops.ensureGrokKernel || ensureGrokKernel)({ projectRoot, vmId: vm.id })
+    if (!ready?.ok) {
+      return {
+        ok: false,
+        status: 503,
+        kernelError: true,
+        body: {
+          error: {
+            type: 'api_error',
+            code: ready?.reason || 'grok_kernel_unavailable',
+            message: 'Grok 出站内核没有启动',
+          },
+        },
+      }
+    }
+  }
   const idleMs = idleTimeoutMs(routing)
-  let tok = await ensure({ projectRoot, vm, routing, proxyUrl })
-  if (!tok.ok) return tokenFailure(tok.code)
-  const call = (token) =>
-    grokUpstreamCall({
-      cfg,
-      url,
-      token,
-      body: outbound.body,
+  const release = trackGrokKernel(vm.id)
+  try {
+    return await grokUpstreamCall({
+      projectRoot,
+      vmId: vm.id,
+      envelope: grokKernelEnvelope({
+        method: 'POST',
+        path: outbound.path,
+        body: outbound.body,
+        stream,
+        purpose: 'inference',
+        sessionId: headers?.['x-grok-session-id'] || '',
+        modelId: headers?.['x-grok-model-override'] || outbound.body?.model || '',
+        requestId: headers?.['x-grok-req-id'] || '',
+        agentId: written?.agentId || headers?.['x-grok-agent-id'] || '',
+      }),
       stream,
-      proxyUrl,
       signal,
       idleMs,
       onLine,
-      ops: { ...ops, headers },
+      ops,
     })
-  let result = await call(tok.access_token)
-  if (Number(result.status) === 401 && !result.emitted && !result.kernelError && !signal?.aborted) {
-    tok = await ensure({ projectRoot, vm, routing, proxyUrl, force: true })
-    if (!tok.ok) return { ...tokenFailure(tok.code), refreshed: false }
-    result = { ...(await call(tok.access_token)), refreshed: true }
+  } finally {
+    release()
   }
-  return result
 }
 
 export async function handleGrokProtocol({
@@ -618,8 +603,9 @@ export async function handleGrokProtocol({
   logBag.outbound_headers = redactHeaders({
     authorization: 'Bearer ***',
     'content-type': 'application/json',
-    accept: upstreamAccept(stream),
-    ...grokCliIdentityHeaders(),
+    'user-agent': grokCliUserAgent(),
+    'x-grok-client-version': '1.0.62',
+    'x-grok-client-identifier': 'grok-shell',
   })
   const upstreamStream = outbound.convert ? true : stream
   const shape = protocol === 'anthropic.messages' && !outbound.convert ? 'anthropic' : 'openai'
@@ -740,10 +726,18 @@ export async function handleGrokProtocol({
           res.write(`${line}\n`)
         }
         const runHop = () => {
+          const requestId = grokRequestId()
+          const localExit = isLocalEgressProxy(vm?.proxy)
+          const written = (ops.writeGrokKernelConfig || writeGrokKernelConfig)(projectRoot, vm, {
+            proxyUrl: localExit && !vm?.node_id ? '' : String((ops.hostProxyUrlForVm || hostProxyUrlForVm)(vm) || ''),
+            proxyRequired: !(localExit && !vm?.node_id),
+            routing,
+          })
           const headers = grokCliRequestHeaders({
             model: outbound.body?.model,
             sessionId: outboundSessionId,
-            requestId: grokRequestId(),
+            requestId,
+            agentId: written?.agentId || '',
           })
           logBag.outbound_headers = redactHeaders({
             authorization: 'Bearer ***',
@@ -752,7 +746,6 @@ export async function handleGrokProtocol({
             ...headers,
           })
           return runGrokSlotHop({
-            cfg,
             projectRoot,
             vm,
             routing,

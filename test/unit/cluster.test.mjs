@@ -10,6 +10,7 @@ import {
   ClusterError,
   connectSsh,
   hostKeyDigest,
+  learnHostKey,
   SshLink,
 } from '../../src/lib/cluster/ssh-link.mjs'
 import { buildCreateSpec, demuxDockerLog, normalizeImageRef } from '../../src/lib/cluster/docker-remote.mjs'
@@ -67,7 +68,16 @@ test('host key digest matches ssh-keygen SHA256 fingerprint', (t) => {
 test('connectSsh pins the host key and classifies auth failures', async () => {
   const { server, port, sha256 } = await startServer()
   try {
-    const probe = await connectSsh({ host: '127.0.0.1', port, username: 'u', authType: 'password', password: 'pw' })
+    const learned = await learnHostKey({ host: '127.0.0.1', port })
+    assert.equal(learned.sha256, sha256)
+    const probe = await connectSsh({
+      host: '127.0.0.1',
+      port,
+      username: 'u',
+      authType: 'password',
+      password: 'pw',
+      expectedSha256: learned.sha256,
+    })
     assert.equal(probe.hostKey.sha256, sha256)
     probe.client.end()
 
@@ -93,7 +103,14 @@ test('connectSsh pins the host key and classifies auth failures', async () => {
       (err) => err.code === 'host_key_mismatch',
     )
     await assert.rejects(
-      connectSsh({ host: '127.0.0.1', port, username: 'u', authType: 'password', password: 'nope' }),
+      connectSsh({
+        host: '127.0.0.1',
+        port,
+        username: 'u',
+        authType: 'password',
+        password: 'nope',
+        expectedSha256: sha256,
+      }),
       (err) => err.code === 'auth_failed',
     )
   } finally {

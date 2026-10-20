@@ -38,7 +38,7 @@ for (const prefix of ['VM2API', 'KIN']) {
       VM2API_ADMIN_USER: '',
       VM2API_ADMIN_PASSWORD: '',
       [`${prefix}_ADMIN_USER`]: 'admin',
-      [`${prefix}_ADMIN_PASSWORD`]: '123456',
+      [`${prefix}_ADMIN_PASSWORD`]: 'starter-admin-pass',
     }
     let gw = await startGateway({ env })
     try {
@@ -50,13 +50,13 @@ for (const prefix of ['VM2API', 'KIN']) {
       assert.equal(self.password_hash, undefined)
       assert.doesNotMatch(gw.stderr(), /bootstrap failed/)
 
-      const admin = await login(gw, 'admin', '123456')
-      const otherSession = await login(gw, 'admin', '123456')
+      const admin = await login(gw, 'admin', 'starter-admin-pass')
+      const otherSession = await login(gw, 'admin', 'starter-admin-pass')
       assert.equal(admin.status, 200)
       assert.equal(otherSession.status, 200)
       const before = await panel(gw, 'GET', '/api/panel/onboarding', { cookie: admin.cookie })
       assert.equal(before.status, 200)
-      assert.equal(before.json.data.steps.find((step) => step.id === 'admin_password').done, false)
+      assert.equal(before.json.data.steps.find((step) => step.id === 'admin_password').done, true)
 
       const shortCreate = await panel(gw, 'POST', '/api/panel/users', {
         cookie: admin.cookie,
@@ -78,7 +78,7 @@ for (const prefix of ['VM2API', 'KIN']) {
       assert.equal(changed.status, 200, JSON.stringify(changed.json))
       assert.equal((await panel(gw, 'GET', '/api/panel/me', { cookie: admin.cookie })).status, 200)
       assert.equal((await panel(gw, 'GET', '/api/panel/me', { cookie: otherSession.cookie })).status, 401)
-      assert.equal((await login(gw, 'admin', '123456')).status, 401)
+      assert.equal((await login(gw, 'admin', 'starter-admin-pass')).status, 401)
       assert.equal((await login(gw, 'admin', 'changed-admin-pass')).status, 200)
       const after = await panel(gw, 'GET', '/api/panel/onboarding', { cookie: admin.cookie })
       assert.equal(after.status, 200)
@@ -87,7 +87,7 @@ for (const prefix of ['VM2API', 'KIN']) {
       const project = gw.project
       await gw.stop()
       gw = await startGateway({ project, env })
-      assert.equal((await login(gw, 'admin', '123456')).status, 401)
+      assert.equal((await login(gw, 'admin', 'starter-admin-pass')).status, 401)
       const relogin = await login(gw, 'admin', 'changed-admin-pass')
       assert.equal(relogin.status, 200)
       const restarted = await panel(gw, 'GET', '/api/panel/onboarding', { cookie: relogin.cookie })

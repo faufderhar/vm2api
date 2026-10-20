@@ -12,6 +12,9 @@ import { readCodexAccounts } from '../../src/lib/vm/codex-slot.mjs'
 import { isLocalEgressProxy } from '../../src/lib/vm/egress.mjs'
 import { buildVmPackage, parseVmPackage } from '../../src/lib/vm/vm-package.mjs'
 
+// Package fixtures use an RFC1918 SOCKS row. Production still blocks that unless the operator opts in.
+process.env.VM2API_ALLOW_PRIVATE_PROXY = '1'
+
 function claudePackage(id, token = 'sk-ant-oat01-PACKAGE') {
   return buildVmPackage({
     vm: {

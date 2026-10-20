@@ -5,6 +5,7 @@
  */
 
 import { WebSocketServer } from 'ws'
+import { selectTicketProtocol, ticketFromUpgrade } from '../http/ws-ticket.mjs'
 import {
   containerAction,
   containerLogs,
@@ -165,7 +166,11 @@ export function createClusterRoutes({ manager, json, readBody, ok }) {
     }
   }
 
-  const wss = new WebSocketServer({ noServer: true, maxPayload: 1 << 20 })
+  const wss = new WebSocketServer({
+    noServer: true,
+    maxPayload: 1 << 20,
+    handleProtocols: selectTicketProtocol,
+  })
 
   function rejectUpgrade(socket, status, text) {
     socket.write(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`)
@@ -178,7 +183,7 @@ export function createClusterRoutes({ manager, json, readBody, ok }) {
     const sm = SHELL_RE.exec(url.pathname)
     if (!sm) return false
     const id = sm[1]
-    if (!manager.consumeShellTicket(url.searchParams.get('ticket') || '', id)) {
+    if (!manager.consumeShellTicket(ticketFromUpgrade(req, url), id)) {
       rejectUpgrade(socket, 401, 'Unauthorized')
       return true
     }

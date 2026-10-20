@@ -2,20 +2,15 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { startGateway, api } from '../harness.mjs'
 
-test('harness /health 200 and honest capabilities', async () => {
+test('harness /health 200 without slot details', async () => {
   const gw = await startGateway()
   try {
     const r = await api(gw, 'GET', '/health')
     assert.equal(r.status, 200)
     assert.equal(r.json.status, 'ok')
-    assert.equal(r.json.capabilities.workspace_default, 'client')
-    assert.equal(r.json.capabilities.client_tools, true)
-    assert.equal(r.json.capabilities.multi_turn_native, true)
-    assert.equal(r.json.capabilities.worker, 'go-slot-worker')
-    assert.equal(r.json.capabilities.forward_default, 'relay')
-    assert.match(r.json.limitations.forward, /Go worker/i)
-    assert.match(r.json.limitations.oauth, /sole refresh (owner|manager)/i)
-    assert.equal(r.json.active_vm, 'vm-sim-01')
+    assert.equal(r.json.service, 'vm2api')
+    assert.equal(r.json.active_vm, undefined)
+    assert.equal(r.json.capabilities, undefined)
   } finally {
     await gw.stop()
   }

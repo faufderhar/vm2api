@@ -41,6 +41,26 @@ test('master API key administers the panel only from loopback', async () => {
   assert.equal(masterMayAdminister({ apiKeyKind: 'master', socket: { remoteAddress: '203.0.113.8' } }), false)
 })
 
+test('disabled or role-changed panel sessions are rejected and login limits are per account', async () => {
+  const { panelSessionAccess, loginRateLimited, createAttemptLimiter } = await import(
+    `../../src/lib/core/security.mjs?access=${Date.now()}`
+  )
+  assert.equal(panelSessionAccess({ role: 'admin' }, { enabled: false, role: 'admin' }).ok, false)
+  assert.equal(panelSessionAccess({ role: 'admin' }, { enabled: true, role: 'user', id: 'u1' }).reason, 'role_changed')
+  assert.equal(
+    panelSessionAccess({ role: 'user' }, { enabled: true, role: 'user', id: 'u1', vm_create_quota: 2 }).ok,
+    true,
+  )
+  const limiter = createAttemptLimiter({ limit: 1, windowMs: 60_000 })
+  const shared = {
+    socket: { remoteAddress: '10.0.0.8' },
+    headers: { 'x-forwarded-for': '10.0.0.8' },
+  }
+  assert.equal(loginRateLimited(limiter, shared, 'alice', {}), false)
+  assert.equal(loginRateLimited(limiter, shared, 'bob', {}), false)
+  assert.equal(loginRateLimited(limiter, shared, 'alice', {}), true)
+})
+
 test('panel session persistence stores only token hashes', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-panel-security-'))
   const previous = process.env.KIN_DATA_DIR

@@ -34,6 +34,7 @@ import { syncIpv6ProxyEgress } from '../vm/proxy-policy-runtime.mjs'
 import {
   ClusterError,
   connectSsh,
+  learnHostKey,
   execCollect,
   forwardOut,
   forwardOutStreamLocal,
@@ -411,6 +412,21 @@ export class ClusterManager {
   async probe(input) {
     const spec = parseNodeInput(input)
     const sock = await this._jumpSock(spec.jump_node_id, spec.host, spec.port)
+    // No pinned fingerprint yet: learn the key and stop before userauth.
+    if (!spec.host_key_sha256) {
+      try {
+        const hostKey = await learnHostKey({ host: spec.host, port: spec.port, sock })
+        return {
+          host_key: hostKey,
+          docker: null,
+          uname: null,
+          confirm_required: true,
+          existing_id: this.repo.findByEndpoint(spec.host, spec.port, spec.username),
+        }
+      } finally {
+        sock?.end?.()
+      }
+    }
     const { client, hostKey } = await connectSsh({
       host: spec.host,
       port: spec.port,
@@ -419,6 +435,7 @@ export class ClusterManager {
       password: spec.password,
       privateKey: spec.private_key,
       passphrase: spec.passphrase,
+      expectedSha256: spec.host_key_sha256,
       sock,
     })
     try {

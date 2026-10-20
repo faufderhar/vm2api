@@ -234,6 +234,29 @@ test('admin models refresh stays delegated to the server route', async () => {
   assert.equal(handled, false)
 })
 
+test('a remote master key is not an admin on /admin', async () => {
+  const response = {}
+  const handlePanel = createPanelHandler({
+    cfg: {},
+    requireAuth(req) {
+      req.apiKeyKind = 'master'
+      req.socket = { remoteAddress: '203.0.113.8' }
+      return true
+    },
+    json(_res, status, body) {
+      response.status = status
+      response.body = body
+    },
+  })
+  const handled = await handlePanel(
+    { method: 'GET', socket: { remoteAddress: '203.0.113.8' }, apiKeyKind: 'master' },
+    {},
+    new URL('http://localhost/admin/routing'),
+  )
+  assert.equal(handled, true)
+  assert.equal(response.status, 403)
+})
+
 test('ACL schedule POSTs have matching server handlers', () => {
   assert.match(serverSrc, /clearVmCooldown/)
   assert.match(serverSrc, /cooldown\\\/clear/)
