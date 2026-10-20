@@ -21,7 +21,7 @@ RUN cd worker && go build -buildvcs=false -trimpath -ldflags="-s -w" -o /out/kin
     && CGO_ENABLED=0 GOARCH=amd64 go build -buildvcs=false -trimpath -o /out/amd64/kin-slot-gate ./cmd/kin-slot-gate \
     && cd ../api-kernel && go build -buildvcs=false -trimpath -ldflags="-s -w" -o /out/kin-api-kernel ./cmd/kin-api-kernel
 
-FROM --platform=linux/arm64 rust:1.88-bookworm AS grok
+FROM --platform=linux/arm64 rust:1.98-bookworm AS grok
 WORKDIR /src/grok-kernel
 COPY grok-kernel/Cargo.toml grok-kernel/Cargo.lock ./
 COPY grok-kernel/src ./src

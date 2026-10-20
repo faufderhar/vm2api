@@ -9,7 +9,7 @@ RUN pnpm install --frozen-lockfile
 COPY web/ ./
 RUN pnpm build
 
-FROM --platform=$BUILDPLATFORM rust:1.88-bookworm AS grok
+FROM --platform=$BUILDPLATFORM rust:1.98-bookworm AS grok
 WORKDIR /src/grok-kernel
 COPY grok-kernel/Cargo.toml grok-kernel/Cargo.lock ./
 COPY grok-kernel/src ./src
