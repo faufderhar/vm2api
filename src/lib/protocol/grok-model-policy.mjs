@@ -50,30 +50,42 @@ function grokCapabilities(id, extra = {}) {
   }
 }
 
-/** A stored row that still has the old 128k default gets the published window. */
-function withKnownCaps(id, capabilities) {
+/**
+ * Fill missing caps from the published window.
+ * 128k and 200k used to be stored by mistake (old default, or Claude's long-context
+ * price threshold). Those unmarked rows are upgraded once.
+ * A panel save sets context_window_custom so the same numbers stay if an admin chose them.
+ */
+function withKnownCaps(id, capabilities, { trustWindow = false } = {}) {
   const known = grokCapabilities(id)
   if (!capabilities || typeof capabilities !== 'object') return known
   const window = Number(capabilities.context_window)
-  const stale =
-    !Number.isFinite(window) || window <= 0 || (STALE_CONTEXT_WINDOWS.has(window) && window !== known.context_window)
-  return {
+  const explicit = trustWindow || capabilities.context_window_custom === true
+  const invalid = !Number.isFinite(window) || window <= 0
+  const legacyDefault = STALE_CONTEXT_WINDOWS.has(window) && window !== known.context_window
+  const replace = invalid || (!explicit && legacyDefault)
+  const contextWindow = replace ? known.context_window : window
+  const custom = !replace && explicit && contextWindow !== known.context_window
+  const caps = {
     ...known,
     ...capabilities,
-    context_window: stale ? known.context_window : window,
-    supports_1m: stale ? known.supports_1m : capabilities.supports_1m === true,
+    context_window: contextWindow,
+    supports_1m: explicit || replace ? contextWindow >= 1_000_000 : capabilities.supports_1m === true,
     supports_effort: capabilities.supports_effort === true || known.supports_effort,
   }
+  if (custom) caps.context_window_custom = true
+  else delete caps.context_window_custom
+  return caps
 }
 
-function entry(id, extra = {}) {
+function entry(id, extra = {}, options = {}) {
   return {
     id,
     display_name: extra.display_name || extra.label || id,
     family: 'grok',
     enabled: extra.enabled !== false,
     sort: extra.sort || 80,
-    capabilities: withKnownCaps(id, extra.capabilities),
+    capabilities: withKnownCaps(id, extra.capabilities, options),
     params: extra.params || { max_tokens_default: 16384, max_tokens_cap: 128000 },
     aliases: extra.aliases || [],
   }
@@ -145,7 +157,7 @@ export function saveGrokModelPolicy(next) {
   if (next?.models && typeof next.models === 'object') {
     for (const [id, row] of Object.entries(next.models)) {
       if (!isGrokSeriesId(id) || !row || typeof row !== 'object') continue
-      models[id] = entry(id, { ...row, enabled: row.enabled !== false })
+      models[id] = entry(id, { ...row, enabled: row.enabled !== false }, { trustWindow: true })
     }
   }
   policy = {

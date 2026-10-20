@@ -148,10 +148,16 @@ export function contextWindowLabel(m: ModelEntry): {
   native1m: boolean
 } {
   const caps = m.capabilities || {}
-  const native1m = !!caps.supports_1m
   const win = Number(caps.context_window || 0)
-  const text =
-    win >= 1_000_000 || native1m ? '1M' : `${Math.floor(win / 1000)}K`
+  if (win > 0) {
+    const million = win >= 1_000_000
+    return {
+      text: million ? '1M' : `${Math.floor(win / 1000)}K`,
+      native1m: million,
+    }
+  }
+  const native1m = !!caps.supports_1m
+  const text = native1m ? '1M' : '0K'
   return { text, native1m }
 }
 

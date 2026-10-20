@@ -29,7 +29,7 @@ import {
 } from '../vm/egress.mjs'
 import { OS_CATALOG } from '../vm/os-catalog.mjs'
 import { REMOTE_KERNEL_ENTRY, resolveKernelDataplane } from '../vm/slot-engine.mjs'
-import { isHeadlessSlotVm, PLATFORMS, platformDescriptor } from '../vm/vm-kind.mjs'
+import { isCodexVm, isHeadlessSlotVm, PLATFORMS, platformDescriptor } from '../vm/vm-kind.mjs'
 import { proxyBlockedReason } from '../vm/proxy-policy.mjs'
 import { isKvmRuntime, runtimeKind } from '../vm/runtime-kind.mjs'
 import { slotMemory, slotDockerCpus, memoryMiB, normalizeVmConfig, VM_CONFIG_DEFAULTS } from '../vm/machine-spec.mjs'
@@ -728,7 +728,9 @@ export function slotContainerBody(vm, { image, network, remoteDir, user, routing
       `KIN_VM_OS=${vm.kernel}`,
     ],
     // Node images bake the Claude kernel here; local slots bind-mount a different path.
-    Cmd: headless ? ['sleep', 'infinity'] : [REMOTE_KERNEL_ENTRY, '--gateway-worker', '--config', '/run/kin/kernel.json'],
+    Cmd: headless
+      ? ['sleep', 'infinity']
+      : [REMOTE_KERNEL_ENTRY, '--gateway-worker', '--config', '/run/kin/kernel.json'],
     Labels: {
       'kin.vm': '1',
       'kin.vm.id': vm.id,
