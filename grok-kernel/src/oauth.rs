@@ -133,7 +133,9 @@ fn allowed_oauth_url(value: &str) -> bool {
     };
     let host = url.host_str().unwrap_or("").to_ascii_lowercase();
     if host == "localhost" || host == "127.0.0.1" || host == "::1" {
-        return url.scheme() == "https" || url.scheme() == "http";
+        // Discovery could otherwise point token_endpoint at this machine and
+        // the refresh token would be posted there.
+        return false;
     }
     url.scheme() == "https" && (host == "x.ai" || host.ends_with(".x.ai"))
 }
@@ -152,4 +154,18 @@ pub fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::allowed_oauth_url;
+
+    #[test]
+    fn oauth_token_url_rejects_loopback() {
+        assert!(allowed_oauth_url("https://auth.x.ai/oauth2/token"));
+        assert!(!allowed_oauth_url("http://127.0.0.1/token"));
+        assert!(!allowed_oauth_url("https://localhost/token"));
+        assert!(!allowed_oauth_url("https://evil.example/token"));
+        assert!(!allowed_oauth_url("http://auth.x.ai/oauth2/token"));
+    }
 }

@@ -30,6 +30,33 @@ const KEY_PREFIX = 'sk-vm-'
 const HASH_MARKER = 'hmac:'
 const LEGACY_HASH_PEPPER = 'kin-development-api-key-hash-secret'
 
+/** Rows created after this instant cannot authenticate with the public pepper. */
+function legacyPepperCutoff(dataDir) {
+  if (!dataDir) return 0
+  const file = path.join(dataDir, 'api-key-legacy-until')
+  try {
+    const stored = Number(fs.readFileSync(file, 'utf8').trim())
+    if (Number.isFinite(stored) && stored > 0) return stored
+  } catch {
+    // First store in this data dir records the cutoff below.
+  }
+  const now = Date.now()
+  try {
+    fs.mkdirSync(dataDir, { recursive: true })
+    fs.writeFileSync(file, `${now}\n`, { mode: 0o600 })
+  } catch {
+    // A missing marker fails closed: nothing created later can use the public pepper.
+  }
+  return now
+}
+
+function createdAtMs(record) {
+  const raw = record?.created_at
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw
+  const parsed = Date.parse(String(raw || ''))
+  return Number.isFinite(parsed) ? parsed : Number.NaN
+}
+
 function persistedPepper(dataDir) {
   if (!dataDir) return crypto.randomBytes(32).toString('hex')
   const file = path.join(dataDir, 'api-key-pepper')
@@ -151,6 +178,7 @@ export class ApiKeyStore {
   constructor({ dataDir, db, hashSecret } = {}) {
     this.db = resolveStoreDb({ db, dataDir })
     this.repo = new ApiKeysRepo(this.db)
+    this.legacyCutoff = legacyPepperCutoff(dataDir)
     this.hashSecret = String(
       hashSecret ||
         process.env.VM2API_API_KEY_HASH_SECRET ||
@@ -213,7 +241,7 @@ export class ApiKeyStore {
     let indexed = this.repo.getByHash(hash)
     if (!indexed && this.hashSecret !== LEGACY_HASH_PEPPER) {
       const legacy = this.repo.getByHash(this._hashWith(token, LEGACY_HASH_PEPPER))
-      if (legacy) {
+      if (legacy && createdAtMs(legacy) < this.legacyCutoff) {
         if (!this._ownerActive(legacy)) return { ok: false, reason: 'user_disabled' }
         legacy.key_hash = hash
         if (String(legacy.key || '').startsWith(HASH_MARKER)) legacy.key = HASH_MARKER + hash

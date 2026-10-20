@@ -36,3 +36,17 @@ test('a slot with no proxy is marked proxy_required and the config has no token'
   assert.ok(written.agentId)
   assert.equal(fs.readFileSync(written.agentIdPath, 'utf8').trim(), written.agentId)
 })
+
+test('a metadata or link-local proxy is refused before the kernel config is written', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'grok-kernel-'))
+  assert.throws(
+    () =>
+      writeGrokKernelConfig(
+        root,
+        { id: 'vm-g' },
+        { proxyUrl: 'socks5://169.254.169.254:1080', proxyRequired: true, routing: {} },
+      ),
+    (error) => error.code === 'proxy_host_blocked',
+  )
+  assert.equal(fs.existsSync(path.join(root, 'vms', 'vm-g', 'run', 'grok-kernel.json')), false)
+})

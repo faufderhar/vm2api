@@ -68,7 +68,15 @@ export function createAttemptLimiter({ limit = 30, windowMs = 60_000, maxKeys = 
     const id = String(key || 'unknown')
     let bucket = buckets.get(id)
     if (!bucket || now - bucket.started > windowMs) {
-      while (buckets.size >= maxKeys) buckets.delete(buckets.keys().next().value)
+      if (bucket) buckets.delete(id)
+      if (buckets.size >= maxKeys) {
+        for (const [storedId, stored] of buckets) {
+          if (now - stored.started > windowMs) buckets.delete(storedId)
+        }
+      }
+      // A full map of live counters must not drop the oldest one. Rotating
+      // usernames would otherwise erase the admin bucket and reset the limit.
+      if (buckets.size >= maxKeys) return true
       bucket = { started: now, count: 0 }
       buckets.set(id, bucket)
     }
@@ -84,18 +92,25 @@ export function isLoopbackAddress(address) {
   return raw === '127.0.0.1' || raw === '::1' || raw === '::ffff:127.0.0.1'
 }
 
-export function isLoopbackRequest(req) {
-  return isLoopbackAddress(req?.socket?.remoteAddress)
+export function isLoopbackRequest(req, env = process.env) {
+  if (!isLoopbackAddress(req?.socket?.remoteAddress)) return false
+  const hops = forwardedHops(req)
+  const claimedProxy = hops.length > 0 || req?.headers?.['x-forwarded-proto'] != null
+  if (!claimedProxy) return true
+  // A reverse proxy on this host makes every remote client look like loopback.
+  if (!trustProxy(env)) return false
+  const client = hops.length ? hops[hops.length - 1] : ''
+  return isLoopbackAddress(client)
 }
 
 /**
  * The master API key may call panel routes only from this machine.
  * In-process tests set panelRole and have no socket; a real HTTP request always has one.
  */
-export function masterMayAdminister(req) {
+export function masterMayAdminister(req, env = process.env) {
   if (req?.apiKeyKind !== 'master') return false
   if (!req.socket) return !!req.panelRole
-  return isLoopbackRequest(req)
+  return isLoopbackRequest(req, env)
 }
 
 export const HOP_BY_HOP = new Set([
@@ -281,7 +296,13 @@ export function revokePanelSessionsForUser(username, { exceptToken } = {}) {
  */
 export function panelSessionAccess(session, record) {
   if (!session) return { ok: false, reason: 'missing' }
-  if (!record) return { ok: true, role: session.role || 'user', id: null, quota: 0 }
+  if (!record) {
+    // Only the env admin is allowed before that user row exists. A deleted
+    // user must not keep the role stored in the session file.
+    const admin = getPanelAdmin()
+    if (session.user === admin.username && admin.password) return { ok: true, role: 'admin', id: null, quota: 0 }
+    return { ok: false, reason: 'user_missing' }
+  }
   if (record.enabled === false) return { ok: false, reason: 'disabled' }
   const role = record.role || 'user'
   if (session.role && session.role !== role) return { ok: false, reason: 'role_changed' }
@@ -292,30 +313,27 @@ function trustProxy(env = process.env) {
   return String(env.TRUST_PROXY || env.VM2API_TRUST_PROXY || '').trim() === '1'
 }
 
-function forwardedClient(req) {
-  const raw = String(req?.headers?.['x-forwarded-for'] || '')
-    .split(',')[0]
-    .trim()
-  return raw || ''
+function forwardedHops(req) {
+  return String(req?.headers?.['x-forwarded-for'] || '')
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean)
 }
 
 /**
  * Login limits are per account, not one bucket for every browser behind a proxy.
- * A shared TCP peer is ignored unless the operator trusted the proxy and it sent
- * a client address. Direct connections still count the peer address.
+ * Without TRUST_PROXY the TCP peer is counted and X-Forwarded-For is ignored.
+ * A trusted proxy appends the address it accepted, so the right-most hop is used.
  */
 export function loginRateLimited(limiter, req, username, env = process.env) {
   const name = String(username || '')
     .trim()
     .toLowerCase()
   const peer = String(req?.socket?.remoteAddress || 'unknown')
-  const forwarded = forwardedClient(req)
-  const client = trustProxy(env) && forwarded ? forwarded : peer
+  const hops = forwardedHops(req)
+  const client = trustProxy(env) && hops.length ? hops[hops.length - 1] : peer
   const accountLimited = limiter(`user:${name || '-'}`)
-  // An untrusted X-Forwarded-For is the proxy's address for every user. Do not
-  // let one account fill that shared bucket.
-  const sharedProxy = !trustProxy(env) && !!forwarded
-  const clientLimited = sharedProxy ? false : limiter(`client:${client}`)
+  const clientLimited = limiter(`client:${client}`)
   return accountLimited || clientLimited
 }
 

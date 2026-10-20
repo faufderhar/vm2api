@@ -20,4 +20,7 @@ test('docker entrypoint refreshes kin-api-kernel before Node starts', () => {
   assert.match(entry, /ensure_bin kin-api-kernel/)
   assert.match(entry, /ensure_bin kin-grok-kernel/)
   assert.match(entry, /KIN_API_KERNEL_BIN/)
+  assert.match(entry, /admin\.password/)
+  assert.match(entry, /db\.secret/)
+  assert.doesNotMatch(entry, /VM2API_DB_SECRET="\$\(rand_hex\)"/)
 })

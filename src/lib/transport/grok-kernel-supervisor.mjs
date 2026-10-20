@@ -15,6 +15,7 @@ import {
   grokBaseUrl,
   grokOauthConfig,
 } from '../protocol/grok-route.mjs'
+import { assertProxyAllowed } from '../vm/proxy-policy.mjs'
 
 const starts = new Map()
 const sockets = new Map()
@@ -88,6 +89,8 @@ function configStamp(config) {
 
 export function writeGrokKernelConfig(projectRoot, vm, { proxyUrl = '', proxyRequired = true, routing = {} } = {}) {
   if (!projectRoot || !vm?.id) return null
+  const proxy = String(proxyUrl || '')
+  if (proxy) assertProxyAllowed({ url: proxy })
   const paths = grokKernelPaths(projectRoot, vm.id)
   fs.mkdirSync(paths.runDir, { recursive: true })
   const oauth = grokOauthConfig(routing)
@@ -99,7 +102,7 @@ export function writeGrokKernelConfig(projectRoot, vm, { proxyUrl = '', proxyReq
     agent_id_path: paths.agentIdPath,
     refresh_lock_path: paths.refreshLockPath,
     internal_token: readOrCreateSecret(paths.tokenPath),
-    proxy_url: String(proxyUrl || ''),
+    proxy_url: proxy,
     proxy_required: proxyRequired !== false,
     base_url: grokBaseUrl(routing),
     client_version: '1.0.62',

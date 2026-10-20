@@ -380,14 +380,53 @@ export function builtinHardRules() {
 function cleanPattern(source) {
   const text = String(source || '').trim()
   if (!text || text.length > PATTERN_LEN) return ''
-  // (a+)+ and [a-z]++ can hang the event loop. Drop them like a syntax error.
-  if (/(?:\((?:[^()\\]|\\.)*[*+?](?:[^()\\]|\\.)*\)|\[[^\]]*\][*+?]?|\\[dDwWsS][*+?])[*+{]/.test(text)) return ''
+  // (a+)+ and ((a+)+)+ can hang the event loop. Drop them like a syntax error.
+  if (hasNestedQuantifier(text)) return ''
   try {
     new RegExp(text, 'i')
   } catch {
     return ''
   }
   return text
+}
+
+/**
+ * A quantifier inside a group that is itself repeated backtracks exponentially.
+ * `?` right after `(` starts a group flag (`(?:`, `(?=`) and is not a repeat.
+ */
+function hasNestedQuantifier(text) {
+  if (/(\[[^\]]*\]|\\[dDwWsS])[*+?]{2,}/.test(text)) return true
+  if (/(\[[^\]]*\]|\\[dDwWsS])[*+?]\{/.test(text)) return true
+  const groups = []
+  let insideClass = false
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]
+    if (char === '\\') {
+      index += 1
+      continue
+    }
+    if (char === '[') {
+      insideClass = true
+      continue
+    }
+    if (insideClass) {
+      if (char === ']') insideClass = false
+      continue
+    }
+    if (char === '(') {
+      groups.push(false)
+      continue
+    }
+    if (char === ')' && groups.length) {
+      const repeated = /[*+{]/.test(text[index + 1] || '')
+      const innerQuantifier = groups.pop()
+      if (repeated && innerQuantifier) return true
+      if ((repeated || innerQuantifier) && groups.length) groups[groups.length - 1] = true
+      continue
+    }
+    if (/[*+{]/.test(char) && groups.length && text[index - 1] !== '(') groups[groups.length - 1] = true
+  }
+  return false
 }
 
 function normalizeRules(raw) {

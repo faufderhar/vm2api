@@ -14,6 +14,7 @@ use axum::{Json, Router};
 use futures_util::TryStreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
@@ -335,10 +336,23 @@ fn copy_headers(source: &reqwest::header::HeaderMap) -> HeaderMap {
     out
 }
 fn token_ok(app: &App, headers: &HeaderMap) -> bool {
-    headers
+    let presented = headers
         .get("x-kin-internal-token")
         .and_then(|value| value.to_str().ok())
-        == Some(app.config.internal_token.as_str())
+        .unwrap_or("");
+    !app.config.internal_token.is_empty()
+        && same_secret(presented, app.config.internal_token.as_str())
+}
+
+/// Hash both sides first so a different length does not return early.
+fn same_secret(left: &str, right: &str) -> bool {
+    let left_hash = Sha256::digest(left.as_bytes());
+    let right_hash = Sha256::digest(right.as_bytes());
+    let mut diff = 0u8;
+    for (left_byte, right_byte) in left_hash.iter().zip(right_hash.iter()) {
+        diff |= left_byte ^ right_byte;
+    }
+    diff == 0
 }
 fn kernel_error(status: StatusCode, code: &str, message: &str) -> Response {
     let mut response =

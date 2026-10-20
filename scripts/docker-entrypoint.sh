@@ -101,6 +101,38 @@ env_get_file() {
   grep -E "^${name}=" "$file" 2>/dev/null | tail -n1 | cut -d= -f2- | tr -d "'" | tr -d '"' | tr -d '\r'
 }
 
+env_set() {
+  name="$1"
+  value="$2"
+  file="$3"
+  [ -n "$file" ] || return 0
+  mkdir -p "$(dirname "$file")"
+  touch "$file"
+  if grep -qE "^${name}=" "$file"; then
+    sed -i "s|^${name}=.*|${name}=${value}|" "$file"
+  else
+    printf '%s=%s\n' "$name" "$value" >>"$file"
+  fi
+}
+
+read_secret_file() {
+  file="$1"
+  [ -f "$file" ] || return 0
+  sed -n '1s/^[[:space:]]*//;s/[[:space:]]*$//p' "$file"
+}
+
+write_secret_file() {
+  file="$1"
+  value="$2"
+  [ -n "$value" ] || return 0
+  mkdir -p "$(dirname "$file")"
+  old_umask="$(umask)"
+  umask 077
+  printf '%s\n' "$value" >"$file"
+  umask "$old_umask"
+  chmod 600 "$file"
+}
+
 env_upsert_if_empty() {
   name="$1"
   value="$2"
@@ -128,40 +160,79 @@ rand_hex() {
 }
 
 ENVF="${ROOT}/.env"
+DATA_DIR="${KIN_DATA_DIR:-$ROOT/data}"
+SECRET_DIR="$(dirname "$DATA_DIR")/secrets"
+ADMIN_PASSWORD_FILE="$SECRET_DIR/admin.password"
+API_KEY_FILE="$SECRET_DIR/api.key"
+DB_SECRET_FILE="$SECRET_DIR/db.secret"
 if [ -z "${VM2API_ADMIN_USER:-}" ]; then
   VM2API_ADMIN_USER=admin
   export VM2API_ADMIN_USER
   env_upsert_if_empty VM2API_ADMIN_USER admin "$ENVF"
 fi
-if [ -z "${VM2API_ADMIN_PASSWORD:-}" ]; then
-  VM2API_ADMIN_PASSWORD="$(rand_hex)"
-  export VM2API_ADMIN_PASSWORD
-  env_upsert_if_empty VM2API_ADMIN_PASSWORD "$VM2API_ADMIN_PASSWORD" "$ENVF"
+password="${VM2API_ADMIN_PASSWORD:-}"
+password_generated=""
+if [ -z "$password" ] || [ "$password" = "123456" ]; then
+  password="$(read_secret_file "$ADMIN_PASSWORD_FILE")"
+fi
+if [ -z "$password" ] || [ "$password" = "123456" ]; then
+  password="$(env_get_file VM2API_ADMIN_PASSWORD "$ENVF")"
+fi
+if [ -z "$password" ] || [ "$password" = "123456" ]; then
+  password="$(rand_hex)"
+  password_generated=1
+fi
+VM2API_ADMIN_PASSWORD="$password"
+export VM2API_ADMIN_PASSWORD
+write_secret_file "$ADMIN_PASSWORD_FILE" "$password"
+env_set VM2API_ADMIN_PASSWORD "$password" "$ENVF"
+if [ -n "$password_generated" ]; then
   echo "vm2api: generated VM2API_ADMIN_PASSWORD for ${VM2API_ADMIN_USER:-admin}: ${VM2API_ADMIN_PASSWORD}" >&2
   echo "vm2api: this password is printed once. Change it after login." >&2
-elif [ "${VM2API_ADMIN_PASSWORD}" = "123456" ]; then
-  VM2API_ADMIN_PASSWORD="$(rand_hex)"
-  export VM2API_ADMIN_PASSWORD
-  if [ -f "$ENVF" ]; then
-    if grep -qE '^VM2API_ADMIN_PASSWORD=' "$ENVF"; then
-      sed -i "s|^VM2API_ADMIN_PASSWORD=.*|VM2API_ADMIN_PASSWORD=${VM2API_ADMIN_PASSWORD}|" "$ENVF"
-    else
-      printf '%s=%s\n' VM2API_ADMIN_PASSWORD "$VM2API_ADMIN_PASSWORD" >>"$ENVF"
-    fi
-  fi
-  echo "vm2api: replaced public default password 123456 for ${VM2API_ADMIN_USER:-admin}: ${VM2API_ADMIN_PASSWORD}" >&2
-  echo "vm2api: this password is printed once. Change it after login." >&2
+fi
+
+api_key="${VM2API_API_KEY:-}"
+if [ -z "$api_key" ]; then
+  api_key="${KIN_API_KEY:-}"
+fi
+api_key_generated=""
+if [ -z "$api_key" ]; then
+  api_key="$(read_secret_file "$API_KEY_FILE")"
+fi
+if [ -z "$api_key" ]; then
+  api_key="$(env_get_file VM2API_API_KEY "$ENVF")"
+fi
+if [ -z "$api_key" ]; then
+  api_key="$(env_get_file KIN_API_KEY "$ENVF")"
+fi
+if [ -z "$api_key" ]; then
+  api_key="$(rand_hex)"
+  api_key_generated=1
 fi
 if [ -z "${VM2API_API_KEY:-}" ] && [ -z "${KIN_API_KEY:-}" ]; then
-  VM2API_API_KEY="$(rand_hex)"
+  VM2API_API_KEY="$api_key"
   export VM2API_API_KEY
-  env_upsert_if_empty VM2API_API_KEY "$VM2API_API_KEY" "$ENVF"
+fi
+write_secret_file "$API_KEY_FILE" "$api_key"
+env_set VM2API_API_KEY "$api_key" "$ENVF"
+if [ -n "$api_key_generated" ]; then
   echo "vm2api: generated VM2API_API_KEY (empty in env)." >&2
 fi
+
+# Do not invent a database key here. Node reads the mounted secrets/db.secret.
+# A key left in the container env file is copied onto that mount once.
 if [ -z "${VM2API_DB_SECRET:-}" ] && [ -z "${KIN_DB_SECRET:-}" ]; then
-  VM2API_DB_SECRET="$(rand_hex)"
-  export VM2API_DB_SECRET
-  env_upsert_if_empty VM2API_DB_SECRET "$VM2API_DB_SECRET" "$ENVF"
+  mounted_db_secret="$(read_secret_file "$DB_SECRET_FILE")"
+  saved_db_secret="$(env_get_file VM2API_DB_SECRET "$ENVF")"
+  if [ -z "$saved_db_secret" ]; then
+    saved_db_secret="$(env_get_file KIN_DB_SECRET "$ENVF")"
+  fi
+  if [ -n "$saved_db_secret" ] && [ -z "$mounted_db_secret" ]; then
+    write_secret_file "$DB_SECRET_FILE" "$saved_db_secret"
+    echo "vm2api: copied the database key into ${DB_SECRET_FILE}" >&2
+  elif [ -n "$saved_db_secret" ] && [ "$saved_db_secret" != "$mounted_db_secret" ]; then
+    echo "vm2api: database key in ${ENVF} differs from ${DB_SECRET_FILE}; keeping the mounted file" >&2
+  fi
 fi
 
 if [ "$WRAP_CHANGED" = 1 ] && [ "${KIN_AUTO_SYNC_WRAP:-0}" = 1 ]; then

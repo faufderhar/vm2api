@@ -78,6 +78,24 @@ test('reveal reports hash-only rows as unrecoverable', () => {
   assert.equal(store.authenticate(rec.key).ok, true, 'auth still works off the hash')
 })
 
+test('the public pepper upgrades only keys created before this data dir recorded the cutoff', () => {
+  const store = tmpStore()
+  const oldKey = store.create({ name: 'old-pepper' })
+  const oldRow = store.getById(oldKey.id)
+  oldRow.created_at = new Date(store.legacyCutoff - 60_000).toISOString()
+  oldRow.key_hash = store._hashWith(oldKey.key, 'kin-development-api-key-hash-secret')
+  oldRow.key = `hmac:${oldRow.key_hash}`
+  store.repo.update(oldRow)
+  assert.equal(store.authenticate(oldKey.key).ok, true)
+
+  const freshKey = store.create({ name: 'planted-pepper' })
+  const planted = store.getById(freshKey.id)
+  planted.key_hash = store._hashWith(freshKey.key, 'kin-development-api-key-hash-secret')
+  planted.key = `hmac:${planted.key_hash}`
+  store.repo.update(planted)
+  assert.equal(store.authenticate(freshKey.key).ok, false)
+})
+
 test('key_secret is encrypted at rest when KIN_DB_SECRET is set', () => {
   const prev = process.env.KIN_DB_SECRET
   process.env.KIN_DB_SECRET = 'unit-test-secret'

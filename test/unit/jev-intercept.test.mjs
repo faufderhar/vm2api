@@ -49,8 +49,10 @@ function codexBody(text, extra = {}) {
 }
 
 test('a nested quantifier is dropped instead of compiled', () => {
-  const saved = normalizeJevConfig({ patterns: ['(a+)+', '[a-z]++', String.raw`\w+\w+`, 'plain-word'] })
-  // (a+)+ and [a-z]++ can hang the event loop. \w+\w+ backtracks linearly, so it stays.
+  const saved = normalizeJevConfig({
+    patterns: ['(a+)+', '(?:a+)+', '((a+)+)+', '[a-z]++', String.raw`\w+\w+`, 'plain-word'],
+  })
+  // Nested repeats can hang the event loop. \w+\w+ backtracks linearly, so it stays.
   assert.deepEqual(saved.patterns, [String.raw`\w+\w+`, 'plain-word'])
 })
 

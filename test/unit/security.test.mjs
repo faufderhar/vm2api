@@ -39,6 +39,24 @@ test('master API key administers the panel only from loopback', async () => {
   assert.equal(masterMayAdminister({ apiKeyKind: 'master', panelRole: 'admin' }), true)
   assert.equal(masterMayAdminister({ apiKeyKind: 'master', socket: { remoteAddress: '127.0.0.1' } }), true)
   assert.equal(masterMayAdminister({ apiKeyKind: 'master', socket: { remoteAddress: '203.0.113.8' } }), false)
+  const proxied = {
+    apiKeyKind: 'master',
+    socket: { remoteAddress: '127.0.0.1' },
+    headers: { 'x-forwarded-for': '203.0.113.8' },
+  }
+  assert.equal(masterMayAdminister(proxied, {}), false)
+  assert.equal(masterMayAdminister(proxied, { TRUST_PROXY: '1' }), false)
+  assert.equal(
+    masterMayAdminister(
+      {
+        apiKeyKind: 'master',
+        socket: { remoteAddress: '127.0.0.1' },
+        headers: { 'x-forwarded-for': '203.0.113.8, 127.0.0.1' },
+      },
+      { TRUST_PROXY: '1' },
+    ),
+    true,
+  )
 })
 
 test('disabled or role-changed panel sessions are rejected and login limits are per account', async () => {
@@ -57,8 +75,55 @@ test('disabled or role-changed panel sessions are rejected and login limits are 
     headers: { 'x-forwarded-for': '10.0.0.8' },
   }
   assert.equal(loginRateLimited(limiter, shared, 'alice', {}), false)
-  assert.equal(loginRateLimited(limiter, shared, 'bob', {}), false)
+  assert.equal(loginRateLimited(limiter, shared, 'bob', {}), true)
   assert.equal(loginRateLimited(limiter, shared, 'alice', {}), true)
+})
+
+test('login limits ignore a client-supplied forwarded address unless the proxy is trusted', async () => {
+  const { loginRateLimited, createAttemptLimiter } = await import(
+    `../../src/lib/core/security.mjs?forwarded=${Date.now()}`
+  )
+  const limiter = createAttemptLimiter({ limit: 1, windowMs: 60_000 })
+  const alice = {
+    socket: { remoteAddress: '127.0.0.1' },
+    headers: { 'x-forwarded-for': '203.0.113.8, 198.51.100.2' },
+  }
+  const bob = {
+    socket: { remoteAddress: '127.0.0.1' },
+    headers: { 'x-forwarded-for': '203.0.113.9, 198.51.100.3' },
+  }
+  assert.equal(loginRateLimited(limiter, alice, 'alice', { TRUST_PROXY: '1' }), false)
+  assert.equal(loginRateLimited(limiter, bob, 'bob', { TRUST_PROXY: '1' }), false)
+  assert.equal(loginRateLimited(limiter, alice, 'alice', { TRUST_PROXY: '1' }), true)
+})
+
+test('a full login limiter does not forget a live account when new names arrive', async () => {
+  const { createAttemptLimiter } = await import(`../../src/lib/core/security.mjs?evict=${Date.now()}`)
+  const limiter = createAttemptLimiter({ limit: 1, windowMs: 60_000, maxKeys: 2 })
+  assert.equal(limiter('user:admin'), false)
+  assert.equal(limiter('user:admin'), true)
+  assert.equal(limiter('user:other'), false)
+  assert.equal(limiter('user:another'), true)
+  assert.equal(limiter('user:admin'), true)
+})
+
+test('a missing user row only keeps the env admin session', async () => {
+  const previousUser = process.env.VM2API_ADMIN_USER
+  const previousPassword = process.env.VM2API_ADMIN_PASSWORD
+  process.env.VM2API_ADMIN_USER = 'root-admin'
+  process.env.VM2API_ADMIN_PASSWORD = 'not-the-default'
+  try {
+    const { panelSessionAccess } = await import(`../../src/lib/core/security.mjs?missing-user=${Date.now()}`)
+    assert.equal(panelSessionAccess({ user: 'root-admin', role: 'user' }, null).role, 'admin')
+    assert.equal(panelSessionAccess({ user: 'gone', role: 'admin' }, null).reason, 'user_missing')
+    process.env.VM2API_ADMIN_PASSWORD = ''
+    assert.equal(panelSessionAccess({ user: 'root-admin', role: 'admin' }, null).reason, 'user_missing')
+  } finally {
+    if (previousUser == null) delete process.env.VM2API_ADMIN_USER
+    else process.env.VM2API_ADMIN_USER = previousUser
+    if (previousPassword == null) delete process.env.VM2API_ADMIN_PASSWORD
+    else process.env.VM2API_ADMIN_PASSWORD = previousPassword
+  }
 })
 
 test('panel session persistence stores only token hashes', async () => {
