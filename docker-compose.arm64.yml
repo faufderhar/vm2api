@@ -17,6 +17,7 @@ services:
       # Keep native runtime helpers out of the repository's amd64 bin/ assets.
       - ./.local/arm64/vms:/opt/vm2api/vms
       - ./.local/arm64/data:/opt/vm2api/data
+      - ./.local/arm64/secrets:/opt/vm2api/secrets
       - ./.local/arm64/bin:/opt/vm2api/bin
       - ./.local/arm64/share:/opt/vm2api/share
       - ./.local/arm64/config:/opt/vm2api/src/config
