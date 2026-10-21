@@ -21,8 +21,8 @@ describe('setup-token import defaults', () => {
 
   it('offers Cookie and auth-link for setup-token, not Claude Code', () => {
     expect(importMethodsFor('setup-token').map((m) => m.id)).toEqual([
-      'session',
       'link',
+      'session',
     ])
     expect(resolveImportMethod('setup-token', 'cc')).toBe('session')
     expect(resolveImportMethod('setup-token', 'link')).toBe('link')
@@ -30,9 +30,9 @@ describe('setup-token import defaults', () => {
 
   it('keeps OAuth Cookie / link / Claude Code as a secondary kind', () => {
     expect(importMethodsFor('oauth').map((m) => m.id)).toEqual([
-      'session',
-      'link',
       'cc',
+      'link',
+      'session',
     ])
     expect(importTypeFor('oauth')).toBe('')
     expect(oauthFlavorFor('oauth', 'cc')).toBe('claude_code')

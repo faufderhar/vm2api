@@ -53,6 +53,9 @@ import { isClaudeVm, isCodexVm, isGrokVm } from '../vm/vm-kind.mjs'
 import { syncCodexQuotaSchedule } from '../vm/vm-registry.mjs'
 import { wakeOpenAIWaiter } from '../pool/openai-account-runtime.mjs'
 import { normalizeVmConfig } from '../vm/machine-spec.mjs'
+import { syncWorkerTelemetry } from '../vm/vm-runtime.mjs'
+import { slotHost } from '../vm/slot-host.mjs'
+import { telemetryUploadInterval } from '../vm/worker-telemetry.mjs'
 
 export function createRoutingRuntime(ctx) {
   const getRouting = () => (typeof ctx.getRoutingConfig === 'function' ? ctx.getRoutingConfig() : ctx.routingConfig)
@@ -466,6 +469,28 @@ export function createRoutingRuntime(ctx) {
     return queued
   }
 
+  // The sidecar re-reads worker.json on mtime change, so a rewrite applies without a restart.
+  // Node slots read a pushed copy; that push is queued and only logged on failure.
+  function syncTelemetryUploadInterval(routingConfig) {
+    const project = ctx.cfg.paths.project
+    const applied = { updated: 0, queued: 0, skipped: 0, failed: [] }
+    for (const { id } of listVms(project)) {
+      const vm = getVm(project, id)
+      if (!vm || isCodexVm(vm)) continue
+      try {
+        if (!syncWorkerTelemetry(vm, project, routingConfig).wrote) {
+          applied.skipped += 1
+          continue
+        }
+        if (slotHost(vm).queueSyncRun(vm, path.join(project, 'vms', vm.id))) applied.queued += 1
+        else applied.updated += 1
+      } catch {
+        applied.failed.push(vm.id)
+      }
+    }
+    return applied
+  }
+
   function persistRoutingPatch(body = {}) {
     const hasCodexQuota = body?.codex && Object.prototype.hasOwnProperty.call(body.codex, 'quota')
     const hasGrokQuota = body?.grok && Object.prototype.hasOwnProperty.call(body.grok, 'quota')
@@ -480,6 +505,7 @@ export function createRoutingRuntime(ctx) {
     const prevTiers = routingConfig.tiers
     const prevIdleMs = streamIdleTimeoutMs(routingConfig)
     const prevRequestBytes = maxRequestBytes(routingConfig)
+    const prevUploadInterval = telemetryUploadInterval(routingConfig)
     setRouting(routingConfig)
     if (body.sticky) routingConfig.sticky = { ...(routingConfig.sticky || {}), ...body.sticky }
     if (body.quota) routingConfig.quota = { ...(routingConfig.quota || {}), ...body.quota }
@@ -498,6 +524,8 @@ export function createRoutingRuntime(ctx) {
     const nextSessionSlots = normalizeSessionSlots(routingConfig.inference?.session_slots)
     if (body.compatibility) {
       routingConfig.compatibility = { ...(routingConfig.compatibility || {}), ...body.compatibility }
+      delete routingConfig.compatibility.persona_rules
+      delete routingConfig.compatibility.persona_leak_append
       if (
         Object.prototype.hasOwnProperty.call(body.compatibility, 'cch_enabled') ||
         routingConfig.compatibility.cch_enabled == null
@@ -540,6 +568,12 @@ export function createRoutingRuntime(ctx) {
       }
       routingConfig.vm = normalizeVmConfig(next)
     }
+    if (body.telemetry && Object.hasOwn(body.telemetry, 'upload_interval_seconds')) {
+      routingConfig.telemetry = {
+        ...(routingConfig.telemetry || {}),
+        upload_interval_seconds: telemetryUploadInterval({ telemetry: body.telemetry }),
+      }
+    }
     applyOfficialCcRoutingBody(body, prevOfficialCc)
     applyHealthProbeRoutingBody(body, prevHealthProbe)
     applyUsageProbeRoutingBody(body, prevUsageProbe)
@@ -577,6 +611,8 @@ export function createRoutingRuntime(ctx) {
         : null
     // Stream idle / body-limit still need an idle restart; CCH and sticky-slot TTL hot-read kernel.json.
     const kernelReload = idleChanged || requestBytesChanged ? reloadClaudeKernelsWhenIdle(routingConfig) : 0
+    const telemetrySync =
+      telemetryUploadInterval(routingConfig) !== prevUploadInterval ? syncTelemetryUploadInterval(routingConfig) : null
     // Pool and failover settings hot-reload into the live scheduler and runner.
     // Rebuilding them would drop the seat book and queues while their requests
     // still run (the panel sends `failover` with every routing save).
@@ -598,6 +634,7 @@ export function createRoutingRuntime(ctx) {
           : { concurrency: 0, rpm: 0, sessions: 0, skipped: 0 },
         kernel_persona: kernelPersona,
         kernel_reload: kernelReload,
+        telemetry_sync: telemetrySync,
       }
     } catch (err) {
       console.error(
@@ -611,6 +648,7 @@ export function createRoutingRuntime(ctx) {
         rpm: { skipped: 0 },
         kernel_persona: kernelPersona,
         kernel_reload: kernelReload,
+        telemetry_sync: telemetrySync,
       }
     }
   }

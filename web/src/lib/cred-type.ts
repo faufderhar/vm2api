@@ -124,12 +124,13 @@ export function importMethodsFor(
   kind: ImportKind
 ): { id: ImportMethod; label: string }[] {
   if (kind === 'apikey') return []
-  const cookieAndLink: { id: ImportMethod; label: string }[] = [
-    { id: 'session', label: 'Cookie' },
+  const methods: { id: ImportMethod; label: string }[] = [
+    { id: 'cc', label: 'Claude Code' },
     { id: 'link', label: '授权链接' },
+    { id: 'session', label: 'Cookie' },
   ]
-  if (kind === 'setup-token') return cookieAndLink
-  return [...cookieAndLink, { id: 'cc', label: 'Claude Code' }]
+  if (kind === 'setup-token') return methods.filter((item) => item.id !== 'cc')
+  return methods
 }
 
 export function defaultImportKind(): ImportKind {

@@ -21,6 +21,8 @@ import { normalizeVmConfig, slotMemory } from '../vm/machine-spec.mjs'
 import { runtimeKind } from '../vm/runtime-kind.mjs'
 import { buildImage, dockerInfo, ensureImage, imagePresent, sshDocker } from './docker-remote.mjs'
 import { runRemote, shellQuote } from './remote-fs.mjs'
+import { describeNativePayload } from './native-payload.mjs'
+import { LAUNCHD_GUI_REQUIRED } from './native-slot.mjs'
 import { slotBuildContext, slotImageAction, slotImageSpec } from './slot-image.mjs'
 import { ClusterError } from './ssh-link.mjs'
 
@@ -35,6 +37,10 @@ export function bindPlacement({ manager, projectRoot, getRouting }) {
 
 export function unbindPlacement() {
   bound = null
+}
+
+export function placementProjectRoot() {
+  return bound?.projectRoot || ''
 }
 
 export function vmNodeId(vm) {
@@ -53,6 +59,29 @@ export function vmNodeId(vm) {
  * kernel still dials through that node's SOCKS exit, not the control plane's own route.
  */
 export const SLOT_CAPS_NODE = new Set(['codex', 'grok'])
+
+/** 'linux' | 'darwin'; Linux when no cluster is bound (tests, local-only installs). */
+export function nodePlatform(nodeId) {
+  if (!bound || !nodeId) return 'linux'
+  return bound.manager.nodePlatform?.(nodeId) === 'darwin' ? 'darwin' : 'linux'
+}
+
+/** A slot on a macOS node runs as launchd services instead of a container. */
+export function isNativeNodeVm(vm) {
+  const nodeId = vmNodeId(vm)
+  return !!nodeId && nodePlatform(nodeId) === 'darwin'
+}
+
+/**
+ * False while the slot's node has no live SSH link (offline, asleep, rebooting):
+ * nothing can reach the slot, so the scheduler must not pick it. Local slots and
+ * an unbound cluster are always reachable as far as placement can tell.
+ */
+export function vmNodeReady(vm) {
+  const nodeId = vmNodeId(vm)
+  if (!nodeId || !bound) return true
+  return bound.manager.linkReady?.(nodeId) !== false
+}
 
 function state() {
   if (!bound) throw new ClusterError(503, 'cluster_unavailable', '集群未初始化')
@@ -245,6 +274,13 @@ export async function preflightNode(nodeId, { kernel, runtime } = {}) {
     add('ssh', false, 'error', err.message)
     return result()
   }
+  if (nodePlatform(nodeId) === 'darwin') {
+    // No slot image on a Mac: the darwin payload is pushed at start (payload check below).
+    image.ref = null
+    image.present = true
+    await preflightDarwin({ manager, nodeId, client, projectRoot, kind, add })
+    return result()
+  }
   const docker = sshDocker(client)
   let info = null
   try {
@@ -330,4 +366,99 @@ export async function preflightNode(nodeId, { kernel, runtime } = {}) {
     }
   }
   return result()
+}
+
+const DARWIN_SLOT_CHECKS = [
+  'echo "arch $(uname -m)"',
+  'echo "macos $(sw_vers -productVersion 2>/dev/null)"',
+  'u=$(id -u); if launchctl print "gui/$u" >/dev/null 2>&1; then echo "domain gui/$u"; else echo "domain none"; fi',
+  'echo "mem $(sysctl -n hw.memsize)"',
+  // pmset prints `sleep  0` when system sleep is off; a sleeping Mac drops its SSH link and every slot on it.
+  `echo "sleep $(pmset -g 2>/dev/null | awk '$1=="sleep"{print $2; exit}')"`,
+].join('\n')
+
+/** macOS node: no Docker or image; the launchd domain, payload and sleep policy decide instead. */
+async function preflightDarwin({ manager, nodeId, client, projectRoot, kind, add }) {
+  if (kind === 'kvm') add('runtime', false, 'error', 'macOS 原生节点不运行 KVM 槽位')
+  let facts = {}
+  try {
+    const out = await runRemote(client, DARWIN_SLOT_CHECKS, { timeoutMs: 15_000 })
+    for (const line of out.split('\n')) {
+      const at = line.indexOf(' ')
+      if (at > 0) facts[line.slice(0, at)] = line.slice(at + 1).trim()
+    }
+  } catch (err) {
+    add('macos', false, 'error', `读取 macOS 信息失败：${err.message}`)
+    facts = {}
+  }
+  if (facts.arch) {
+    add('arch', facts.arch === 'arm64', 'error', `架构 ${facts.arch}（macOS 原生槽位只支持 Apple Silicon）`)
+  }
+  if (facts.domain) {
+    add(
+      'launchd',
+      facts.domain !== 'none',
+      'error',
+      facts.domain !== 'none'
+        ? `launchd 域 ${facts.domain}${facts.macos ? `（macOS ${facts.macos}）` : ''}`
+        : LAUNCHD_GUI_REQUIRED,
+    )
+  }
+  if (facts.mem) {
+    const memStr = slotMemory(null, placementRouting())
+    const total = Number(facts.mem) || 0
+    add(
+      'memory',
+      total >= parseMemoryBytes(memStr),
+      'warn',
+      `内存 ${gib(total)}，单槽建议 ${memStr}（launchd 不限制内存）`,
+    )
+  }
+  if (facts.sleep !== undefined) {
+    const off = facts.sleep === '0'
+    add(
+      'sleep',
+      off,
+      'warn',
+      off ? '系统不会自动休眠' : '系统会自动休眠：休眠期间节点离线、槽位不接请求（建议 sudo pmset -a sleep 0）',
+    )
+  }
+  let host = null
+  try {
+    host = await manager.remoteHost(nodeId)
+    const vmsDir = `${host.root}/vms`
+    const root = shellQuote(host.root)
+    const vms = shellQuote(vmsDir)
+    await runRemote(client, `umask 077 && mkdir -p ${vms} && chmod 700 ${root} ${vms} && test -w ${vms}`, {
+      timeoutMs: 15_000,
+    })
+    add('hostd', true, 'error', `槽位目录 ${vmsDir}`)
+    // Longest slot id the panel generates is short; leave room for 32 characters.
+    const sock = `${vmsDir}/${'x'.repeat(32)}/run/kernel.sock`
+    add(
+      'socket_path',
+      Buffer.byteLength(sock) <= 103,
+      'error',
+      `套接字路径长度 ${Buffer.byteLength(sock)} 字节（macOS 上限 103）`,
+    )
+  } catch (err) {
+    add('hostd', false, 'error', `槽位目录不可写：${err.message}`)
+  }
+  if (host) {
+    try {
+      const out = await runRemote(client, `df -Pk ${shellQuote(host.root)} | awk 'NR==2{print $4}'`, {
+        timeoutMs: 15_000,
+      })
+      const free = Number(out.trim())
+      add('disk', free >= MIN_DISK_KB, 'warn', `可用磁盘 ${gib(free * 1024)}`)
+    } catch (err) {
+      add('disk', false, 'warn', `无法读取磁盘：${err.message}`)
+    }
+  }
+  try {
+    const payload = describeNativePayload(projectRoot)
+    add('payload', true, 'error', `darwin/arm64 产物 ${payload.digest}`)
+  } catch (err) {
+    add('payload', false, 'error', err.message)
+  }
 }

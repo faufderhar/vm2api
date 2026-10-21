@@ -208,6 +208,7 @@ export function toUsageLogRow(row, names, chain = []) {
     speed: row.speed ?? null,
     context1mApplied: row.long_context == null ? null : row.long_context === 1,
     reasoningEffort: row.reasoning_effort ?? null,
+    inboundDeviceId: row.inbound_device_id ?? null,
     errorClass: row.error_class ?? null,
     errorLabel: row.error_label ?? null,
     errorOwner: row.error_owner ?? null,

@@ -98,6 +98,14 @@ export function DockerTab({ node }: { node: ClusterApiNode }) {
     onError: (err) => toast.error(err.message),
   })
 
+  if (node.platform === 'darwin') {
+    return (
+      <p className='text-sm text-muted-foreground'>
+        macOS 原生节点不使用 Docker：槽位以 SSH 用户的 launchd 服务运行。
+      </p>
+    )
+  }
+
   if (!ready) {
     return (
       <p className='text-sm text-muted-foreground'>

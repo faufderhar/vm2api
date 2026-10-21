@@ -78,12 +78,17 @@ export function mergeNodeEdit(node, secrets, patch) {
   return next
 }
 
+/** `uname -s` → stored platform. Anything that is not macOS keeps the Linux (Docker) runtime. */
+export function nodePlatformOf(kernel) {
+  return String(kernel || '').trim() === 'Darwin' ? 'darwin' : 'linux'
+}
+
 /** Read only: unlike health/placement initialization this never creates directories or changes network policy. */
 export async function readNodeHost(client) {
   const script =
-    'id -u; id -g; printf "%s\\n" "$HOME"; if sudo -n true 2>/dev/null; then echo sudo; else echo nosudo; fi'
+    'id -u; id -g; printf "%s\\n" "$HOME"; if sudo -n true 2>/dev/null; then echo sudo; else echo nosudo; fi; uname -s'
   const r = await execCollect(client, `sh -c ${shellQuote(script)}`, { timeoutMs: 15_000 })
-  const [uid, gid, home, sudo] = r.stdout.split('\n').map((s) => s.trim())
+  const [uid, gid, home, sudo, kernel] = r.stdout.split('\n').map((s) => s.trim())
   if (r.code !== 0 || !/^\d+$/.test(uid) || !/^\d+$/.test(gid) || !home.startsWith('/')) {
     throw new ClusterError(502, 'remote_host_unknown', '读取节点用户信息失败')
   }
@@ -93,6 +98,7 @@ export async function readNodeHost(client) {
     home,
     root: `${home.replace(/\/+$/, '')}/.vm2api`,
     sudo: sudo === 'sudo',
+    platform: nodePlatformOf(kernel),
   }
 }
 
@@ -110,10 +116,23 @@ function mountMatches(info, source, destination) {
 
 /** Existing containers and their bind roots must still belong to this node, including stopped slots. */
 export async function verifyNodeRuntimes(client, host, vms, previousHost) {
-  if (previousHost && ['root', 'uid', 'gid'].some((key) => host[key] !== previousHost[key])) throw runtimeMismatch()
+  if (previousHost && ['root', 'uid', 'gid', 'platform'].some((key) => host[key] !== previousHost[key]))
+    throw runtimeMismatch()
   for (const vm of vms) {
     const runtime = vm.runtime || {}
     const container = runtime.container_id || runtime.container
+    if (host.platform === 'darwin') {
+      // launchd services carry no labels or mounts; the slot tree under the same root is the runtime.
+      if (!runtime.remote_dir) continue
+      if (runtime.remote_dir !== `${host.root}/vms/${vm.id}`) throw runtimeMismatch()
+      const check = await execCollect(
+        client,
+        `test -d ${shellQuote(`${runtime.remote_dir}/run`)} && test -d ${shellQuote(`${runtime.remote_dir}/cli-home`)}`,
+        { timeoutMs: 10_000 },
+      )
+      if (check.code !== 0) throw runtimeMismatch()
+      continue
+    }
     // A never-started empty slot has no node-side runtime to move or verify.
     if (!container) continue
     const info = await inspectContainerOrNull(sshDocker(client), container)

@@ -97,6 +97,8 @@ export type UsageLogRow = {
   sessionId: string | null
   /** 客户端请求带来的会话：Claude Code `metadata.user_id` / `x-claude-code-session-id` 等。 */
   clientSessionId: string | null
+  /** 入站剥离前的客户端 device id。 */
+  inboundDeviceId: string | null
   /** 最终服务的账号展示名（`final_account_id` 优先）。 */
   providerName: string | null
   accountId: string | null

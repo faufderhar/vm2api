@@ -133,7 +133,9 @@ function NodeEditForm({
     !!probe &&
     requests.current.accepts(probe.request) &&
     probe.result.dependent_count === 0 &&
-    (probe.result.vm_count === 0 || probe.result.docker.ok)
+    (probe.result.vm_count === 0 ||
+      probe.result.docker.ok ||
+      probe.result.platform === 'darwin')
   const usernameLocked = vmCount !== 0
 
   function invalidate() {
@@ -405,10 +407,13 @@ function NodeEditForm({
             {probe.result.host_key.alg} {probe.result.host_key.sha256}
           </p>
           <p>
-            Docker：
-            {probe.result.docker.ok
-              ? '可用'
-              : `不可用（${probe.result.docker.error || '未响应'}），当前没有槽位，仍可保存。`}
+            {probe.result.platform === 'darwin'
+              ? 'macOS 原生节点，不使用 Docker。'
+              : `Docker：${
+                  probe.result.docker.ok
+                    ? '可用'
+                    : `不可用（${probe.result.docker.error || '未响应'}），当前没有槽位，仍可保存。`
+                }`}
           </p>
         </div>
       ) : null}

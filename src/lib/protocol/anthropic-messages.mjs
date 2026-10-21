@@ -11,7 +11,7 @@ import {
 } from './sanitize.mjs'
 import { sanitizeAnthropicTools } from './web-search.mjs'
 
-export function officialMessagesBody(body = {}, { stream = undefined } = {}) {
+export function officialMessagesBody(body = {}, { stream = undefined, preserveContentShape = false } = {}) {
   const out = copyOfficialAnthropicFields(body)
   applyStructuredOutput(out, body)
   normalizeAnthropicMessages(out)
@@ -26,7 +26,7 @@ export function officialMessagesBody(body = {}, { stream = undefined } = {}) {
     out.stop_sequences = Array.isArray(out.stop) ? out.stop : [out.stop]
     delete out.stop
   }
-  return canonicalizeClaudeMessagesShape(out)
+  return canonicalizeClaudeMessagesShape(out, { preserveContentShape })
 }
 
 const DISABLED = {

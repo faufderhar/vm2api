@@ -45,6 +45,13 @@ describe('pct', () => {
   it('treats 0-1 utilization as a fraction', () => {
     expect(pct(0.12)).toBe(12)
   })
+
+  it('scales utilization ratios above 1 (Claude headers)', () => {
+    expect(pct(0.99)).toBe(99)
+    expect(pct(1)).toBe(100)
+    expect(pct(1.01)).toBe(101)
+    expect(pct(1.04)).toBe(104)
+  })
 })
 
 describe('fmtTok', () => {

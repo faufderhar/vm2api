@@ -22,6 +22,12 @@ export const PREFLIGHT_CHECK_LABEL: Record<PreflightCheckId, string> = {
   hostd: 'hostd',
   relay: '中继',
   kvm: 'KVM',
+  runtime: '运行方式',
+  macos: 'macOS',
+  launchd: 'launchd',
+  sleep: '休眠',
+  socket_path: '套接字',
+  payload: '产物',
 }
 
 export type PreflightMark = 'ok' | 'fail' | 'warn'

@@ -4,10 +4,10 @@ export function pct(value: unknown): number {
   if (!Number.isFinite(n)) return 0
   if (n < 0) return 0
   if (n > 100) return 100
-  // Extra / Codex utilization is 0–1. Leftover official Settings numbers are 0–100.
-  // `1` is 100% used on the 0–1 contract (and 1% on raw Settings). Panel GPT
-  // windows should use usedPctOf() so `used_percent=1` stays 1%.
-  return n > 1 ? n : n * 100
+  // Extra utilization is 0–1+ (1.04 → 104%). Leftover Settings percents are whole 2–100.
+  // `1` is 100% on the ratio contract. Codex `used_percent` goes through usedPctOf().
+  const leftoverSettingsPct = n > 1 && n <= 100 && Number.isInteger(n)
+  return leftoverSettingsPct ? n : n * 100
 }
 
 export function usedPctOf(

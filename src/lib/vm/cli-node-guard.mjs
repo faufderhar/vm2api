@@ -86,7 +86,10 @@ export function createCliNodeGuard({
       const vms = (listTargets?.() || []).filter(isCliNodeGuardTarget)
       for (const vm of vms) {
         try {
-          const connect = slotHost(vm).dockerApi()
+          const host = slotHost(vm)
+          // The guard script walks /proc inside a Linux slot; a macOS node has neither.
+          if (host.native) continue
+          const connect = host.dockerApi()
           const container = slotContainerName({ vm })
           const { Cmd, User } = slotExecCmd(vm, ['/bin/sh', '-c', GUARD_SCRIPT, 'guard', ...tokens], {
             detach: true,

@@ -7,14 +7,18 @@ export const OFFICIAL_IDENTITY_SOURCE = 'official-cc-init'
 
 const STALE_FP_KEYS = Object.freeze(['machineID', 'userID', 'machineId', 'userId'])
 
+// Current CLI writes only userID; older inits also wrote machineID. Prefer a doc carrying both.
 function readClaudeIdentityDocument(homeDir) {
+  let userOnly = null
   for (const file of [path.join(homeDir, '.claude.json'), path.join(homeDir, '.claude', '.claude.json')]) {
     try {
       const doc = JSON.parse(fs.readFileSync(file, 'utf8'))
-      if (doc?.machineID && doc?.userID) return doc
+      if (!doc?.userID) continue
+      if (doc.machineID) return doc
+      userOnly ??= doc
     } catch {}
   }
-  return {}
+  return userOnly || {}
 }
 
 export function readOfficialCcIdentity(homeDir) {

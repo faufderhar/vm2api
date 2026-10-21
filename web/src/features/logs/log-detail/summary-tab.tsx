@@ -299,6 +299,7 @@ export function SummaryTab({
 
       {row.sessionId ||
       row.clientSessionId ||
+      row.inboundDeviceId ||
       row.reasoningEffort ||
       row.requestId ? (
         <div className='space-y-2'>
@@ -330,6 +331,16 @@ export function SummaryTab({
                 >
                   {row.clientSessionId}
                 </Link>
+              </div>
+            ) : null}
+            {row.inboundDeviceId ? (
+              <div className='flex items-center gap-2 p-4'>
+                <span className='shrink-0 text-xs text-muted-foreground'>
+                  Device ID
+                </span>
+                <span className='min-w-0 truncate font-mono text-xs'>
+                  {row.inboundDeviceId}
+                </span>
               </div>
             ) : null}
             {row.requestId ? (

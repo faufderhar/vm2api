@@ -120,6 +120,7 @@ const SUMMARY_COLUMNS = [
   'session_id',
   'outbound_session_id',
   'reasoning_effort',
+  'inbound_device_id',
   'intercept',
   'vm_owner_user_id',
 ]

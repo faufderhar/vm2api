@@ -1,8 +1,16 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from 'react'
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 import { api } from '@/lib/api'
+import { captureLoginAuthUrl } from '@/lib/login-terminal'
 import { apiBase } from '@/lib/session'
 import {
   eraseEcho,
@@ -46,21 +54,33 @@ function withBuiltins(own: SlashCommand[]): SlashCommand[] {
  * 不能在 WebSocket 握手上带 Authorization，所以每次连接先用面板会话换一张
  * 30s 一次性 ticket。传入 `commands` 时启用 `/` 快捷指令与按钮栏。
  */
-export function WsTerminal({
-  ticketPath,
-  socketPath,
-  commands,
-  startupCommand,
-  officialLogin,
-}: {
-  ticketPath: string
-  socketPath: string
-  commands?: SlashCommand[]
-  /** Sent once after the socket opens. The shell executes it; paste stays in the terminal. */
-  startupCommand?: string
-  /** Official login: the slot shell runs `claude auth login` after its prompt exists. */
-  officialLogin?: boolean
-}) {
+export type LoginTerminalHandle = {
+  paste: (text: string) => void
+}
+
+export const WsTerminal = forwardRef<
+  LoginTerminalHandle,
+  {
+    ticketPath: string
+    socketPath: string
+    commands?: SlashCommand[]
+    startupCommand?: string
+    officialLogin?: boolean
+    onLogin?: () => void
+    onAuthUrl?: (url: string) => void
+  }
+>(function WsTerminal(
+  {
+    ticketPath,
+    socketPath,
+    commands,
+    startupCommand,
+    officialLogin,
+    onLogin,
+    onAuthUrl,
+  },
+  ref
+) {
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const sendRef = useRef<(data: string) => void>(() => {})
@@ -119,6 +139,19 @@ export function WsTerminal({
     if (shellLineEmpty) sendRef.current('\r')
   }, [])
 
+  const onLoginRef = useRef(onLogin)
+  onLoginRef.current = onLogin
+  const onAuthUrlRef = useRef(onAuthUrl)
+  onAuthUrlRef.current = onAuthUrl
+  const seenUrl = useRef('')
+  const urlTail = useRef('')
+  const captureUrl = (raw: string) => {
+    const found = captureLoginAuthUrl(urlTail.current, raw)
+    urlTail.current = found.pending
+    if (!found.url || found.url === seenUrl.current) return
+    seenUrl.current = found.url
+    onAuthUrlRef.current?.(found.url)
+  }
   useEffect(() => {
     const host = hostRef.current
     if (!host) return
@@ -129,6 +162,39 @@ export function WsTerminal({
         'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
       scrollback: 5000,
       theme: { background: '#0b0d10' },
+      windowOptions: { getWinSizeChars: true, getCellSizePixels: true },
+    })
+    term.parser.registerOscHandler(52, (data) => {
+      const payload = data.split(';').pop() || ''
+      if (!payload || payload === '?') return true
+      try {
+        const text = atob(payload)
+        captureUrl(text)
+        void navigator.clipboard?.writeText(text).catch(() => {})
+      } catch {
+        /* CLI copy is best-effort; the URL stays selectable. */
+      }
+      return true
+    })
+    term.attachCustomKeyEventHandler((event) => {
+      if (
+        event.type !== 'keydown' ||
+        !(event.ctrlKey || event.metaKey) ||
+        event.altKey ||
+        event.key.toLowerCase() !== 'v'
+      ) {
+        return true
+      }
+      const selected = term.getSelection()
+      if (!selected) return false
+      event.preventDefault()
+      void navigator.clipboard
+        ?.readText()
+        .then((text) => {
+          if (text && termRef.current === term) term.paste(text)
+        })
+        .catch(() => {})
+      return false
     })
     const fit = new FitAddon()
     term.loadAddon(fit)
@@ -189,7 +255,9 @@ export function WsTerminal({
         }
         ws.onmessage = (e) => {
           if (typeof e.data !== 'string') {
-            term.write(new Uint8Array(e.data as ArrayBuffer))
+            const bytes = new Uint8Array(e.data as ArrayBuffer)
+            term.write(bytes)
+            captureUrl(new TextDecoder().decode(bytes))
             return
           }
           const msg = JSON.parse(e.data) as {
@@ -198,6 +266,7 @@ export function WsTerminal({
             message?: string
           }
           if (msg.t === 'exit') setNote(`会话退出（code ${msg.code ?? '—'}）`)
+          if (msg.t === 'login') onLoginRef.current?.()
           if (msg.t === 'error') setNote(msg.message || '终端错误')
         }
         ws.onclose = () => {
@@ -222,6 +291,18 @@ export function WsTerminal({
     }
   }, [ticketPath, socketPath, session, execute, startupCommand, officialLogin])
 
+  useImperativeHandle(
+    ref,
+    () => ({
+      paste(text) {
+        const value = String(text || '')
+        if (!value || !termRef.current) return
+        termRef.current.paste(value.endsWith('\n') ? value : `${value}\n`)
+        termRef.current.focus()
+      },
+    }),
+    []
+  )
   return (
     <div className='flex h-full min-h-0 flex-col gap-2'>
       <div className='flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground'>
@@ -267,4 +348,4 @@ export function WsTerminal({
       />
     </div>
   )
-}
+})

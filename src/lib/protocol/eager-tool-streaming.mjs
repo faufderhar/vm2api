@@ -1,16 +1,13 @@
 /**
- * routing failover.eager_tool_streaming (default on): mark every custom tool
- * eager_input_streaming, the shape official Claude Code sends when its
- * fine-grained tool streaming is on. Without it upstream buffers a whole Write
- * content and stays silent for minutes, which trips the stream idle limit.
- * Official Claude Code only enables it on a first-party base URL, so relayed
- * clients never send it. Explicit false disables; a caller's own boolean wins;
+ * routing failover.eager_tool_streaming (default off): mark custom tools
+ * eager_input_streaming only when the panel turns it on. Official Claude Code
+ * omits the field. Explicit false stays off; a caller's own boolean wins;
  * server tools are left alone.
  */
 import { isAnthropicServerTool, isWebSearchTool } from './web-search.mjs'
 
 export function eagerToolStreamingEnabled(routing) {
-  return routing?.failover?.eager_tool_streaming !== false
+  return routing?.failover?.eager_tool_streaming === true
 }
 
 export function callerEagerInputStreaming(tool) {

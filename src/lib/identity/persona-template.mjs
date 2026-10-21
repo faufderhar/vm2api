@@ -56,7 +56,6 @@ export const PERSONA_TEMPLATE_VARS = Object.freeze([
 export const OVERLAY_TEMPLATE_VARS = Object.freeze([
   Object.freeze(['overlay_body', 'body 块拼接结果，只能出现在 wrapper 块']),
   Object.freeze(['standing', 'persona_standing 常驻约束']),
-  Object.freeze(['rules', '命中末轮 user 的 persona_rules append 拼接']),
 ])
 
 const PERSONA_VAR_NAMES = Object.freeze(PERSONA_TEMPLATE_VARS.map(([name]) => name))
@@ -213,13 +212,6 @@ export const DEFAULT_OVERLAY_TEMPLATES = Object.freeze({
       drop_if_empty: true,
       text: '{{standing}}',
     }),
-    Object.freeze({
-      id: 'rules',
-      note: '命中末轮 user 的 persona_rules append',
-      type: 'body',
-      drop_if_empty: true,
-      text: '{{rules}}',
-    }),
   ]),
   minimal: Object.freeze([
     Object.freeze({
@@ -234,13 +226,6 @@ export const DEFAULT_OVERLAY_TEMPLATES = Object.freeze({
       type: 'body',
       drop_if_empty: true,
       text: '{{standing}}',
-    }),
-    Object.freeze({
-      id: 'rules',
-      note: '命中规则 append',
-      type: 'body',
-      drop_if_empty: true,
-      text: '{{rules}}',
     }),
   ]),
   custom: Object.freeze([]),

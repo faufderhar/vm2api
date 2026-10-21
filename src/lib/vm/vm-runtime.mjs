@@ -8,6 +8,7 @@ import { execFileSync } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { slotHost } from './slot-host.mjs'
 import { maxRequestBytes, readRoutingConfigFile, streamIdleTimeoutMs } from '../core/config.mjs'
 import { US_TIMEZONES, validTimezone } from '../core/timezone.mjs'
 import { runtimeKind, isKvmRuntime, RUNTIME_KVM } from './runtime-kind.mjs'
@@ -355,7 +356,7 @@ export function isSlotProxyDesynced(vm, projectRoot) {
 }
 
 /** Write worker.json.telemetry from seed_policy. Does not bounce the process. */
-export function syncWorkerTelemetry(vm, projectRoot) {
+export function syncWorkerTelemetry(vm, projectRoot, routing = null) {
   if (!vm?.id || !projectRoot) return { wrote: false }
   const paths = workerPaths(projectRoot, vm.id)
   if (!fs.existsSync(paths.config)) return { wrote: false }
@@ -366,7 +367,7 @@ export function syncWorkerTelemetry(vm, projectRoot) {
     return { wrote: false }
   }
   if (!doc || typeof doc !== 'object') return { wrote: false }
-  doc.telemetry = buildWorkerTelemetry(vm, projectRoot)
+  doc.telemetry = buildWorkerTelemetry(vm, projectRoot, routing)
   replaceSlotOwnedFile(paths.config, JSON.stringify(doc, null, 2) + '\n', vm)
   return { wrote: true, enabled: doc.telemetry.enabled === true }
 }
@@ -526,10 +527,11 @@ export function writeWorkerFiles(vm, projectRoot, { transparent, routing } = {})
   if (!onEgress && !local && vm.proxy_required !== false && !proxyUrl) throw new Error('slot SOCKS5 proxy is required')
   const testEndpoints = process.env.KIN_WORKER_TEST_ENDPOINTS === '1'
   const resolvedRouting = resolveSlotRouting(projectRoot, routing)
+  const nodePaths = slotHost(vm).slotPaths?.(vm) || null
   const workerConfig = {
     vm_id: vm.id,
-    socket_path: '/run/kin/worker.sock',
-    credential_path: '/home/kincli/.claude/credentials.json',
+    socket_path: nodePaths ? `${nodePaths.run}/worker.sock` : '/run/kin/worker.sock',
+    credential_path: nodePaths ? `${nodePaths.claude}/credentials.json` : '/home/kincli/.claude/credentials.json',
     proxy_url: proxyUrl,
     proxy_required: onEgress || local ? false : vm.proxy_required !== false,
     internal_token: token,

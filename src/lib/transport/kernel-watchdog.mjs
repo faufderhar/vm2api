@@ -34,10 +34,12 @@ export async function observeWatchdogContainer(
 ) {
   let timer
   try {
+    const host = hostFor(vm)
     const name = slotContainerName({ vm })
     if (!name) return { state: 'unknown' }
     const observation = Promise.resolve().then(async () => {
-      const res = await request(hostFor(vm).dockerApi(), {
+      if (typeof host.observe === 'function') return host.observe(vm)
+      const res = await request(host.dockerApi(), {
         path: `/containers/${encodeURIComponent(name)}/json`,
         timeoutMs,
       })

@@ -56,7 +56,8 @@ type TelemetryConfig struct {
 	Identity TelemetryIdentity `json:"identity"`
 	Headers  map[string]string `json:"headers"`
 	// Betas is kept so older worker.json still decodes. Events do not send it.
-	Betas string `json:"betas"`
+	Betas              string `json:"betas"`
+	UploadIntervalSecs int    `json:"upload_interval_seconds"`
 }
 
 type TelemetryIdentity struct {

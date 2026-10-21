@@ -3,10 +3,8 @@ import { Link } from '@tanstack/react-router'
 import { cn } from '@/lib/utils'
 import {
   SETTINGS_NAV_GROUPS,
-  SETTINGS_NAV_UNIQUE_ITEMS,
+  SETTINGS_NAV_ITEMS,
   SETTINGS_TAB_LABELS,
-  firstSettingsNavKey,
-  settingsNavItemKey,
   type SettingsTabId,
 } from '@/features/settings/navigation'
 
@@ -16,7 +14,6 @@ import {
  *
  * 指示条不用第三方动画库：量出激活项相对容器的 offsetTop，
  * transform 过渡到位（motion-safe 下 200ms ease-out-expo）。
- * OpenAI 在调度/槽位两组重复出现时，两处都标 active，指示条锚第一处。
  */
 export function SettingsNav({ active }: { active: SettingsTabId }) {
   const listRef = useRef<HTMLDivElement>(null)
@@ -26,7 +23,6 @@ export function SettingsNav({ active }: { active: SettingsTabId }) {
     y: number
     h: number
   } | null>(null)
-  const indicatorKey = firstSettingsNavKey(active)
 
   useLayoutEffect(() => {
     const list = listRef.current
@@ -35,7 +31,7 @@ export function SettingsNav({ active }: { active: SettingsTabId }) {
     const listBox = list.getBoundingClientRect()
     const itemBox = item.getBoundingClientRect()
     setIndicator({ y: itemBox.top - listBox.top, h: itemBox.height })
-  }, [active, indicatorKey])
+  }, [active])
 
   useEffect(() => {
     activeMobileRef.current?.scrollIntoView({
@@ -70,14 +66,11 @@ export function SettingsNav({ active }: { active: SettingsTabId }) {
               </div>
               <div className='space-y-0.5'>
                 {group.items.map(({ id, icon: Icon }) => {
-                  const itemKey = settingsNavItemKey(group.label, id)
                   const isActive = id === active
                   return (
                     <Link
-                      key={itemKey}
-                      ref={
-                        itemKey === indicatorKey ? activeDesktopRef : undefined
-                      }
+                      key={id}
+                      ref={isActive ? activeDesktopRef : undefined}
                       to='/settings/$tab'
                       params={{ tab: id }}
                       aria-current={isActive ? 'page' : undefined}
@@ -99,12 +92,12 @@ export function SettingsNav({ active }: { active: SettingsTabId }) {
         </div>
       </nav>
 
-      {/* 窄屏：横向滚动 pill 列（重复 tab 只出现一次） */}
+      {/* 窄屏：横向滚动 pill 列 */}
       <nav
         aria-label='设置分区'
         className='-mx-4 no-scrollbar flex gap-1 overflow-x-auto px-4 md:hidden'
       >
-        {SETTINGS_NAV_UNIQUE_ITEMS.map(({ id, icon: Icon }) => {
+        {SETTINGS_NAV_ITEMS.map(({ id, icon: Icon }) => {
           const isActive = id === active
           return (
             <Link

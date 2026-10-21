@@ -186,6 +186,7 @@ import {
   SESSION_SLOT_MIN,
   validateInferenceRoutingPatch,
 } from '../vm/slot-engine.mjs'
+import { validateTelemetryRoutingPatch } from '../vm/worker-telemetry.mjs'
 import { makeError, ErrorType, ErrorCode } from '../core/errors.mjs'
 import * as panel from './panel-api.mjs'
 import { GATEWAY_CAPABILITIES } from '../vm/execution-context.mjs'
@@ -2182,7 +2183,7 @@ export function createPanelHandler(ctx) {
       }
       if (req.method === 'POST' && p === '/api/panel/backups') {
         try {
-          const rec = backupService.createBackup({ kind: 'manual' })
+          const rec = await backupService.createBackup({ kind: 'manual' })
           return json(res, 201, { ok: true, item: rec })
         } catch (e) {
           const status = e.code === 'backup_in_progress' ? 409 : 500
@@ -2237,7 +2238,7 @@ export function createPanelHandler(ctx) {
           })
         }
         try {
-          const out = backupService.restoreBackup(id)
+          const out = await backupService.restoreBackup(id)
           return json(res, 200, { ok: true, ...out })
         } catch (e) {
           const map = {
@@ -5552,7 +5553,11 @@ export function createPanelHandler(ctx) {
             })
           }
         }
-        const personaProblems = [...panel.validatePersonaRoutingPatch(body), ...validateInferenceRoutingPatch(body)]
+        const personaProblems = [
+          ...panel.validatePersonaRoutingPatch(body),
+          ...validateInferenceRoutingPatch(body),
+          ...validateTelemetryRoutingPatch(body),
+        ]
         if (personaProblems.length) {
           return json(res, 400, {
             ok: false,

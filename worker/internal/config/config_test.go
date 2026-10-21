@@ -155,3 +155,33 @@ func TestLoadTelemetryKeepsHardwareEnvAndIdentity(t *testing.T) {
 		t.Fatalf("env=%v", tel.Identity.Env)
 	}
 }
+
+func TestLoadTelemetryUploadIntervalSeconds(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "worker.json")
+	if err := os.WriteFile(path, []byte(`{"telemetry":{"enabled":true,"upload_interval_seconds":120}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tel, err := LoadTelemetry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tel.UploadIntervalSecs != 120 {
+		t.Fatalf("UploadIntervalSecs=%d", tel.UploadIntervalSecs)
+	}
+}
+
+func TestLoadTelemetryMissingUploadIntervalIsZero(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "worker.json")
+	if err := os.WriteFile(path, []byte(`{"telemetry":{"enabled":true}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tel, err := LoadTelemetry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tel.UploadIntervalSecs != 0 {
+		t.Fatalf("UploadIntervalSecs=%d", tel.UploadIntervalSecs)
+	}
+}

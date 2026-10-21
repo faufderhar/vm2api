@@ -277,11 +277,13 @@ export function JoinVpsDialog({
               <div className='text-muted-foreground'>{probe.uname}</div>
             ) : null}
             <div className='text-muted-foreground'>
-              {probe.docker
-                ? probe.docker.ok
-                  ? 'Docker：可用'
-                  : `Docker：不可用（${probe.docker.error}），接入后可在面板安装`
-                : '指纹尚未确认，还没有登录，所以没有检查 Docker。'}
+              {probe.platform === 'darwin'
+                ? 'macOS 原生节点：槽位以 launchd 服务运行，不需要 Docker'
+                : probe.docker
+                  ? probe.docker.ok
+                    ? 'Docker：可用'
+                    : `Docker：不可用（${probe.docker.error}），接入后可在面板安装`
+                  : '指纹尚未确认，还没有登录，所以没有检查 Docker。'}
             </div>
           </div>
         ) : null}

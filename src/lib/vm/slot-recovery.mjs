@@ -93,7 +93,9 @@ function logTail(logs) {
  * A down container carries its last log lines, which usually name the cause.
  */
 export async function inspectSlotContainer(vm) {
-  const connect = slotHost(vm).dockerApi()
+  const host = slotHost(vm)
+  if (typeof host.inspect === 'function') return host.inspect(vm)
+  const connect = host.dockerApi()
   const name = slotExecContainer(vm)
   const info = await inspectContainerOrNull(connect, name)
   if (!info) return { exists: false, running: false }

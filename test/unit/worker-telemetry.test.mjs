@@ -3,7 +3,12 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { buildWorkerTelemetry, touchTelemetrySession } from '../../src/lib/vm/worker-telemetry.mjs'
+import {
+  buildWorkerTelemetry,
+  telemetryUploadInterval,
+  touchTelemetrySession,
+  validateTelemetryRoutingPatch,
+} from '../../src/lib/vm/worker-telemetry.mjs'
 import { syncWorkerTelemetry } from '../../src/lib/vm/vm-runtime.mjs'
 import { slotRuntimeOwner } from '../../src/lib/oauth/oauth-credentials.mjs'
 
@@ -79,6 +84,48 @@ test('machine id alone is not the 64-hex device id', () => {
   fs.rmSync(root, { recursive: true, force: true })
 })
 
+test('current CLI writes only userID into CLAUDE_CONFIG_DIR and the sidecar still enables', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-tel-'))
+  const home = path.join(root, 'vms', 'vm-04', 'cli-home')
+  fs.mkdirSync(path.join(home, '.claude'), { recursive: true })
+  fs.writeFileSync(
+    path.join(home, '.claude', '.claude.json'),
+    JSON.stringify({ userID: USER, oauthAccount: { accountUuid: 'acc-new', organizationUuid: 'org-new' } }),
+  )
+  const out = buildWorkerTelemetry({ id: 'vm-04', seed_policy: { telemetry_disabled: false } }, root)
+  assert.equal(out.enabled, true)
+  assert.equal(out.identity.user_id, USER)
+  assert.equal(out.identity.account_uuid, 'acc-new')
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('slot record official_user_id is the fallback when the CLI config is gone', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-tel-'))
+  fs.mkdirSync(path.join(root, 'vms', 'vm-05', 'cli-home', '.claude'), { recursive: true })
+  const out = buildWorkerTelemetry(
+    {
+      id: 'vm-05',
+      seed_policy: { telemetry_disabled: false },
+      fingerprint: { official_user_id: USER, identity_source: 'official-cc-init' },
+    },
+    root,
+  )
+  assert.equal(out.enabled, true)
+  assert.equal(out.identity.user_id, USER)
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('GPT slots never run the Claude sidecar even with a CLI userID on disk', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-tel-'))
+  writeOfficialHome(root, 'vm-codex-02')
+  const out = buildWorkerTelemetry(
+    { id: 'vm-codex-02', platform: 'openai', seed_policy: { telemetry_disabled: false } },
+    root,
+  )
+  assert.equal(out.enabled, false)
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
 test('syncWorkerTelemetry writes enabled:true when official IDs exist', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-tel-'))
   writeOfficialHome(root, 'vm-02')
@@ -101,6 +148,43 @@ test('syncWorkerTelemetry writes enabled:true when official IDs exist', () => {
   assert.equal(touch.wrote, true)
   assert.equal(fs.existsSync(path.join(runDir, 'telemetry.touch')), true)
   fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('upload interval comes from routing.json and falls back to 10 minutes', (t) => {
+  const saved = process.env.KIN_ROUTING_FILE
+  delete process.env.KIN_ROUTING_FILE
+  t.after(() => {
+    if (saved === undefined) delete process.env.KIN_ROUTING_FILE
+    else process.env.KIN_ROUTING_FILE = saved
+  })
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-tel-'))
+  writeOfficialHome(root, 'vm-02')
+  const vm = { id: 'vm-02', seed_policy: { telemetry_disabled: false } }
+  assert.equal(buildWorkerTelemetry(vm, root).upload_interval_seconds, 600)
+  fs.mkdirSync(path.join(root, 'src', 'config'), { recursive: true })
+  fs.writeFileSync(
+    path.join(root, 'src', 'config', 'routing.json'),
+    JSON.stringify({ telemetry: { upload_interval_seconds: 7200 } }),
+  )
+  assert.equal(buildWorkerTelemetry(vm, root).upload_interval_seconds, 7200)
+  assert.equal(
+    buildWorkerTelemetry(vm, root, { telemetry: { upload_interval_seconds: 180 } }).upload_interval_seconds,
+    180,
+  )
+  for (const bad of [0, 30, 90, 86_460, '600', null]) {
+    assert.equal(telemetryUploadInterval({ telemetry: { upload_interval_seconds: bad } }), 600)
+  }
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('routing patch accepts whole minutes from 1 minute to 24 hours', () => {
+  assert.deepEqual(validateTelemetryRoutingPatch({ telemetry: { upload_interval_seconds: 60 } }), [])
+  assert.deepEqual(validateTelemetryRoutingPatch({ telemetry: { upload_interval_seconds: 86_400 } }), [])
+  assert.deepEqual(validateTelemetryRoutingPatch({ sticky: {} }), [])
+  for (const bad of [0, 59, 90, 86_460, '600', 600.5]) {
+    assert.equal(validateTelemetryRoutingPatch({ telemetry: { upload_interval_seconds: bad } }).length, 1)
+  }
+  assert.equal(validateTelemetryRoutingPatch({ telemetry: [] }).length, 1)
 })
 
 test('syncWorkerTelemetry chowns the replaced worker.json to the slot uid', () => {

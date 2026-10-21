@@ -601,10 +601,11 @@ function dropMessageBreakpoints(messages) {
 function stampMessageTail(messages, idx, ttl) {
   const message = messages[idx]
   if (!message || typeof message !== 'object') return messages
+  const marker = ttl == null ? { type: 'ephemeral' } : { type: 'ephemeral', ttl }
   const content = message.content
   if (typeof content === 'string') {
     const next = messages.slice()
-    next[idx] = { ...message, content: [{ type: 'text', text: content, cache_control: { type: 'ephemeral', ttl } }] }
+    next[idx] = { ...message, content: [{ type: 'text', text: content, cache_control: marker }] }
     return next
   }
   if (!Array.isArray(content) || content.length === 0) return messages
@@ -615,7 +616,7 @@ function stampMessageTail(messages, idx, ttl) {
     break
   }
   if (target < 0) return messages
-  const stamped = stampNode(content[target], ttl)
+  const stamped = ttl == null ? { ...content[target], cache_control: marker } : stampNode(content[target], ttl)
   if (stamped === content[target]) return messages
   const nextContent = content.slice()
   nextContent[target] = stamped

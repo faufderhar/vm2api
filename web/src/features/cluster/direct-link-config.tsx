@@ -16,6 +16,20 @@ const looksLikeIp = (s: string) =>
 
 /** 槽位流量经 TLS 直连节点上的 kin-slot-gate，每个请求一条 TCP；不通时自动走 SSH。 */
 export function DirectLinkConfig({ node }: { node: ClusterApiNode }) {
+  if (node.platform === 'darwin') {
+    return (
+      <section className='space-y-1 border-t pt-4'>
+        <h3 className='text-sm font-medium'>直连通道</h3>
+        <p className='text-xs text-muted-foreground'>
+          macOS 原生节点暂不支持直连通道，槽位流量走 SSH。
+        </p>
+      </section>
+    )
+  }
+  return <DirectLinkForm node={node} />
+}
+
+function DirectLinkForm({ node }: { node: ClusterApiNode }) {
   const qc = useQueryClient()
   const link = node.direct_link || null
   const [address, setAddress] = useState(

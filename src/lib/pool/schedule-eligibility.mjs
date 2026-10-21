@@ -46,7 +46,6 @@ export function isRefreshFailure(workerStatus) {
   return REFRESH_FAILURE.test(err)
 }
 
-
 /** A parked grant-death reason is current. A refresh_error is not, once access is still inside its TTL. */
 export function currentAccessOutlivesGrantError(vm = {}, extras = {}, now = Date.now()) {
   const reason = String(extras.schedule_disabled_reason ?? vm.schedule_disabled_reason ?? '')

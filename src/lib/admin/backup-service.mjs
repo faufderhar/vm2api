@@ -23,6 +23,9 @@
  *   settings.backup_schedule = { enabled: true, interval_hours: 24, retention: 7 }
  *   env overrides: KIN_BACKUP_DISABLED=1, KIN_BACKUP_INTERVAL_HOURS, KIN_BACKUP_RETENTION
  *   - checker runs every 10 min + a catch-up check shortly after boot
+ *   - the job itself runs in a worker thread (backup-worker.mjs): the
+ *     pipeline is synchronous for minutes, so running it in-process
+ *     would stop the gateway from answering (Cloudflare 524)
  *   - retention prunes old ok backups (pre_restore keeps newest 3)
  *
  * Restore:
@@ -37,12 +40,18 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import zlib from 'node:zlib'
 import { spawnSync } from 'node:child_process'
-import { getDb, getDbPath, closeDatabase, openDatabase, vacuumInto } from '../db/database.mjs'
+import { Worker } from 'node:worker_threads'
+import { getDb, getDbPath, closeDatabase, openDatabase } from '../db/database.mjs'
+import { sha256File } from './backup-core.mjs'
 import { SettingsRepo } from '../db/repos/settings-repo.mjs'
 import { BackupRepo } from '../db/repos/backup-repo.mjs'
 import { reconcileVms } from '../vm/vm-db-sync.mjs'
 import { repairSlotSmbios, repairVmProxyCliEnabled } from '../vm/vm-registry.mjs'
 import { invalidateReadCache, isVmRecordFile } from '../vm/vm-file.mjs'
+
+// tarAvailability / sha256File / the runnable pipeline live in backup-core.mjs;
+// keep the historical export surface for tests and callers.
+export { tarAvailable } from './backup-core.mjs'
 
 const SCHEDULE_KEY = 'backup_schedule'
 
@@ -50,36 +59,6 @@ export const DEFAULT_SCHEDULE = {
   enabled: true,
   interval_hours: 24,
   retention: 7,
-}
-
-function stamp(d = new Date()) {
-  return d.toISOString().replace(/[:.]/g, '-')
-}
-
-// Chunked on purpose: the DB snapshot and the archive both outgrow Node's
-// ~2 GiB Buffer ceiling, and readFileSync would throw before hashing.
-function sha256File(file) {
-  const h = crypto.createHash('sha256')
-  const fd = fs.openSync(file, 'r')
-  try {
-    const buf = Buffer.allocUnsafe(4 * 1024 * 1024)
-    let read = 0
-    while ((read = fs.readSync(fd, buf, 0, buf.length, null)) > 0) {
-      h.update(read === buf.length ? buf : buf.subarray(0, read))
-    }
-  } finally {
-    fs.closeSync(fd)
-  }
-  return h.digest('hex')
-}
-
-export function tarAvailable() {
-  try {
-    const r = spawnSync('tar', ['--version'], { stdio: 'ignore' })
-    return r.status === 0
-  } catch {
-    return false
-  }
 }
 
 export class BackupService {
@@ -166,152 +145,89 @@ export class BackupService {
 
   // ---------- create ----------
 
-  /** @returns backup record */
-  createBackup({ kind = 'manual', note = null } = {}) {
+  /**
+   * Run one backup off the main thread.
+   *
+   * The pipeline (VACUUM INTO + sha256 + tar.gz) is synchronous for minutes on a
+   * multi-GB database, so it runs in a worker with its own DB connection while
+   * the gateway keeps serving requests.
+   *
+   * @returns {Promise<backup record>}
+   */
+  async createBackup({ kind = 'manual', note = null } = {}) {
     if (this._running) throw Object.assign(new Error('backup already in progress'), { code: 'backup_in_progress' })
     this._running = true
     const id = 'bak_' + crypto.randomBytes(6).toString('hex')
     const createdAt = new Date().toISOString()
-    let tmp = null
     try {
-      fs.mkdirSync(this.backupDir, { recursive: true, mode: 0o700 })
-      try {
-        fs.chmodSync(this.backupDir, 0o700)
-      } catch {}
-      tmp = this._mkdtemp('kin-backup-')
-
-      // 1. online-consistent DB snapshot (WAL-safe)
-      const dbSnap = path.join(tmp, 'db', 'kin.db')
-      vacuumInto(getDb(), dbSnap)
-      const dbBytes = fs.statSync(dbSnap).size
-
-      // 2. vm files + config files
-      const includes = { db: true, vms: 0, config: 0 }
-      const sha256s = { 'db/kin.db': sha256File(dbSnap) }
-      const vmsDir = this.projectRoot ? path.join(this.projectRoot, 'vms') : null
-      if (vmsDir && fs.existsSync(vmsDir)) {
-        const outVms = path.join(tmp, 'vms')
-        fs.mkdirSync(outVms, { recursive: true })
-        for (const f of fs.readdirSync(vmsDir)) {
-          if (!/\.json$/.test(f)) continue
-          const src = path.join(vmsDir, f)
-          try {
-            if (!fs.statSync(src).isFile()) continue
-            fs.copyFileSync(src, path.join(outVms, f))
-            fs.chmodSync(path.join(outVms, f), 0o600)
-            sha256s[`vms/${f}`] = sha256File(src)
-            includes.vms += 1
-          } catch {}
-        }
-      }
-      if (this.configDir && fs.existsSync(this.configDir)) {
-        const outCfg = path.join(tmp, 'config')
-        fs.mkdirSync(outCfg, { recursive: true })
-        for (const f of fs.readdirSync(this.configDir)) {
-          if (!/\.json$/.test(f)) continue
-          const src = path.join(this.configDir, f)
-          try {
-            if (!fs.statSync(src).isFile()) continue
-            fs.copyFileSync(src, path.join(outCfg, f))
-            sha256s[`config/${f}`] = sha256File(src)
-            includes.config += 1
-          } catch {}
-        }
-      }
-
-      // 3. manifest
-      const manifest = {
-        version: 1,
-        tool: 'kin-gateway',
-        created_at: createdAt,
-        kind,
-        includes,
-        sha256s,
-      }
-      fs.writeFileSync(path.join(tmp, 'manifest.json'), JSON.stringify(manifest, null, 2))
-
-      // 4. archive (tar.gz preferred; gzipped db fallback)
-      let filePath,
-        fileName,
-        noteOut = note
-      if (tarAvailable()) {
-        fileName = `kin-backup-${stamp(new Date(createdAt))}.tar.gz`
-        filePath = path.join(this.backupDir, fileName)
-        const r = spawnSync('tar', ['-czf', filePath, '-C', tmp, '.'], { stdio: 'pipe' })
-        if (r.status !== 0) {
-          throw new Error(`tar failed: ${String(r.stderr || '').slice(0, 300)}`)
-        }
-      } else {
-        fileName = `kin-backup-${stamp(new Date(createdAt))}.db.gz`
-        filePath = path.join(this.backupDir, fileName)
-        fs.writeFileSync(filePath, zlib.gzipSync(fs.readFileSync(dbSnap)))
-        noteOut = [note, 'tar unavailable — db-only gzip snapshot (vm files rebuilt from DB on restore)']
-          .filter(Boolean)
-          .join(' | ')
-      }
-      try {
-        fs.chmodSync(filePath, 0o600)
-      } catch {}
-
-      const rec = this._repo().insert({
+      return await this._runBackupWorker({
         id,
-        created_at: createdAt,
+        createdAt,
         kind,
-        status: 'ok',
-        file_path: filePath,
-        file_name: fileName,
-        size_bytes: fs.statSync(filePath).size,
-        sha256: sha256File(filePath),
-        db_bytes: dbBytes,
-        includes,
-        error: null,
-        note: noteOut,
+        note,
+        retention: this.getSchedule().retention,
       })
-      this.applyRetention()
-      return rec
     } catch (e) {
+      // The worker records its own failure; this covers the cases where it never
+      // got that far (module error, OOM, kill) so the panel still shows the job.
       try {
-        this._repo().insert({
-          id,
-          created_at: createdAt,
-          kind,
-          status: 'failed',
-          file_path: null,
-          file_name: null,
-          size_bytes: null,
-          sha256: null,
-          db_bytes: null,
-          includes: null,
-          error: String(e.message || e).slice(0, 500),
-          note,
-        })
+        if (!this._repo().get(id)) {
+          this._repo().insert({
+            id,
+            created_at: createdAt,
+            kind,
+            status: 'failed',
+            file_path: null,
+            file_name: null,
+            size_bytes: null,
+            sha256: null,
+            db_bytes: null,
+            includes: null,
+            error: String(e.message || e).slice(0, 500),
+            note,
+          })
+        }
       } catch {}
       throw e
     } finally {
       this._running = false
-      if (tmp) {
-        try {
-          fs.rmSync(tmp, { recursive: true, force: true })
-        } catch {}
-      }
     }
   }
 
-  // ---------- retention ----------
-
-  applyRetention() {
-    const cfg = this.getSchedule()
-    const repo = this._repo()
-    const drop = [...repo.beyondRetention(cfg.retention), ...repo.preRestoreBeyond(3)]
-    for (const rec of drop) {
-      try {
-        if (rec.file_path && fs.existsSync(rec.file_path)) fs.rmSync(rec.file_path, { force: true })
-      } catch {}
-      try {
-        repo.remove(rec.id)
-      } catch {}
-    }
-    return drop.length
+  _runBackupWorker(job) {
+    return new Promise((resolve, reject) => {
+      const worker = new Worker(new URL('./backup-worker.mjs', import.meta.url), {
+        workerData: {
+          dataDir: this.dataDir,
+          ctx: {
+            projectRoot: this.projectRoot,
+            configDir: this.configDir,
+            backupDir: this.backupDir,
+            tmpDir: this.tmpDir,
+          },
+          job,
+        },
+      })
+      let settled = false
+      const finish = (fn, arg) => {
+        if (settled) return
+        settled = true
+        fn(arg)
+      }
+      worker.once('message', (msg) => {
+        if (msg && msg.ok) return finish(resolve, msg.rec)
+        finish(
+          reject,
+          Object.assign(new Error((msg && msg.error && msg.error.message) || 'backup failed'), {
+            code: (msg && msg.error && msg.error.code) || 'backup_failed',
+          }),
+        )
+      })
+      worker.once('error', (e) => finish(reject, e))
+      worker.once('exit', (code) => {
+        if (code !== 0) finish(reject, new Error(`backup worker exited with code ${code}`))
+      })
+    })
   }
 
   // ---------- list / delete ----------
@@ -344,7 +260,7 @@ export class BackupService {
    * Restore from a recorded backup. Automatically snapshots the current
    * state first (kind=pre_restore). Re-binds stores via onRestored callback.
    */
-  restoreBackup(id) {
+  async restoreBackup(id) {
     const rec = this._repo().get(id)
     if (!rec) throw Object.assign(new Error('backup not found'), { code: 'backup_not_found' })
     if (rec.status !== 'ok')
@@ -364,7 +280,7 @@ export class BackupService {
     let tmp = null
     try {
       // 0. safety net snapshot of the current state
-      const pre = this.createBackup({ kind: 'pre_restore', note: `before restore of ${rec.id}` })
+      const pre = await this.createBackup({ kind: 'pre_restore', note: `before restore of ${rec.id}` })
 
       // 1. extract / decompress
       tmp = this._mkdtemp('kin-restore-')
@@ -522,11 +438,11 @@ export class BackupService {
   /** Auto-backup checker: every checkIntervalMs + a catch-up run at boot. */
   startScheduler() {
     this.stopScheduler()
-    const check = () => {
+    const check = async () => {
       try {
         if (this.shouldRunScheduled()) {
-          this.createBackup({ kind: 'scheduled' })
-          console.log('[backup] scheduled backup completed')
+          const rec = await this.createBackup({ kind: 'scheduled' })
+          console.log(`[backup] scheduled backup completed (${Math.round((rec.size_bytes || 0) / 1048576)} MiB)`)
         }
       } catch (e) {
         console.warn('[backup] scheduled backup failed:', String(e.message || e))

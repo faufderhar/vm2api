@@ -248,3 +248,177 @@ func TestUploadLogKeepsFortyLinesAndDropsIdentity(t *testing.T) {
 		t.Fatalf("log lost the upload shape: %s", text)
 	}
 }
+
+func TestBatchInterval(t *testing.T) {
+	tests := []struct {
+		secs int
+		want time.Duration
+	}{
+		{0, defaultBatchInterval},
+		{30, defaultBatchInterval},
+		{59, defaultBatchInterval},
+		{60, 60 * time.Second},
+		{120, 120 * time.Second},
+		{86400, 24 * time.Hour},
+		{86401, defaultBatchInterval},
+		{100000, defaultBatchInterval},
+	}
+	for _, tc := range tests {
+		got := batchInterval(config.TelemetryConfig{UploadIntervalSecs: tc.secs})
+		if got != tc.want {
+			t.Fatalf("secs=%d got %s want %s", tc.secs, got, tc.want)
+		}
+	}
+}
+
+func TestRunBatchCadence(t *testing.T) {
+	tests := []struct {
+		name string
+		secs int
+		wait time.Duration
+	}{
+		{name: "missing", wait: 10 * time.Minute},
+		{name: "120s", secs: 120, wait: 120 * time.Second},
+		{name: "too-small", secs: 30, wait: 10 * time.Minute},
+		{name: "too-large", secs: 100000, wait: 10 * time.Minute},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var inits, successes atomic.Int32
+			var at10s atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != batchPath {
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+				buf, _ := io.ReadAll(r.Body)
+				body := string(buf)
+				if strings.Contains(body, `"event_name":"tengu_init"`) {
+					inits.Add(1)
+				}
+				if strings.Contains(body, `"event_name":"tengu_api_success"`) {
+					successes.Add(1)
+				}
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer server.Close()
+			base, _ := url.Parse(server.URL)
+			store := saveCred(t, t.TempDir(), credential.Credential{
+				AccessToken: "tok",
+				ExpiresAt:   time.Now().Add(time.Hour).UnixMilli(),
+			})
+			clock := time.Unix(1_700_000_000, 0)
+			start := clock
+			err := Run(context.Background(), config.Config{
+				Telemetry: config.TelemetryConfig{
+					Enabled:            true,
+					Identity:           Identity{DeviceID: "d"},
+					UploadIntervalSecs: tc.secs,
+				},
+			}, Deps{
+				HTTP:  &Client{HTTP: server.Client(), AnthropicBase: base, Timeout: time.Second},
+				Store: store,
+				Now:   func() time.Time { return clock },
+				Sleep: func(_ context.Context, d time.Duration) bool {
+					if clock.Sub(start) >= 10*time.Second && at10s.CompareAndSwap(0, -1) {
+						at10s.Store(successes.Load())
+					}
+					if clock.Sub(start) >= tc.wait {
+						return false
+					}
+					clock = clock.Add(d)
+					return true
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if inits.Load() != 1 {
+				t.Fatalf("inits=%d", inits.Load())
+			}
+			if at10s.Load() != 1 {
+				t.Fatalf("successes after 10s=%d", at10s.Load())
+			}
+			if successes.Load() != 2 {
+				t.Fatalf("successes=%d after %s", successes.Load(), tc.wait)
+			}
+		})
+	}
+}
+
+func TestRunReloadsUploadIntervalWithoutResendingInit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "worker.json")
+	stamp := time.Now()
+	write := func(secs int) {
+		raw := fmt.Sprintf(`{"telemetry":{"enabled":true,"upload_interval_seconds":%d,"identity":{"device_id":"dev"}}}`, secs)
+		if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		stamp = stamp.Add(time.Second)
+		if err := os.Chtimes(path, stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(600)
+	var inits, successes atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != batchPath {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		buf, _ := io.ReadAll(r.Body)
+		body := string(buf)
+		if strings.Contains(body, `"event_name":"tengu_init"`) {
+			inits.Add(1)
+		}
+		if strings.Contains(body, `"event_name":"tengu_api_success"`) {
+			successes.Add(1)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	base, _ := url.Parse(server.URL)
+	store := saveCred(t, dir, credential.Credential{
+		AccessToken: "tok",
+		ExpiresAt:   time.Now().Add(time.Hour).UnixMilli(),
+	})
+	clock := time.Unix(1_700_000_000, 0)
+	start := clock
+	var afterReload int32
+	err := Run(context.Background(), config.Config{
+		ConfigPath: path,
+		Telemetry:  config.TelemetryConfig{Enabled: false},
+	}, Deps{
+		HTTP:       &Client{HTTP: server.Client(), AnthropicBase: base, Timeout: time.Second},
+		Store:      store,
+		ConfigPath: path,
+		LoadConfig: config.LoadTelemetry,
+		Now:        func() time.Time { return clock },
+		Sleep: func(_ context.Context, d time.Duration) bool {
+			if clock.Equal(start) {
+				write(60)
+			}
+			if clock.Sub(start) == time.Second {
+				afterReload = successes.Load()
+			}
+			if clock.Sub(start) >= 60*time.Second {
+				return false
+			}
+			clock = clock.Add(d)
+			return true
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inits.Load() != 1 {
+		t.Fatalf("init resent: inits=%d", inits.Load())
+	}
+	if afterReload != 1 {
+		t.Fatalf("successes=%d right after interval reload", afterReload)
+	}
+	if successes.Load() != 2 {
+		t.Fatalf("successes=%d, interval reload did not apply", successes.Load())
+	}
+}

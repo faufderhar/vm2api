@@ -447,6 +447,49 @@ test('persistRoutingPatch merges a valid vm patch', () => {
   }
 })
 
+test('persistRoutingPatch rewrites Claude worker.json when the upload interval changes', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-routing-telemetry-'))
+  const vms = path.join(root, 'vms')
+  const routingFile = path.join(root, 'routing.json')
+  const user = 'cd'.repeat(32)
+  const seed = { telemetry_disabled: false }
+  for (const [id, extra] of [
+    ['vm-claude', {}],
+    ['vm-node', { node_id: 'node-test' }],
+    ['vm-codex', { platform: 'openai', family: 'codex' }],
+  ]) {
+    fs.mkdirSync(path.join(vms, id, 'run'), { recursive: true })
+    fs.mkdirSync(path.join(vms, id, 'cli-home', '.claude'), { recursive: true })
+    fs.writeFileSync(path.join(vms, `${id}.json`), JSON.stringify({ id, seed_policy: seed, ...extra }))
+    fs.writeFileSync(path.join(vms, id, 'run', 'worker.json'), JSON.stringify({ vm_id: id }))
+    fs.writeFileSync(path.join(vms, id, 'cli-home', '.claude', '.claude.json'), JSON.stringify({ userID: user }))
+  }
+  const routingConfig = { concurrency: {}, tiers: {} }
+  fs.writeFileSync(routingFile, JSON.stringify(routingConfig))
+  const worker = (id) => JSON.parse(fs.readFileSync(path.join(vms, id, 'run', 'worker.json'), 'utf8')).telemetry
+  const warned = []
+  t.mock.method(console, 'warn', (line) => warned.push(String(line)))
+  try {
+    const runtime = persistHarness(root, routingFile, routingConfig)
+    const changed = runtime.persistRoutingPatch({ telemetry: { upload_interval_seconds: 3600 } })
+    assert.deepEqual(changed.telemetry_sync, { updated: 1, queued: 1, skipped: 0, failed: [] })
+    assert.equal(JSON.parse(fs.readFileSync(routingFile, 'utf8')).telemetry.upload_interval_seconds, 3600)
+    assert.equal(worker('vm-claude').upload_interval_seconds, 3600)
+    assert.equal(worker('vm-node').upload_interval_seconds, 3600)
+    assert.equal(worker('vm-codex'), undefined)
+    // No cluster in the test: the queued push for the node slot runs, fails, and is only logged.
+    for (let i = 0; i < 50 && !warned.length; i++) await new Promise((r) => setTimeout(r, 10))
+    const push = JSON.parse(warned.find((line) => line.includes('remote_slot_push_failed')))
+    assert.equal(push.vm_id, 'vm-node')
+    assert.deepEqual(push.sets, ['run'])
+    assert.equal(runtime.persistRoutingPatch({ telemetry: { upload_interval_seconds: 3600 } }).telemetry_sync, null)
+    assert.equal(runtime.persistRoutingPatch({ sticky: {} }).telemetry_sync, null)
+    assert.equal(JSON.parse(fs.readFileSync(routingFile, 'utf8')).telemetry.upload_interval_seconds, 3600)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('PUT /api/panel/routing rejects an invalid vm patch before persist', async () => {
   const response = {}
   const handlePanel = createPanelHandler({

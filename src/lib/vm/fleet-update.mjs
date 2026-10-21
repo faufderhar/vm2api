@@ -9,7 +9,8 @@ import { reloadSlotReady, slotExec } from './slot-runtime.mjs'
 import { collectSlotIdentity } from './guest-identity.mjs'
 import { rustKernelHealth } from '../transport/rust-kernel-client.mjs'
 import { restartTelemetrySidecar } from './slot-process-status.mjs'
-import { vmNodeId } from '../cluster/placement.mjs'
+import { isNativeNodeVm, vmNodeId } from '../cluster/placement.mjs'
+import { slotHost } from './slot-host.mjs'
 import { restartRemoteServices } from '../cluster/remote-slot.mjs'
 import {
   drainEgressForProxyConfig,
@@ -150,9 +151,11 @@ export async function updateOneSlot(
       const vmRef = getVm(projectRoot, id) || vm
       const changed = telemetryFn
         ? await telemetryFn({ projectRoot, vm: vmRef, telemetryEnabled: enabled, enabled })
-        : vmNodeId(vm)
-          ? await restartRemoteServices(vmRef, projectRoot, { telemetryEnabled: enabled })
-          : await restartLocalServices({ projectRoot, vm: vmRef, enabled })
+        : isNativeNodeVm(vmRef)
+          ? await slotHost(vmRef).restartTelemetry(vmRef, { enabled })
+          : vmNodeId(vm)
+            ? await restartRemoteServices(vmRef, projectRoot, { telemetryEnabled: enabled })
+            : await restartLocalServices({ projectRoot, vm: vmRef, enabled })
       result.telemetry = changed
       if (!changed?.ok) {
         result.error = changed?.error || 'telemetry service update failed'

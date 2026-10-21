@@ -14,12 +14,22 @@ import (
 )
 
 const (
-	sessionTTL         = 10 * time.Minute
-	eventBatchInterval = 10 * time.Second
-	growthbookInterval = 6 * time.Hour
-	tickInterval       = time.Second
-	touchName          = "telemetry.touch"
+	sessionTTL           = 10 * time.Minute
+	defaultBatchInterval = 10 * time.Minute
+	minBatchInterval     = 60 * time.Second
+	maxBatchInterval     = 24 * time.Hour
+	growthbookInterval   = 6 * time.Hour
+	tickInterval         = time.Second
+	touchName            = "telemetry.touch"
 )
+
+func batchInterval(tel config.TelemetryConfig) time.Duration {
+	d := time.Duration(tel.UploadIntervalSecs) * time.Second
+	if d < minBatchInterval || d > maxBatchInterval {
+		return defaultBatchInterval
+	}
+	return d
+}
 
 type Deps struct {
 	HTTP       *Client
@@ -70,10 +80,10 @@ func lastActivity(path string, fallback time.Time) time.Time {
 
 // Run mirrors cc-bridge telemetry_loop:
 // /v1 (or worker start) activates a 10-minute session.
-// Every 10s: event_logging/v2/batch tengu_api_success.
+// tengu_api_success batches at upload_interval_seconds (60s–24h, default 10 min).
 // Every 6h (first immediate): GrowthBook /api/eval.
 // worker.json telemetry is re-read when the file mtime moves, so identity,
-// betas, headers, env, and enabled flip without bouncing the process.
+// betas, headers, env, enabled, and upload interval flip without bouncing the process.
 // A disabled config with no file still returns immediately.
 func Run(ctx context.Context, cfg config.Config, deps Deps) error {
 	if deps.Now == nil {
@@ -177,7 +187,7 @@ func Run(ctx context.Context, cfg config.Config, deps Deps) error {
 			}
 		}
 
-		if batchOK && (lastBatch.IsZero() || now.Sub(lastBatch) >= eventBatchInterval) {
+		if batchOK && (lastBatch.IsZero() || now.Sub(lastBatch) >= batchInterval(tel)) {
 			uptime := now.Sub(started).Seconds()
 			ev := SuccessEvent(identity, now, uptime, "")
 			if err := postBatch(ctx, deps, live, token, ev); err != nil {

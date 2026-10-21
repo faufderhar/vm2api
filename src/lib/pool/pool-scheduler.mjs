@@ -51,6 +51,7 @@ import { resolveSessionSlots } from '../vm/slot-engine.mjs'
 import { SeatPlanner, rankSeatCandidates } from './seat-planner.mjs'
 import { GATE_DRAINING } from './quota-gate.mjs'
 import { activeHoursOf, evaluateActiveHours } from './active-hours.mjs'
+import { vmNodeReady } from '../cluster/placement.mjs'
 
 const WAIT_TIMEOUT_MIN_MS = 1000
 const WAIT_TIMEOUT_MAX_MS = 120000
@@ -1134,6 +1135,8 @@ export class PoolScheduler extends EventEmitter {
     }
     // A sticky preference must not bypass exhausted kernel recovery.
     if (kernelFaults.has(vm.id)) return { ok: false, reason: 'kernel_faulted' }
+    // Node offline or asleep: the relay has no link behind it, a pick would only fail. Back on reconnect.
+    if (!vmNodeReady(vm)) return { ok: false, reason: 'node_offline' }
     if (rustKernelBusy(workerStatus)) {
       markWait('slot_busy')
     } else if (workerStatus && rustKernelProcessUp(workerStatus) && !rustKernelReachable(workerStatus)) {

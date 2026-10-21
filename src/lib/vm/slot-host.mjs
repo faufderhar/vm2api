@@ -25,12 +25,42 @@
  *   afterRefresh(vm, slotDir)   the slot rotated its credential; mirror it back
  *   touch(vm, slotDir)          telemetry activity mark
  *
+ * A node may be a Mac (`platform: 'darwin'`): its slots are launchd services,
+ * not containers. That host is `native: true`, has no Docker (dockerApi /
+ * dockerEnv / execUser throw native_node_unsupported) and adds:
+ *   slotPaths(vm)               node paths that replace the container paths in kernel.json / worker.json
+ *   observe(vm)                 watchdog state of the kernel job
+ *   inspect(vm)                 recovery-panel view (same shape as a container inspect)
+ *   restartKernel(vm, root)     bounce or (re)load the kernel job
+ *   telemetryRunning(vm)        sidecar job state
+ *   restartTelemetry(vm, opts)  sidecar on/off
+ *
  * Functions are wrapped, not referenced: this module sits in an import cycle
  * with vm-runtime / the kernel supervisor, so bindings are read at call time.
  */
 
 import { localDocker } from '../cluster/docker-remote.mjs'
-import { clusterManager, SLOT_CAPS_NODE, vmNodeId } from '../cluster/placement.mjs'
+import {
+  clusterManager,
+  isNativeNodeVm,
+  placementProjectRoot,
+  SLOT_CAPS_NODE,
+  vmNodeId,
+} from '../cluster/placement.mjs'
+import {
+  currentNativePayloadDigest,
+  destroyNativeSlot,
+  inspectNativeSlot,
+  nativeSlotPaths,
+  nativeTelemetryRunning,
+  observeNativeSlot,
+  reloadNativeSlot,
+  restartNativeKernel,
+  restartNativeTelemetry,
+  startNativeSlot,
+  stopNativeSlot,
+} from '../cluster/native-slot.mjs'
+import { ClusterError } from '../cluster/ssh-link.mjs'
 import {
   pullSlotCredentials,
   pushSlotCredentials,
@@ -163,8 +193,62 @@ function nodeHost(nodeId) {
   }
 }
 
+/**
+ * Node paths of a native slot. The root comes from the node's last SSH session
+ * (or the slot's own runtime record when the node has not connected since the
+ * control plane started); the payload digest from the control plane's darwin build.
+ */
+function nativePaths(nodeId, vm) {
+  const root = clusterManager().nodeHostFacts?.(nodeId)?.root || vm?.runtime?.remote_dir?.replace(/\/vms\/[^/]+$/, '')
+  if (!root) throw new ClusterError(409, 'node_not_ready', `节点 ${nodeId} 尚未连接，无法确定槽位路径`)
+  const digest = currentNativePayloadDigest(placementProjectRoot()) || vm?.runtime?.payload_digest || 'missing'
+  return nativeSlotPaths(root, vm.id, digest)
+}
+
+function nativeHost(nodeId, record) {
+  const unsupported = (what) => () => {
+    throw new ClusterError(409, 'native_node_unsupported', `macOS 原生节点不支持${what}`)
+  }
+  const base = nodeHost(nodeId)
+  return {
+    ...base,
+    native: true,
+    supports: () => false,
+    // Paths resolve on access: kernel.json is often written for a slot the node has not seen yet.
+    get bins() {
+      return {
+        get cli() {
+          return `${nativePaths(nodeId, record).payload}/cli-node`
+        },
+        get cc() {
+          return `${nativePaths(nodeId, record).payload}/cc-node`
+        },
+      }
+    },
+    slotPaths: (vm) => nativePaths(nodeId, vm),
+    dockerEnv: unsupported('容器命令'),
+    dockerApi: unsupported('容器命令'),
+    execUser: unsupported('容器命令'),
+    start: (vm, projectRoot, opts) => startNativeSlot(vm, projectRoot, opts),
+    reload: (vm, projectRoot, opts) => reloadNativeSlot(vm, projectRoot, opts),
+    stop: (vm) => stopNativeSlot(vm),
+    destroy: (vm) => destroyNativeSlot(vm),
+    setProxyEgressEnabled: async () => ({
+      ok: false,
+      code: 'native_proxy_unsupported',
+      error: 'macOS 原生节点目前只支持本机网络出口',
+    }),
+    observe: (vm) => observeNativeSlot(vm),
+    inspect: (vm) => inspectNativeSlot(vm),
+    restartKernel: (vm, projectRoot, opts) => restartNativeKernel(vm, projectRoot, opts),
+    telemetryRunning: (vm) => nativeTelemetryRunning(vm),
+    restartTelemetry: (vm, opts) => restartNativeTelemetry(vm, opts),
+  }
+}
+
 export function slotHost(vm) {
   const nodeId = vmNodeId(vm)
+  if (nodeId && isNativeNodeVm(vm)) return nativeHost(nodeId, vm)
   const base = nodeId ? nodeHost(nodeId) : LOCAL_HOST
   if (!isKvmRuntime(vm)) return base
   // Runner socat owns run/kernel.sock; deleting it severs the guest relay.

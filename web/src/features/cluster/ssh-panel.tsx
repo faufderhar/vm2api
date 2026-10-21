@@ -137,14 +137,16 @@ function LinkTab({
     ['经由', jump ? `${jump.label} · ${jump.host}` : '直连'],
     ['认证', node.auth_type === 'key' ? '私钥' : '密码'],
     ['固定指纹', `${node.host_key_alg} ${node.host_key_sha256}`],
-    [
-      'Docker',
-      node.health
-        ? node.health.docker.ok
-          ? '可用'
-          : node.health.docker.error || '不可用'
-        : '—',
-    ],
+    node.platform === 'darwin'
+      ? ['运行方式', 'macOS 原生（槽位是 launchd 服务，不用 Docker）']
+      : [
+          'Docker',
+          node.health
+            ? node.health.docker.ok
+              ? '可用'
+              : node.health.docker.error || '不可用'
+            : '—',
+        ],
   ]
 
   return (

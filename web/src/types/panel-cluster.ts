@@ -3,6 +3,9 @@
 export type ClusterLinkState =
   'idle' | 'connecting' | 'ready' | 'backoff' | 'error'
 
+/** linux：槽位是 Docker 容器；darwin：Apple Silicon Mac，槽位是 launchd 服务、不用 Docker。 */
+export type ClusterNodePlatform = 'linux' | 'darwin'
+
 export type ClusterApiNode = {
   id: string
   label: string
@@ -15,6 +18,8 @@ export type ClusterApiNode = {
   jump_node_id: string | null
   created_at: string
   updated_at: string
+  /** 连上后按 `uname -s` 识别；老服务端没有该字段时按 linux。 */
+  platform?: ClusterNodePlatform
   link: {
     state: ClusterLinkState
     error?: { code: string; message: string } | null
@@ -97,6 +102,12 @@ export type PreflightCheckId =
   | 'hostd'
   | 'relay'
   | 'kvm'
+  | 'runtime'
+  | 'macos'
+  | 'launchd'
+  | 'sleep'
+  | 'socket_path'
+  | 'payload'
 
 /** `ok:false` + `level:'error'` 阻断创建；`warn` 只提示。 */
 export type PreflightCheck = {
@@ -133,6 +144,7 @@ export type ClusterProbeResult = {
   docker: { ok: boolean; error: string | null } | null
   uname: string | null
   confirm_required?: boolean
+  platform?: ClusterNodePlatform
   existing_id: string | null
 }
 
@@ -152,6 +164,7 @@ export type ClusterNodePatch = {
 export type ClusterNodeUpdateProbe = {
   host_key: { alg: string; sha256: string }
   docker: { ok: boolean; error: string | null }
+  platform?: ClusterNodePlatform
   vm_count: number
   dependent_count: number
 }

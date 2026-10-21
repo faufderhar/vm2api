@@ -84,7 +84,14 @@ export async function writeRemoteFile(sftp, file, data, { mode = 0o600, owner = 
  */
 export async function readRemoteFileNoFollow(client, file, { maxBytes = 1 << 20 } = {}) {
   const blocks = Math.ceil(maxBytes / 65536)
-  const script = `set -o pipefail; f=${shellQuote(file)}; [ -e "$f" ] || [ -L "$f" ] || exit 3; dd if="$f" iflag=nofollow,nonblock bs=65536 count=${blocks} status=none | base64 -w0`
+  // BSD dd (macOS nodes) has no iflag: refuse links and non-regular files up front instead.
+  const script = [
+    `set -o pipefail; f=${shellQuote(file)}; [ -e "$f" ] || [ -L "$f" ] || exit 3;`,
+    'if dd if=/dev/null of=/dev/null iflag=nofollow 2>/dev/null; then',
+    `dd if="$f" iflag=nofollow,nonblock bs=65536 count=${blocks} status=none;`,
+    'else if [ -L "$f" ] || [ ! -f "$f" ]; then echo "not a regular file" >&2; exit 4; fi;',
+    `dd if="$f" bs=65536 count=${blocks} 2>/dev/null; fi | base64 | tr -d '\\n'`,
+  ].join(' ')
   const r = await execCollect(client, `bash -c ${shellQuote(script)}`, { timeoutMs: 15_000, maxBytes: maxBytes * 2 })
   if (r.code === 3) return null
   if (r.code !== 0) {

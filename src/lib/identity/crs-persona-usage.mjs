@@ -132,7 +132,7 @@ function stripKnownTexts(text, known) {
   return rest.replace(/^\s+|\s+$/g, '').replace(/\n{3,}/g, '\n\n')
 }
 
-/** Rule-append / overlay text we injected; caller leftover is not included. */
+/** Overlay text we injected; caller leftover is not included. */
 export function injectedOverlayText(before, after) {
   if (!after || before === after) return ''
   const beforeSys = extractSystemTexts(before?.system)

@@ -12,7 +12,6 @@ import {
   cacheTtlFromCompat,
   detectProxiedOfficialCcFromCompat,
 } from '@/lib/cache-breakpoints'
-import { cleanPersonaRules, personaRulesFromCompat } from '@/lib/persona-rules'
 import {
   personaInjectFromPreset,
   personaPresetFromCompat,
@@ -24,6 +23,7 @@ import { QueryGate } from '@/components/query-gate'
 import { dashboardQueryOptions } from '@/features/overview/queries'
 import { AboutPane } from '@/features/settings/about-pane'
 import { BackupPane } from '@/features/settings/backup-pane'
+import { GrokPane } from '@/features/settings/grok-pane'
 import { HealthPane } from '@/features/settings/health-pane'
 import { LogsPane } from '@/features/settings/logs-pane'
 import {
@@ -34,8 +34,6 @@ import {
 import { NotifyPane } from '@/features/settings/notify-pane'
 import { OfficialCcSettingsPane } from '@/features/settings/official-cc-pane'
 import { OpenaiPane } from '@/features/settings/openai-pane'
-import { GrokPane } from '@/features/settings/grok-pane'
-import { PersonaRulesPane } from '@/features/settings/persona-rules-pane'
 import { PoolPane } from '@/features/settings/pool-pane'
 import {
   cchEnabledFromCompat,
@@ -53,6 +51,7 @@ import { SettingsNav } from '@/features/settings/settings-nav'
 import { SettingsSkeleton } from '@/features/settings/settings-skeleton'
 import { Socks5Pane } from '@/features/settings/socks5-pane'
 import { StickyPane } from '@/features/settings/sticky-pane'
+import { uploadIntervalOf } from '@/features/settings/telemetry-interval'
 import { TelemetryPane } from '@/features/settings/telemetry-pane'
 import { ProtocolPane } from './protocol-pane'
 
@@ -88,16 +87,14 @@ export function SettingsPage() {
     mutationFn: () => {
       const body = { ...draft }
       const compat = (body.compatibility as Record<string, unknown>) || {}
-      if (tab === 'protocol' || tab === 'whitelist') {
+      if (tab === 'protocol') {
         const preset = personaPresetFromCompat(compat)
-        const rules = cleanPersonaRules(personaRulesFromCompat(compat))
         const breakpoints = cacheBreakpointsFromCompat(compat)
         body.compatibility = {
           ...compat,
           persona_preset: preset,
           overlay_preset: 'off',
           persona_standing: String(compat.persona_standing ?? ''),
-          persona_leak_append: '',
           persona_inject: personaInjectFromPreset(
             preset,
             compat.persona_inject
@@ -115,7 +112,6 @@ export function SettingsPage() {
           official_cc_passthrough: compat.official_cc_passthrough === true,
           cch_enabled: cchEnabledFromCompat(compat),
           thinking_display: thinkingDisplayFromCompat(compat),
-          persona_rules: rules,
         }
       }
       if (tab === 'init') {
@@ -137,9 +133,6 @@ export function SettingsPage() {
       })
     },
     onSuccess: async (saved) => {
-      const compat =
-        saved?.compatibility ||
-        (draft.compatibility as Record<string, unknown> | undefined)
       let inherited = 0
       if (tab === 'protocol') {
         try {
@@ -168,7 +161,12 @@ export function SettingsPage() {
         }
       }
       toast.success(
-        settingsSaveToast(tab, compat, inherited, saved?.kernel_persona)
+        settingsSaveToast(
+          tab,
+          inherited,
+          saved?.kernel_persona,
+          saved?.telemetry_sync
+        )
       )
       acceptNextServer.current = true
       await Promise.all([
@@ -193,11 +191,7 @@ export function SettingsPage() {
     serverJson !== null &&
     Object.keys(draft).length > 0 &&
     JSON.stringify(draft) !== serverJson
-  const hideSave =
-    tab === 'socks5' ||
-    tab === 'telemetry' ||
-    tab === 'backup' ||
-    tab === 'about'
+  const hideSave = tab === 'socks5' || tab === 'backup' || tab === 'about'
   const showSaveBar = dirty && !hideSave
 
   const discard = () => {
@@ -226,10 +220,10 @@ export function SettingsPage() {
       description={
         tab === 'quota'
           ? 'Claude 配额闸线、并发和 RPM。GPT 配额在 OpenAI 页。个人自用引导会把闸关掉并拉到上限；这里仍可再改。'
-            : tab === 'openai'
-              ? 'GPT 传输、准入、配额与客户端画像。全局 WebSocket 只作用于推理，不影响终端或集群。'
-              : tab === 'grok'
-                ? 'Grok 的 OAuth、上游地址、协议和配额。端点没填齐时，导入会提示去这里补。'
+          : tab === 'openai'
+            ? 'GPT 传输、准入、配额与客户端画像。全局 WebSocket 只作用于推理，不影响终端或集群。'
+            : tab === 'grok'
+              ? 'Grok 的 OAuth、上游地址、协议和配额。端点没填齐时，导入会提示去这里补。'
               : undefined
       }
     >
@@ -377,7 +371,9 @@ export function SettingsPage() {
               ) : null}
               {tab === 'grok' ? (
                 <GrokPane
-                  grok={(draft.grok as Record<string, unknown> | undefined) || {}}
+                  grok={
+                    (draft.grok as Record<string, unknown> | undefined) || {}
+                  }
                   onChange={(next) =>
                     setDraft((current) => ({ ...current, grok: next }))
                   }
@@ -421,17 +417,6 @@ export function SettingsPage() {
                   }
                 />
               ) : null}
-              {tab === 'whitelist' ? (
-                <PersonaRulesPane
-                  compat={
-                    (draft.compatibility as
-                      Record<string, unknown> | undefined) || {}
-                  }
-                  onChange={(next) =>
-                    setDraft({ ...draft, compatibility: next })
-                  }
-                />
-              ) : null}
               {tab === 'health' ? (
                 <HealthPane
                   title={SETTINGS_TAB_LABELS[tab]}
@@ -460,7 +445,24 @@ export function SettingsPage() {
                   onChange={(next) => setDraft({ ...draft, notify: next })}
                 />
               ) : null}
-              {tab === 'telemetry' ? <TelemetryPane /> : null}
+              {tab === 'telemetry' ? (
+                <TelemetryPane
+                  interval={uploadIntervalOf(
+                    (draft.telemetry as Record<string, unknown> | undefined)
+                      ?.upload_interval_seconds
+                  )}
+                  onIntervalChange={(seconds) =>
+                    setDraft((current) => ({
+                      ...current,
+                      telemetry: {
+                        ...((current.telemetry as Record<string, unknown>) ||
+                          {}),
+                        upload_interval_seconds: seconds,
+                      },
+                    }))
+                  }
+                />
+              ) : null}
               {tab === 'socks5' ? <Socks5Pane /> : null}
               {tab === 'backup' ? <BackupPane /> : null}
               {tab === 'about' ? <AboutPane /> : null}
@@ -481,9 +483,9 @@ export function SettingsPage() {
 
 function settingsSaveToast(
   tab: SettingsTabId,
-  compat: Record<string, unknown> | undefined,
   inherited: number,
-  kernel?: { updated?: number } | null
+  kernel?: { updated?: number } | null,
+  telemetry?: RoutingSaveResult['telemetry_sync']
 ) {
   if (tab === 'protocol') {
     const hot =
@@ -495,12 +497,17 @@ function settingsSaveToast(
     if (!inherited) return `已保存 · ${hot}`
     return `已保存 · ${inherited} 个槽位改为跟随全局 · ${hot}`
   }
-  if (tab === 'whitelist') {
-    const count = cleanPersonaRules(personaRulesFromCompat(compat)).length
-    return `已保存 · ${count} 条规则`
-  }
   if (tab === 'openai') return '已保存 · GPT 配置'
   if (tab === 'grok') return '已保存 · Grok 配置'
+  if (tab === 'telemetry' && telemetry) {
+    const queued = telemetry.queued
+      ? ` · ${telemetry.queued} 个集群槽已排队推送到节点`
+      : ''
+    const failed = telemetry.failed?.length
+      ? ` · ${telemetry.failed.length} 个写入失败：${telemetry.failed.slice(0, 3).join('、')}`
+      : ''
+    return `已保存 · ${telemetry.updated ?? 0} 个本机槽已热更新${queued}${failed}`
+  }
   return '已保存'
 }
 
@@ -512,6 +519,11 @@ function protocolFollowError(message: string) {
 }
 
 type RoutingSaveResult = {
-  compatibility?: Record<string, unknown>
   kernel_persona?: { updated?: number; skipped?: number } | null
+  telemetry_sync?: {
+    updated?: number
+    queued?: number
+    skipped?: number
+    failed?: string[]
+  } | null
 }

@@ -49,8 +49,10 @@ export async function readSlotProcessStatus({ projectRoot, vm, run = exec, timeo
   }
   const kind = runtimeKind(vm)
   if (kind !== 'docker' && kind !== 'kvm') return { ...unknown, telemetry: { enabled, running: null } }
+  const host = slotHost(vm)
+  if (host.native) return { ...unknown, telemetry: { enabled, running: await host.telemetryRunning(vm) } }
   try {
-    const env = slotHost(vm).dockerEnv()
+    const env = host.dockerEnv()
     const target = { ...vm, runtime: { ...(vm.runtime || {}), container: slotContainerName({ vm }), type: kind } }
     const { stdout } = await run('docker', slotExecArgv(target, ['sh', '-c', PROBE]), {
       timeout: timeoutMs,
@@ -81,6 +83,13 @@ export async function ensureTelemetrySidecar({ projectRoot, vm, run = exec, time
   if (status.telemetry.enabled !== true || status.telemetry.running !== false) {
     return { ok: true, action: 'unchanged' }
   }
+  const host = slotHost(vm)
+  if (host.native) {
+    const restarted = await host.restartTelemetry(vm, { enabled: true })
+    return restarted.ok
+      ? { ok: true, action: 'started' }
+      : { ok: false, action: 'start_failed', error: restarted.error }
+  }
   try {
     const env = slotHost(vm).dockerEnv()
     const kind = runtimeKind(vm)
@@ -103,7 +112,9 @@ export async function restartTelemetrySidecar({ projectRoot, vm, enabled, run = 
   if (!projectRoot || !isSafeSlotId(vm?.id)) return { ok: false, action: 'invalid_vm' }
   const kind = runtimeKind(vm)
   if (kind !== 'docker' && kind !== 'kvm') return { ok: false, action: 'unsupported_runtime' }
-  const env = slotHost(vm).dockerEnv()
+  const host = slotHost(vm)
+  if (host.native) return host.restartTelemetry(vm, { enabled })
+  const env = host.dockerEnv()
   const target = { ...vm, runtime: { ...(vm.runtime || {}), container: slotContainerName({ vm }), type: kind } }
   const stop = 'pkill -TERM -x kin-worker 2>/dev/null || true'
   try {

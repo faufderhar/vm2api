@@ -189,10 +189,10 @@ export function modelHidesThinkingByDefault(model) {
 
 /**
  * `summarized` (the default) asks for a readable summary whenever the caller
- * turned thinking on but hid it: explicit `omitted` or `updates`, or no display
- * on a model whose default is `omitted`. Other values, `disabled`, and requests
- * without thinking stay untouched, so a later fill can still write `omitted`.
- * `passthrough` sends the caller's choice. Never mutates the input.
+ * turned thinking on but hid it: explicit `omitted` or `updates`, no display
+ * at all, or no display on a model whose default is `omitted`. Other values
+ * and `disabled` stay untouched. `passthrough` sends the caller's choice.
+ * Never mutates the input.
  */
 export function applyThinkingDisplay(body, mode) {
   if (mode !== 'summarized' || !body || typeof body !== 'object') return body
@@ -205,8 +205,9 @@ export function applyThinkingDisplay(body, mode) {
   const display = String(thinking.display ?? '')
     .trim()
     .toLowerCase()
+  if (display === 'summarized') return body
   const hidden = HIDDEN_THINKING_DISPLAYS.has(display)
-  const unset = !display && modelHidesThinkingByDefault(body.model)
+  const unset = !display
   if (!hidden && !unset) return body
   return { ...body, thinking: { ...thinking, display: 'summarized' } }
 }

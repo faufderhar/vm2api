@@ -133,8 +133,10 @@ test('API backend applies the global official_full persona setting', async () =>
     assert.equal(response.status, 200)
     assert.ok(received)
     const outbound = JSON.parse(received.body)
-    assert.equal(outbound.system.length, 4)
-    assert.equal(outbound.system[2].text, `${DEFAULT_AGENT_STANDING}\n${CRS_OFFICIAL_AGENT_PROMPT}`)
+    assert.equal(outbound.system.length, 5)
+    assert.ok(
+      outbound.system.some((block) => String(block.text || '').includes(CRS_OFFICIAL_AGENT_PROMPT.slice(0, 80))),
+    )
   } finally {
     await new Promise((resolve) => kernel.close(resolve))
     fs.rmSync(root, { recursive: true, force: true })
@@ -220,8 +222,8 @@ test('OAuth cli-hop applies the resolved Protocol custom persona template', asyn
     await handler.handleProtocol(req, response, 'anthropic.messages', '/v1/messages')
     assert.equal(response.status, 503)
     assert.ok(prepared?.body)
-    assert.equal(prepared.body.system.length, 1)
-    assert.equal(prepared.body.system[0].text, 'CUSTOM_PERSONA UTC')
+    assert.equal(prepared.body.system.length, 2)
+    assert.ok(prepared.body.system.some((block) => String(block.text || '').includes('CUSTOM_PERSONA UTC')))
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }

@@ -169,9 +169,18 @@ export function promoteSystemToBlocks(system) {
  * blocks. Kernel restamp and applyCacheBreakpoints only hang markers on blocks,
  * so every inbound protocol must leave this shape before persona / hop.
  */
-export function canonicalizeClaudeMessagesShape(body) {
+export function canonicalizeClaudeMessagesShape(body, { preserveContentShape = false } = {}) {
   if (!body || typeof body !== 'object') return body
   const out = { ...body }
+  if (preserveContentShape) {
+    if (Array.isArray(out.messages)) {
+      out.messages = out.messages.map((message) => {
+        if (!message || message.role === 'system' || typeof message.content !== 'string') return message
+        return { ...message, content: [{ type: 'text', text: message.content }] }
+      })
+    }
+    return out
+  }
   if (out.system != null) out.system = promoteSystemToBlocks(out.system)
   if (Array.isArray(out.messages)) {
     out.messages = out.messages.map((message) => {
@@ -182,7 +191,7 @@ export function canonicalizeClaudeMessagesShape(body) {
   return out
 }
 
-export function sanitizeAnthropicBody(body, { strictPassthrough = false } = {}) {
+export function sanitizeAnthropicBody(body, { strictPassthrough = false, preserveContentShape = false } = {}) {
   if (!body || typeof body !== 'object') return body
   if (strictPassthrough) {
     const out = { ...body }
@@ -193,7 +202,7 @@ export function sanitizeAnthropicBody(body, { strictPassthrough = false } = {}) 
   const out = copyOfficialAnthropicFields(body)
   applyStructuredOutput(out, body)
 
-  if (Array.isArray(out.system)) {
+  if (!preserveContentShape && Array.isArray(out.system)) {
     const blocks = out.system
       .map((b) => {
         if (typeof b === 'string') return { type: 'text', text: b }
@@ -216,7 +225,7 @@ export function sanitizeAnthropicBody(body, { strictPassthrough = false } = {}) 
   if (!out.max_tokens) out.max_tokens = defaultMaxTokensForModel(out.model)
   if (out.tool_choice && !out.tools) delete out.tool_choice
   normalizeStop(out)
-  return canonicalizeClaudeMessagesShape(out)
+  return canonicalizeClaudeMessagesShape(out, { preserveContentShape })
 }
 
 /**

@@ -56,7 +56,10 @@ function kvmBootBudget(vm, timeoutMs) {
 
 /** Bind the VM's docker daemon into an injectable runner. */
 function slotRunner(exec, run) {
-  const env = slotHost(exec?.vm).dockerEnv()
+  const host = slotHost(exec?.vm)
+  // A macOS node has no container to exec into; its kernel is a launchd job (see startRustKernel).
+  if (host.native) return async () => ({ ok: false, code: null, stdout: '', error: 'native_node_unsupported' })
+  const env = host.dockerEnv()
   if (!env) return run
   return (args, opts = {}) => run(args, { ...opts, env })
 }
@@ -148,6 +151,7 @@ export async function reconcileCliHopRuntime(exec, { runDockerExec = runDocker }
 export function stopRustKernel(exec = {}) {
   const container = slotContainerName(exec)
   if (!container) return { ok: false, reason: 'container_missing' }
+  if (slotHost(exec?.vm).native) return { ok: false, reason: 'native_node' }
   const env = slotHost(exec?.vm).dockerEnv()
   const result = spawnSync(
     process.env.KIN_DOCKER_BIN || 'docker',
@@ -546,6 +550,16 @@ async function startKvmGuestKernel(exec, { timeoutMs, control, runDockerExec, fo
   return started
 }
 
+/** launchd keeps the job alive; a restart is a kickstart, or a full load when the node lost the job. */
+async function startNativeKernel(exec, { timeoutMs, control, host }) {
+  const restarted = await host.restartKernel(exec.vm, projectRootFromExec(exec))
+  if (!startCurrent(control)) return { ok: false, reason: 'start_cancelled' }
+  if (!restarted?.ok) {
+    return { ok: false, reason: 'start_failed', error: String(restarted?.error || 'launchd restart failed') }
+  }
+  return waitForHealth(exec, timeoutMs)
+}
+
 async function startRustKernel(exec, { timeoutMs, control, runDockerExec, force = false }) {
   if (exec?.homeDir) {
     const ids = slotUidGidFromHomeDir(exec.homeDir)
@@ -579,6 +593,7 @@ async function startRustKernel(exec, { timeoutMs, control, runDockerExec, force 
   } catch (error) {
     return { ok: false, reason: 'slot_sync_failed', error: String(error?.message || error) }
   }
+  if (host.native) return startNativeKernel(exec, { timeoutMs, control, host })
   const container = slotContainerName(exec)
   if (!container) return { ok: false, reason: 'container_missing' }
   if (isKvmRuntime(exec?.vm)) {
@@ -690,6 +705,15 @@ export function writeKernelConfig(
   // Callers pass partial vm snapshots (summaries, exec contexts); the vm json decides placement.
   const record = getVm(projectRoot, vm.id) || vm
   const host = slotHost(record)
+  // A macOS node runs the kernel on the host itself: real node paths instead of the container mounts.
+  // Unknown until that node has connected once; the slot's own start writes the config then.
+  let nodePaths = null
+  try {
+    nodePaths = host.slotPaths?.(record) || null
+  } catch (err) {
+    if (host.native) return null
+    throw err
+  }
   const claudeBin = envBin || (dataplane === 'wrap' ? host.bins.cli : host.bins.cc)
   const tz = String(timezone || vm.timezone || previous.timezone || '').trim()
   const defaultCacheTtl = routing != null ? cacheTtlFromRouting(routing) : normalizeCacheTtl(previous.default_cache_ttl)
@@ -713,8 +737,12 @@ export function writeKernelConfig(
   const kind = runtimeKind(record)
   const config = {
     vm_id: vm.id,
-    socket_path: kind === 'kvm' ? '/run/kin-guest/kernel.sock' : '/run/kin/kernel.sock',
-    credential_path: '/home/kincli/.claude/credentials.json',
+    socket_path: nodePaths
+      ? `${nodePaths.run}/kernel.sock`
+      : kind === 'kvm'
+        ? '/run/kin-guest/kernel.sock'
+        : '/run/kin/kernel.sock',
+    credential_path: nodePaths ? `${nodePaths.claude}/credentials.json` : '/home/kincli/.claude/credentials.json',
     proxy_url: '',
     proxy_required: false,
     internal_token: secret,

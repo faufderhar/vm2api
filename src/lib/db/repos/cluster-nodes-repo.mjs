@@ -144,6 +144,16 @@ export class ClusterNodesRepo {
     return stmt
   }
 
+  /** 'linux' or 'darwin'; null when the node is gone. Detected over SSH, never taken from the form. */
+  platform(id) {
+    return this._stmt('SELECT platform FROM cluster_nodes WHERE id = ?').get(id)?.platform ?? null
+  }
+
+  /** Not a connection edit: leaves updated_at alone so a pending node edit does not conflict. */
+  setPlatform(id, platform) {
+    return this._stmt('UPDATE cluster_nodes SET platform = ? WHERE id = ?').run(platform, id).changes > 0
+  }
+
   /** node_id → { address, port }; the gate token stays out of listings. */
   directLinks() {
     const rows = this._stmt('SELECT node_id, address, port FROM cluster_node_direct_links').all()

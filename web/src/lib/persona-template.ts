@@ -81,10 +81,19 @@ export const PERSONA_TEMPLATE_VARS: [string, string][] = [
     'identity',
     "官方身份句 You are a Claude agent, built on Anthropic's Claude Agent SDK.",
   ],
-  ['identity_cli', "交互 CLI 身份句 You are Claude Code, Anthropic's official CLI for Claude."],
+  [
+    'identity_cli',
+    "交互 CLI 身份句 You are Claude Code, Anthropic's official CLI for Claude.",
+  ],
   ['identity_compact', '0注入短身份句 You are Anthropic Claude Agent SDK.'],
-  ['reporting', '官方 # Reporting outcomes 整段。cli-node 只在计费和身份都在时把它切成独立段'],
-  ['dynamic_boundary', '官方动态边界标记。cli-node 用它把前面的静态段标成 global，后面的标成 org，标记本身不出站'],
+  [
+    'reporting',
+    '官方 # Reporting outcomes 整段。cli-node 只在计费和身份都在时把它切成独立段',
+  ],
+  [
+    'dynamic_boundary',
+    '官方动态边界标记。cli-node 用它把前面的静态段标成 global，后面的标成 org，标记本身不出站',
+  ],
   ['agent_expansion', '短 agent 扩写段'],
   ['agent_official', '官方 agent 提示词全文'],
   ['agent_standing', 'agent prompt 常驻约束（按档开关，非空时以换行结尾）'],
@@ -104,7 +113,6 @@ export const PERSONA_TEMPLATE_VARS: [string, string][] = [
 export const OVERLAY_TEMPLATE_VARS: [string, string][] = [
   ['overlay_body', 'body 块拼接结果，只能出现在 wrapper 块'],
   ['standing', 'persona_standing 常驻约束'],
-  ['rules', '命中末轮 user 的 persona_rules append 拼接'],
 ]
 
 const PERSONA_VAR_NAMES = PERSONA_TEMPLATE_VARS.map(([name]) => name)
@@ -261,13 +269,6 @@ export const DEFAULT_OVERLAY_TEMPLATES: Record<
       drop_if_empty: true,
       text: '{{standing}}',
     },
-    {
-      id: 'rules',
-      note: '命中末轮 user 的 persona_rules append',
-      type: 'body',
-      drop_if_empty: true,
-      text: '{{rules}}',
-    },
   ],
   minimal: [
     {
@@ -282,13 +283,6 @@ export const DEFAULT_OVERLAY_TEMPLATES: Record<
       type: 'body',
       drop_if_empty: true,
       text: '{{standing}}',
-    },
-    {
-      id: 'rules',
-      note: '命中规则 append',
-      type: 'body',
-      drop_if_empty: true,
-      text: '{{rules}}',
     },
   ],
   custom: [],

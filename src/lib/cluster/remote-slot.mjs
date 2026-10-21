@@ -57,9 +57,11 @@ import {
   removeNetwork,
   renameContainer,
 } from './docker-remote.mjs'
+import { refreshNativeSlotPayload } from './native-slot.mjs'
 import {
   awaitSlotImageBuild,
   clusterManager,
+  isNativeNodeVm,
   nodeSession,
   parseMemoryBytes,
   remoteSlotDir,
@@ -831,6 +833,7 @@ export async function refreshNodeSlotPayload(
   const id = vm?.id
   const nodeId = vmNodeId(vm)
   if (!id || !nodeId) return { id, ok: false, code: 'not_cluster_slot', error: '不是集群槽' }
+  if (isNativeNodeVm(vm)) return refreshNativeSlotPayload(vm, projectRoot, { routing, recreate })
   const kernel = vm.kernel && OS_CATALOG[vm.kernel] ? vm.kernel : 'ubuntu-24.04'
   const kind = runtimeKind(vm)
   try {
