@@ -3,6 +3,7 @@ import type { WindowEstimate } from '@/types/panel-pricing'
 import type { UsageAccountRow } from '@/types/panel-usage'
 import type { Vm } from '@/types/panel-vm'
 import { fmtNum, fmtUsd } from '@/lib/format'
+import { isGrokVm } from '@/lib/vm-kind'
 
 function num(v: unknown): number {
   const n = Number(v)
@@ -274,7 +275,10 @@ export type VmLedgerRow = {
   tokens: number
 }
 
-/** 一台槽位的费用与 token 只走这一份：5H / 7D 窗口 + 账号总计。 */
+/**
+ * 一台槽位的费用与 token 只走这一份：5H / 7D 窗口 + 账号总计。
+ * Grok 只有周额度，没有 5H 窗口，成本账也不列 5H。
+ */
 export function vmCostLedger(
   vm: Vm,
   accounts?: UsageAccountRow[]
@@ -282,7 +286,9 @@ export function vmCostLedger(
   const cost = vmWindowCosts(vm, accounts)
   const tok = vmWindowTokens(vm, accounts)
   return [
-    { key: '5h', label: '5H', cost: cost.h5, tokens: tok.h5 },
+    ...(isGrokVm(vm)
+      ? []
+      : [{ key: '5h', label: '5H', cost: cost.h5, tokens: tok.h5 } as const]),
     { key: '7d', label: '7D', cost: cost.d7, tokens: tok.d7 },
     {
       key: 'total',

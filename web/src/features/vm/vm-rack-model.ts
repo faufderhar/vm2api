@@ -136,7 +136,7 @@ export function vmWindows(vm: Vm): WindowReadout[] {
   return windows
 }
 
-/** Grok Build 周额度 / 月额度。没有同步结果时周额显示「—」，不画成 0%。 */
+/** Grok Build 周额度（标 7D）/ 月额度。没有同步结果时 7D 显示「—」，不画成 0%。 */
 function grokWindows(vm: Vm): WindowReadout[] {
   if (!vm.has_token) return []
   if (grokAuthErrorText(vm)) {
@@ -150,7 +150,7 @@ function grokWindows(vm: Vm): WindowReadout[] {
   const windows: WindowReadout[] = [
     {
       key: '5h',
-      label: '周额',
+      label: '7D',
       pct: weekly,
       note: null,
       reset: usage?.period_end ?? null,
@@ -237,7 +237,7 @@ export type RackTotals = {
   groups: Record<FleetGroup, number>
   seatsUsed: number
   seatsMax: number
-  /** 5H / 7D / 总计，逐行与单台 `vmCostLedger` 同口径相加。 */
+  /** 5H / 7D / 总计，按 key 与单台 `vmCostLedger` 同口径相加；全是 Grok 时没有 5H。 */
   ledger: VmLedgerRow[]
 }
 
@@ -257,14 +257,23 @@ export function rackTotals(
       t.seatsUsed += Number(vm.seats_used) || 0
       t.seatsMax += Number(vm.seats_max) || 0
     }
-    const rows = vmCostLedger(vm, accounts)
-    t.ledger = t.ledger.length
-      ? t.ledger.map((r, i) => ({
-          ...r,
-          cost: r.cost + rows[i].cost,
-          tokens: r.tokens + rows[i].tokens,
-        }))
-      : rows
+    // Grok 没有 5H 行，按 key 相加；混排机架里 5H 只合计有这一窗口的槽。
+    for (const row of vmCostLedger(vm, accounts)) {
+      const hit = t.ledger.find((r) => r.key === row.key)
+      if (hit) {
+        hit.cost += row.cost
+        hit.tokens += row.tokens
+      } else {
+        t.ledger.push({ ...row })
+      }
+    }
   }
+  t.ledger.sort((a, b) => LEDGER_ORDER[a.key] - LEDGER_ORDER[b.key])
   return t
+}
+
+const LEDGER_ORDER: Record<VmLedgerRow['key'], number> = {
+  '5h': 0,
+  '7d': 1,
+  total: 2,
 }

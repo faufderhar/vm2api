@@ -2,7 +2,9 @@ import { useMemo } from 'react'
 import type { UsageAccountRow } from '@/types/panel-usage'
 import type { Vm } from '@/types/panel-vm'
 import { fmtNum, fmtUsd, usedPctOf } from '@/lib/format'
+import { windowProbed } from '@/lib/pool-quota'
 import { cn } from '@/lib/utils'
+import { grokWeeklyUsedPct, isGrokVm } from '@/lib/vm-kind'
 import { vmTodayStats, vmWeekOutcome } from '@/lib/vm-usage'
 import {
   Tooltip,
@@ -28,7 +30,7 @@ const HEADROOM_BUCKETS: { label: string; color: string }[] = [
 type Pulse = {
   total: number
   counts: Record<VmZone, number>
-  /** 有票槽位的 7d 余量，按 20% 一档分桶。 */
+  /** 有票且已探测槽位的 7d 余量，按 20% 一档分桶。 */
   headroom: number[]
   headroomMedian: number | null
   todayCost: number
@@ -40,6 +42,16 @@ type Pulse = {
   weekKnown: boolean
   weekSuccess: number
   weekFail: number
+}
+
+/**
+ * 7d 已用百分比。Grok 取 Grok Build 周额度；其余取 7d 窗口。
+ * 无凭证或未探测返回 null，不进分布——否则会按 0% 已用冒充满余量。
+ */
+function weekUsedPct(vm: Vm): number | null {
+  if (!vm.has_token) return null
+  if (isGrokVm(vm)) return grokWeeklyUsedPct(vm)
+  return windowProbed(vm, '7d') ? usedPctOf(vm, '7d') : null
 }
 
 function computePulse(vms: Vm[], accounts?: UsageAccountRow[]): Pulse {
@@ -63,8 +75,9 @@ function computePulse(vms: Vm[], accounts?: UsageAccountRow[]): Pulse {
 
   for (const vm of vms) {
     counts[zoneOf(vm)] += 1
-    if (vm.has_token) {
-      const remain = Math.max(0, 100 - usedPctOf(vm, '7d'))
+    const used = weekUsedPct(vm)
+    if (used != null) {
+      const remain = Math.max(0, 100 - used)
       remains.push(remain)
       headroom[Math.min(4, Math.floor(remain / 20))] += 1
     }

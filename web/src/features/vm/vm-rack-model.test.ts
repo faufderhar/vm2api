@@ -159,6 +159,27 @@ describe('rackTotals', () => {
     )
     expect(t.ledger[0].tokens).toBe(70)
   })
+
+  it('drops 5H for Grok and sums mixed racks by key', () => {
+    const grok = vm({
+      id: 'g',
+      platform: 'xai',
+      family: 'grok',
+      window_5h_cost: 99,
+      window_7d_cost: 5,
+      total_cost: 8,
+    })
+    expect(rackTotals([grok]).ledger.map((r) => r.key)).toEqual(['7d', 'total'])
+    const mixed = rackTotals([
+      grok,
+      vm({ id: 'c', window_5h_cost: 1, window_7d_cost: 2, total_cost: 3 }),
+    ])
+    expect(mixed.ledger.map((r) => [r.key, r.cost])).toEqual([
+      ['5h', 1],
+      ['7d', 7],
+      ['total', 11],
+    ])
+  })
 })
 
 describe('vmWindows', () => {
@@ -201,7 +222,7 @@ describe('vmWindows', () => {
         },
       })
     )
-    expect(grok.map((row) => row.label)).toEqual(['周额', '月额'])
+    expect(grok.map((row) => row.label)).toEqual(['7D', '月额'])
     expect(grok[0].pct).toBe(42)
     expect(grok[1].pct).toBe(25)
   })
