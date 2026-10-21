@@ -7,8 +7,10 @@ import { expiresAtToMs, fmtResetClock } from '@/lib/fable-status'
 import { fmtNum } from '@/lib/format'
 import { tierVisual } from '@/lib/tier-visual'
 import { cn } from '@/lib/utils'
-import { isCodexVm, slotNameLabel } from '@/lib/vm-kind'
+import { isCodexVm, isGrokVm, slotNameLabel } from '@/lib/vm-kind'
 import {
+  grokPlanLabel,
+  grokSubscriptionTier,
   credentialStatus,
   fleetGroup,
   poolStatus,
@@ -330,6 +332,7 @@ function WeekPills({ week }: { week: VmWeekOutcome }) {
 /** pro / max（GPT 为套餐名）跟着账号走，放在账号名同一行。 */
 function TierBadge({ vm }: { vm: Vm }) {
   if (isCodexVm(vm)) return <OpenaiPlanBadge vm={vm} />
+  if (isGrokVm(vm)) return <GrokPlanBadge vm={vm} />
   const skin = tierVisual(vm)
   if (skin.key !== 'pro' && skin.key !== 'max' && skin.key !== 'unknown') {
     return null
@@ -342,6 +345,33 @@ function TierBadge({ vm }: { vm: Vm }) {
       )}
     >
       {skin.label}
+    </span>
+  )
+}
+
+/** 平台标签已写着 Grok，这里只放套餐；账单还没同步到订阅档时说明一句，不猜。 */
+function GrokPlanBadge({ vm }: { vm: Vm }) {
+  if (!vm.has_token) return null
+  const tier = grokSubscriptionTier(vm)
+  if (!tier) {
+    return (
+      <span
+        className='shrink-0 text-[11px] text-muted-foreground'
+        title='Grok Build 账单还没同步到订阅档，探测后显示'
+      >
+        套餐未同步
+      </span>
+    )
+  }
+  return (
+    <span
+      className={cn(
+        'shrink-0 rounded px-1.5 py-0.5 text-[10px] leading-none font-bold tracking-[0.03em] uppercase',
+        tierVisual(vm).badge
+      )}
+      title={tier}
+    >
+      {grokPlanLabel(tier)}
     </span>
   )
 }
