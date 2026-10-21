@@ -62,6 +62,19 @@ Go worker JSON 透传，不必因人设重建 worker。
 
 全部非官方协议（Messages / Chat / Completions / Responses）回包 usage 按「没有被网关改写的 system、没有注入 tools」显示：藏网关注入的 persona system 块与 server tools，保留用户 prompt 与用户自己的 tools，抹掉因 persona 产生的官方 cache。官方 CC 不遮罩。
 
+## OMP 工具图片尾置（cli-hop）
+
+请求头 `x-kin-tool-result-images: tail` 显式启用，默认关闭；不改变 classifier 或非 cli-hop 请求。
+只把 `tool_result.content[]` 的图片提到消息尾部，以原 `tool_use_id` 标注来源；工具调用、结果 ID、文字、错误标志留在原位，用户直接上传的图片和文档不搬动。
+OMP 的 `[image omitted: provider image limit]` 与被抽走的纯图片结果都归一化为空结果，不恢复已淘汰的图片。
+
+先在稳定 user 内容打缓存断点，再追加工具图片。Node schema 填充和 cli-node 最终合并均保留这个断点，使用面板显式的 `1h/5m`；图片及其来源说明不打点，Environment 仍按所选模板放置。
+三档内置提示词共用这项处理，不会因启用图片尾置而切换 persona。图片尾部每次仍计入输入，不能保证总费用下降或上游永不重建缓存。
+尾置模式的 `cache_prefix.scope=cached_prefix` 只比较截至上次消息断点的前缀，不把未缓存图片的淘汰误报成历史改写；实际工具文字变化仍会报告。
+
+历史含签名 thinking / redacted_thinking 时，必须显式提供 `thinking.block_binding.prefix_mismatch_behavior: "drop_block"`，最终出站补相应 beta；否则请求准备阶段返回 HTTP 400、`tool_result_image_tail_binding`，不调用上游、不换号。上游可能丢弃不再匹配的历史 reasoning，不保证语义无损。
+同一会话应保持相同尾置模式。需要更新 Node 和 cli-node 后才生效；本地布局验证不等于真实上游图片理解、缓存命中或签名处理验证。
+
 ## thinking 与 max_tokens
 
 `max_tokens` **就是** thinking 预算（thinking + 可见输出共享）。调用方有值则不覆盖；缺失时 OAuth 默认 **128000**。绝对上限 128000。仅当超过模型 `max_tokens_cap` 时 `applyMaxTokensCap` 下调。
