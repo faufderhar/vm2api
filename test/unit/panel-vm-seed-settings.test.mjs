@@ -155,3 +155,62 @@ test('GET seed-settings returns the upload log only when debug is on', async () 
     fs.rmSync(root, { recursive: true, force: true })
   }
 })
+
+function seedGrok(root, id) {
+  const dir = path.join(root, 'vms')
+  const run = path.join(dir, id, 'run')
+  fs.mkdirSync(run, { recursive: true })
+  fs.writeFileSync(path.join(dir, `${id}.json`), JSON.stringify({ id, name: id, platform: 'xai', family: 'grok' }))
+  fs.writeFileSync(
+    path.join(run, 'grok-kernel.json'),
+    JSON.stringify({
+      internal_token: 'SECRET_TOKEN',
+      proxy_url: 'http://user:pass@10.0.0.2:3128',
+      proxy_required: true,
+      base_url: 'https://cli-chat-proxy.grok.com',
+      client_version: '1.0.62',
+      oauth: { token_url: '', client_id: 'cid', discovery_url: 'https://auth.x.ai/x', refresh_skew_sec: 120 },
+    }),
+  )
+  fs.writeFileSync(path.join(run, 'grok-agent-id'), 'abc123\n')
+}
+
+test('GET seed-settings returns Grok CLI info for Grok slots without secrets', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-seed-grok-'))
+  try {
+    seedGrok(root, 'vm-01')
+    const { handlePanel, response } = handler(root)
+    await handlePanel({ method: 'GET' }, {}, new URL('http://localhost/api/panel/vms/vm-01/seed-settings'))
+    assert.equal(response.status, 200, JSON.stringify(response.body).slice(0, 400))
+    const data = response.body.data
+    assert.equal(data.kind, 'grok')
+    assert.equal(data.settings_json, undefined)
+    assert.equal(data.grok_cli.product, 'grok-shell')
+    assert.match(data.grok_cli.user_agent, /^grok-shell\/1\.0\.62 \(/)
+    assert.equal(data.grok_cli.agent_id, 'abc123')
+    assert.deepEqual(data.grok_cli.proxy, { url: 'http://10.0.0.2:3128', auth: true, required: true })
+    assert.equal(data.grok_cli.oauth.client_id, 'cid')
+    assert.equal(data.grok_cli.oauth.refresh_skew_sec, 120)
+    assert.equal(data.grok_cli.kernel.configured, true)
+    assert.equal(data.grok_cli.kernel.ok, false)
+    assert.equal(data.grok_cli.credentials.present, false)
+    const raw = JSON.stringify(response.body)
+    assert.doesNotMatch(raw, /SECRET_TOKEN|user:pass/)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('PUT seed-settings refuses Grok slots', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-seed-grok-put-'))
+  try {
+    seedGrok(root, 'vm-01')
+    const { handlePanel, response } = handler(root, { readBody: async () => ({ telemetry_disabled: false }) })
+    await handlePanel({ method: 'PUT' }, {}, new URL('http://localhost/api/panel/vms/vm-01/seed-settings'))
+    assert.equal(response.status, 409)
+    assert.equal(response.body.error.code, 'grok_no_seed_policy')
+    assert.equal(fs.existsSync(path.join(root, 'vms', 'vm-01', 'cli-home')), false)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})

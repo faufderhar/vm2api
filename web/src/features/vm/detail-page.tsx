@@ -22,7 +22,7 @@ import {
   weeklySplitInfo,
 } from '@/lib/fable-status'
 import { usedPctOf } from '@/lib/format'
-import { compactEmail, isCodexVm } from '@/lib/vm-kind'
+import { compactEmail, isCodexVm, isGrokVm } from '@/lib/vm-kind'
 import {
   accountStatus,
   claudeTier,
@@ -64,6 +64,7 @@ import { VmProxyTab } from '@/features/vm/detail-proxy-tab'
 import { VmDetailSkeleton } from '@/features/vm/detail-skeleton'
 import { VmTestTab } from '@/features/vm/detail-test-tab'
 import { bootOutcome, vmTodayCounts } from '@/features/vm/detail-today'
+import { GrokCliCard } from '@/features/vm/grok-cli-card'
 import { NodeChip } from '@/features/vm/node-chip'
 import { probeOutcome, type ProbeCheck } from '@/features/vm/probe-status'
 import {
@@ -138,7 +139,9 @@ function VmDetailBody({
   const seed = useQuery({
     ...vmSeedQueryOptions(id),
     enabled: perms.admin && wantedTab === 'seed',
-    refetchInterval: wantedTab === 'seed' ? 2000 : false,
+    // Grok 只读 CLI 信息，每次还要探一下内核健康，不必 2 秒一刷。
+    refetchInterval: (q) =>
+      wantedTab !== 'seed' ? false : q.state.data?.grok_cli ? 10_000 : 2000,
   })
   const seedUploadLog = useQuery({
     ...vmSeedUploadLogQueryOptions(id),
@@ -594,7 +597,9 @@ function VmDetailBody({
                 onDelete={() => setConfirmDel(true)}
               />
               <TabsContent value='seed' className='pt-4'>
-                {seed.data ? (
+                {seed.data?.grok_cli ? (
+                  <GrokCliCard info={seed.data.grok_cli} />
+                ) : seed.data ? (
                   <SeedPolicyCard
                     seed={seed.data}
                     slot={seedSlot}
@@ -609,7 +614,13 @@ function VmDetailBody({
                   />
                 ) : (
                   <p className='text-sm text-muted-foreground'>
-                    {seed.isError ? '种子策略读取失败' : '读取种子策略…'}
+                    {seed.isError
+                      ? isGrokVm(vm)
+                        ? 'Grok CLI 信息读取失败'
+                        : '种子策略读取失败'
+                      : isGrokVm(vm)
+                        ? '读取 Grok CLI 信息…'
+                        : '读取种子策略…'}
                   </p>
                 )}
               </TabsContent>

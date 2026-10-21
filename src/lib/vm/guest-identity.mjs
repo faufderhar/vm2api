@@ -15,6 +15,7 @@ import { isHostKernel } from '../identity/workstation-profile.mjs'
 import { syncWorkerTelemetry } from './vm-runtime.mjs'
 import { slotHost } from './slot-host.mjs'
 import { isGeneratedHostname } from '../identity/workstation-fingerprint.mjs'
+import { isGrokVm } from './vm-kind.mjs'
 
 export const GUEST_IDENTITY_SCHEMA = '1'
 
@@ -182,6 +183,10 @@ export async function collectSlotIdentity(projectRoot, vm, { callGet = readGuest
   }
   current.updated_at = new Date().toISOString()
   atomicWriteJson(vmPath, current, { mode: 0o600 })
+  // Grok has no Claude Code home or telemetry sidecar config: guest facts only.
+  if (isGrokVm(current)) {
+    return { ok: true, id: vm.id, fingerprint: current.fingerprint, runtime_kind: current.runtime.type }
+  }
   const homeDir = path.join(projectRoot, 'vms', vm.id, 'cli-home')
   applyOfficialFingerprintToVm(vmPath, homeDir)
   try {

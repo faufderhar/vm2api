@@ -258,3 +258,46 @@ test('merge without guest hardware leaves previous fingerprint.hardware', () => 
   assert.equal(out.hardware.cpu_model, 'keep-cpu')
   assert.equal(out.hardware.cpu_cores, 2)
 })
+
+test('collectSlotIdentity on a Grok slot writes guest facts but no Claude worker config', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-guest-grok-'))
+  const id = 'vm-01'
+  try {
+    fs.mkdirSync(path.join(root, 'vms', id), { recursive: true })
+    const vmPath = path.join(root, 'vms', `${id}.json`)
+    fs.writeFileSync(
+      vmPath,
+      JSON.stringify({ id, platform: 'xai', family: 'grok', fingerprint: {}, runtime: { type: 'docker' } }),
+    )
+    const out = await collectSlotIdentity(
+      root,
+      { id, platform: 'xai', family: 'grok', runtime: { type: 'docker' } },
+      {
+        callGet: async () => ({
+          ok: true,
+          status: 200,
+          body: {
+            ok: true,
+            identity: {
+              hostname: 'imac15',
+              os_id: 'ubuntu',
+              os_pretty: 'Ubuntu 24.04',
+              kernel_release: '6.8.0',
+              arch: 'amd64',
+              collected_at: '2026-10-21T00:00:00Z',
+            },
+          },
+        }),
+      },
+    )
+    assert.equal(out.ok, true, JSON.stringify(out))
+    assert.equal(out.telemetry_sync, undefined)
+    const saved = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
+    assert.equal(saved.fingerprint.os_pretty, 'Ubuntu 24.04')
+    assert.equal(saved.runtime.identity_collected_at, '2026-10-21T00:00:00Z')
+    assert.equal(fs.existsSync(path.join(root, 'vms', id, 'cli-home')), false)
+    assert.equal(fs.existsSync(path.join(root, 'vms', id, 'run', 'worker.json')), false)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})

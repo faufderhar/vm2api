@@ -622,7 +622,46 @@ export type VmSeedSettings = {
   settings_json?: Record<string, unknown> | null
   claude_setting?: string | null
   kin_seed?: Record<string, unknown> | null
+  /** Grok 槽才有：没有 Claude 种子，返回 kin-grok-kernel 扮演的 grok-shell。 */
+  kind?: 'grok'
+  grok_cli?: VmGrokCliInfo
   [key: string]: unknown
+}
+
+/** Grok 槽的 CLI 身份。来自 `vms/<id>/run/grok-kernel.json`，不含内部令牌和代理密码。 */
+export type VmGrokCliInfo = {
+  product: string
+  client_version: string
+  user_agent: string
+  billing_client_mode: string
+  base_url: string
+  agent_id: string | null
+  proxy: { url: string; auth: boolean; required: boolean | null }
+  oauth: {
+    client_id: string
+    discovery_url: string
+    /** 空串表示按 discovery 解析。 */
+    token_url: string
+    refresh_skew_sec: number
+  }
+  credentials: {
+    present: boolean
+    accounts: number
+    has_access: boolean
+    has_refresh: boolean
+    expires_at: string | number | null
+    updated_at: string | null
+  }
+  kernel: {
+    /** 还没写过 grok-kernel.json：槽位没起过推理。 */
+    configured: boolean
+    config_written_at: string | null
+    /** null = 未配置，不探测。 */
+    ok: boolean | null
+    reason: string
+    in_flight: number
+  }
+  files: { run_dir: string; config: string; credentials: string }
 }
 
 /**

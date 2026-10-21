@@ -1,5 +1,6 @@
 import type { Vm, VmPhysicalFeatures } from '@/types/panel-vm'
 import { fmtAgo, fmtBytes, fmtExpiresAt } from '@/lib/format'
+import { isClaudeVm, isGrokVm } from '@/lib/vm-kind'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Field } from '@/features/vm/detail-section-primitives'
@@ -65,6 +66,7 @@ export function VmPhysicalFeaturesCard({
 }) {
   const features = vm.physical_features || {}
   const dmi = features.dmi || {}
+  const isHeadless = !isClaudeVm(vm)
   return (
     <Card>
       <CardHeader className='flex flex-row items-center justify-between space-y-0 pb-2'>
@@ -80,6 +82,12 @@ export function VmPhysicalFeaturesCard({
         </Button>
       </CardHeader>
       <CardContent className='divide-y pt-0'>
+        {!features.observed_at && isHeadless ? (
+          <p className='pb-2 text-xs text-muted-foreground'>
+            {isGrokVm(vm) ? 'Grok' : 'GPT'}
+            槽导入凭证时不跑官方初装，不会自动采集。点「采集」读取容器里的系统、内核和工具链。
+          </p>
+        ) : null}
         <Fact
           label='形态'
           value={features.runtime_type || vm.runtime_type}

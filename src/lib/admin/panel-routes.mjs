@@ -167,6 +167,7 @@ import { fillVmTimezoneFromExit, syncVmTimezoneFromProxy } from '../vm/proxy-tim
 import { validTimezone } from '../core/timezone.mjs'
 import { stampVmKind, isCodexVm } from '../vm/vm-kind.mjs'
 import { isGrokVm } from '../vm/vm-kind.mjs'
+import { readGrokCliInfo } from '../vm/grok-cli-info.mjs'
 import { parseAllowedModelsPatch } from '../pool/slot-model-gate.mjs'
 import { parseScheduleLevelInput, manualScheduleLevelOf } from '../pool/credential-weight.mjs'
 import { parseActiveHoursInput } from '../pool/active-hours.mjs'
@@ -3650,6 +3651,11 @@ export function createPanelHandler(ctx) {
         const id = p.split('/')[4]
         const vm = getVm(cfg.paths.project, id)
         if (!vm) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
+        // Grok has no CLI home: show what its kin-grok-kernel presents as grok-shell instead.
+        if (isGrokVm(vm)) {
+          const grok_cli = await readGrokCliInfo(cfg.paths.project, vm, { routing: ctx.routingConfig || {} })
+          return json(res, 200, panel.ok({ vm_id: id, kind: 'grok', grok_cli }))
+        }
         const homeDir = path.join(cfg.paths.project, 'vms', id, 'cli-home')
         let settings_json = null
         let claude_setting = null
@@ -3688,8 +3694,14 @@ export function createPanelHandler(ctx) {
         const id = p.split('/')[4]
         const vmPath = path.join(cfg.paths.project, 'vms', `${id}.json`)
         if (!fs.existsSync(vmPath)) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
-        const body = await readBody(req, 256 * 1024)
         const vm = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
+        if (isGrokVm(vm)) {
+          return json(res, 409, {
+            ok: false,
+            error: { code: 'grok_no_seed_policy', message: 'Grok 槽没有 Claude 种子策略，CLI 信息只读' },
+          })
+        }
+        const body = await readBody(req, 256 * 1024)
         const telemetryWasOff = !isTelemetryEnabled(vm.seed_policy || {})
         const merged = { ...(vm.seed_policy || {}), ...(body.seed_policy || {}) }
         for (const k of ['telemetry_disabled', 'reject_client_settings', 'reject_client_metadata_identity']) {
