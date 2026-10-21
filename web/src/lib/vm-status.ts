@@ -621,8 +621,8 @@ export function vmRunning(vm: Vm | undefined): boolean {
  */
 /**
  * 订阅档：先用账单同步到的 `subscription_tier`，老记录可能只有 `plan_type`；
- * 都没有时用 access token 的 `tier` 声明。xAI 没公开数字档对应哪个套餐，
- * 所以数字原样写成「Tier N」，不硬套 SuperGrok / Heavy。
+ * 都没有时用 access token 的 `tier` 声明，写成「Tier N」交给 `grokPlanLabel`
+ * 映射；没确认过的数字档原样显示。
  */
 export function grokSubscriptionTier(vm: Vm | undefined): string {
   const billed = String(
@@ -635,10 +635,14 @@ export function grokSubscriptionTier(vm: Vm | undefined): string {
   return typeof claim === 'string' ? claim.trim() : ''
 }
 
+/** access token `tier` 数字档 → 套餐。只收录实测确认过的：5 = SuperGrok Heavy。 */
+const GROK_TOKEN_TIER: Record<string, string> = { tier5: 'Heavy' }
+
 export function grokPlanLabel(tier: unknown): string {
   const raw = String(tier || '').trim()
   const key = raw.toLowerCase().replace(/[^a-z0-9+]/g, '')
   if (!key) return 'Grok'
+  if (GROK_TOKEN_TIER[key]) return GROK_TOKEN_TIER[key]
   if (key.includes('heavy')) return 'Heavy'
   if (key.includes('premiumplus') || key.includes('premium+')) return 'Premium+'
   if (key.includes('premium')) return 'Premium'

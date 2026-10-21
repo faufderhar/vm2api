@@ -2,7 +2,7 @@
 
 ## 未发布
 
-- 列表视图的 Grok 槽也显示订阅套餐。Grok Build 账单实际不返回订阅档，改为在账单没有时读 access token 的 `tier` 声明，显示为「Tier N」（如 Tier 5）；xAI 没公开数字档对应的套餐名，不硬套 SuperGrok / Heavy。令牌本身不下发给面板。
+- 列表视图的 Grok 槽也显示订阅套餐。Grok Build 账单实际不返回订阅档，改为在账单没有时读 access token 的 `tier` 声明，实测 `tier: 5` 是 SuperGrok Heavy，显示为 Heavy；没确认过的数字档显示为「Tier N」。令牌本身不下发给面板。
 - 虚拟机页 Grok 槽的套餐徽标显示账号订阅档（SuperGrok、Heavy、Premium+ 等），不再一律写「Grok」。订阅档取自 Grok Build 账单同步，现在积分和月账单两份文档的顶层和 `config` 都会读；还没同步到时仍显示「Grok」。详情里的「订阅档」同时显示短名和原始值。（#1）
 
 - Grok 槽详情的「种子」页不再显示 Claude 的 settings.json、claude.setting 和遥测开关，改为只读的 Grok CLI 信息：grok-shell 版本、User-Agent、agent id、上游地址、OAuth 客户端、代理（不显示密码）、内核运行状态和凭证时间。保存种子接口对 Grok 槽返回 409。运维页「采集」对 Grok 槽只写容器特征，不再改 Claude 指纹和遥测配置；没采集过时提示手动采集。（#1）

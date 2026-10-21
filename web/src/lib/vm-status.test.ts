@@ -603,7 +603,10 @@ describe('Grok plan label follows Grok Build subscription_tier', () => {
     const grok = { platform: 'xai', family: 'grok', has_token: true } as const
     expect(
       claudeTier({ id: 'g', ...grok, grok_token_tier: 5 } as Vm).label
-    ).toBe('Tier 5')
+    ).toBe('Heavy')
+    expect(
+      claudeTier({ id: 'g', ...grok, grok_token_tier: 3 } as Vm).label
+    ).toBe('Tier 3')
     expect(
       claudeTier({
         id: 'g',
