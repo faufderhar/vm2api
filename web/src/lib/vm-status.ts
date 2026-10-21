@@ -1,7 +1,7 @@
 import type { Vm } from '@/types/panel-vm'
 import type { StatusTone } from '@/types/status'
 import { pct } from '@/lib/format'
-import { isCodexVm, isGrokVm } from '@/lib/vm-kind'
+import { grokStateOf, isCodexVm, isGrokVm } from '@/lib/vm-kind'
 
 function credTextOf(vm: Vm): { text: string; key: string; tone: string } {
   const cred = vm.cred_status
@@ -614,6 +614,30 @@ export function vmRunning(vm: Vm | undefined): boolean {
   return Boolean(vm.active || s === 'running' || s === 'ok' || !s)
 }
 
+/**
+ * Grok Build `subscription_tier` → 套餐短名。xAI 没有公开枚举，按关键词归档：
+ * 带 heavy 的是 SuperGrok Heavy，其余 super / pro 是 SuperGrok，X Premium 系列单列。
+ * 认不出的原样显示；没有同步结果时显示「Grok」，不猜套餐。
+ */
+/** 账单同步到的订阅档；老记录可能只有 `plan_type`。 */
+export function grokSubscriptionTier(vm: Vm | undefined): string {
+  return String(
+    grokStateOf(vm).build_usage?.subscription_tier || vm?.plan_type || ''
+  ).trim()
+}
+
+export function grokPlanLabel(tier: unknown): string {
+  const raw = String(tier || '').trim()
+  const key = raw.toLowerCase().replace(/[^a-z0-9+]/g, '')
+  if (!key) return 'Grok'
+  if (key.includes('heavy')) return 'Heavy'
+  if (key.includes('premiumplus') || key.includes('premium+')) return 'Premium+'
+  if (key.includes('premium')) return 'Premium'
+  if (key.includes('super') || key.endsWith('pro')) return 'SuperGrok'
+  if (key === 'free' || key === 'basic' || key.endsWith('free')) return 'Free'
+  return raw
+}
+
 /** Same mapping as codex-proxy-rs `plan_type_display`; unknown raw values pass through. */
 export function openaiPlanLabel(planType: unknown): string {
   const raw = String(planType || '').trim()
@@ -658,7 +682,8 @@ export function claudeTier(vm: Vm | undefined): StatusTone {
   if (isGrokVm(vm)) {
     if (!vm?.has_token)
       return { key: 'none', label: '—', cls: 'none', text: '—' }
-    return { key: 'grok', label: 'Grok', cls: 'grok', text: 'Grok' }
+    const plan = grokPlanLabel(grokSubscriptionTier(vm))
+    return { key: 'grok', label: plan, cls: 'grok', text: plan }
   }
   if (isCodexVm(vm)) {
     if (!vm?.has_token)

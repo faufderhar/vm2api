@@ -89,6 +89,16 @@ function configOf(payload) {
   return root.config && typeof root.config === 'object' ? root.config : root
 }
 
+/** First non-empty tier across the credits and ledger documents, top level or under `config`. */
+function grokSubscriptionTierOf(...docs) {
+  for (const doc of docs) {
+    if (!doc || typeof doc !== 'object') continue
+    const tier = text(doc.subscription_tier) || text(doc.subscriptionTier)
+    if (tier) return tier
+  }
+  return null
+}
+
 /**
  * Normalize a BillingConfigResponse. `ledger` is the `/v1/billing` document,
  * which carries the monthly limit the credits document does not.
@@ -117,7 +127,7 @@ export function parseGrokBuildBilling(payload, ledger = null) {
     on_demand_used: money(config.onDemandUsed ?? config.on_demand_used ?? ledgerConfig?.onDemandUsed),
     prepaid_balance: money(config.prepaidBalance ?? config.prepaid_balance ?? ledgerConfig?.prepaidBalance),
     on_demand_enabled: flag(root.on_demand_enabled ?? root.onDemandEnabled ?? config.onDemandEnabled),
-    subscription_tier: text(root.subscription_tier || root.subscriptionTier) || null,
+    subscription_tier: grokSubscriptionTierOf(root, config, ledger, ledgerConfig),
     error: null,
   }
 }

@@ -5,6 +5,7 @@ import {
   accountUsable,
   claudeTier,
   openaiPlanLabel,
+  grokPlanLabel,
   credentialStatus,
   fleetCounts,
   fleetGroup,
@@ -574,6 +575,29 @@ describe('near-gate and seats-full are not restrictions', () => {
       },
     }
     expect(poolStatus(drainFull).key).toBe('drain')
+  })
+})
+
+describe('Grok plan label follows Grok Build subscription_tier', () => {
+  it('buckets tier strings by keyword', () => {
+    expect(grokPlanLabel('super')).toBe('SuperGrok')
+    expect(grokPlanLabel('SUBSCRIPTION_TIER_SUPER_GROK_HEAVY')).toBe('Heavy')
+    expect(grokPlanLabel('SuperGrokPro')).toBe('SuperGrok')
+    expect(grokPlanLabel('x_premium_plus')).toBe('Premium+')
+    expect(grokPlanLabel('free')).toBe('Free')
+    expect(grokPlanLabel('')).toBe('Grok')
+    expect(grokPlanLabel('mystery')).toBe('mystery')
+  })
+  it('shows the synced tier on the Grok badge', () => {
+    const grok = { platform: 'xai', family: 'grok', has_token: true } as const
+    expect(
+      claudeTier({
+        id: 'g',
+        ...grok,
+        grok_build: { subscription_tier: 'heavy' },
+      } as Vm)
+    ).toMatchObject({ key: 'grok', label: 'Heavy' })
+    expect(claudeTier({ id: 'g', ...grok } as Vm).label).toBe('Grok')
   })
 })
 

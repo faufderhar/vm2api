@@ -2,6 +2,7 @@ import type { GrokBuildUsage, Vm } from '@/types/panel-vm'
 import { expiresAtToMs } from '@/lib/fable-status'
 import { fmtAgo, fmtUsd } from '@/lib/format'
 import { grokAuthErrorText, grokStateOf } from '@/lib/vm-kind'
+import { grokPlanLabel, grokSubscriptionTier } from '@/lib/vm-status'
 import { Field, ResetAt } from '@/features/vm/detail-section-primitives'
 
 const GROK_BUILD_ERROR: Record<string, string> = {
@@ -35,6 +36,7 @@ export function GrokStatusPanel({ vm, now }: { vm: Vm; now: number }) {
   const lastRefresh = grok.last_refresh_at
   const lastRefreshMs = expiresAtToMs(lastRefresh)
   const usage = grok.build_usage
+  const tier = grokSubscriptionTier(vm)
   const weekly = usage?.credit_usage_percent
   const syncError = grokBuildSyncError(usage)
   const probedAt = expiresAtToMs(usage?.probed_at)
@@ -98,7 +100,18 @@ export function GrokStatusPanel({ vm, now }: { vm: Vm; now: number }) {
             : '—'}
         </Field>
         <Field label='订阅档' compact>
-          {usage?.subscription_tier || '—'}
+          {tier ? (
+            <>
+              {grokPlanLabel(tier)}
+              {grokPlanLabel(tier) !== tier ? (
+                <span className='ml-1.5 font-mono text-xs text-muted-foreground'>
+                  {tier}
+                </span>
+              ) : null}
+            </>
+          ) : (
+            '—'
+          )}
         </Field>
         <Field label='周额度' compact>
           {weekly == null ? '未同步' : `${Number(weekly).toFixed(0)}%`}

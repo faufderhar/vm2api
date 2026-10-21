@@ -2,6 +2,8 @@
 
 ## 未发布
 
+- 虚拟机页 Grok 槽的套餐徽标显示账号订阅档（SuperGrok、Heavy、Premium+ 等），不再一律写「Grok」。订阅档取自 Grok Build 账单同步，现在积分和月账单两份文档的顶层和 `config` 都会读；还没同步到时仍显示「Grok」。详情里的「订阅档」同时显示短名和原始值。
+
 - Grok 槽详情的「种子」页不再显示 Claude 的 settings.json、claude.setting 和遥测开关，改为只读的 Grok CLI 信息：grok-shell 版本、User-Agent、agent id、上游地址、OAuth 客户端、代理（不显示密码）、内核运行状态和凭证时间。保存种子接口对 Grok 槽返回 409。运维页「采集」对 Grok 槽只写容器特征，不再改 Claude 指纹和遥测配置；没采集过时提示手动采集。
 
 - 虚拟机页 Grok 槽的用量窗口「周额」改标 7D，成本列不再列 5H，机架合计按行名相加，Claude 和 Grok 混排时不再错位。顶部「7d 余量分布」原来把 Grok 和未探测 7d 的槽都算成满余量，现在 Grok 按 Grok Build 周额度计算，未探测的槽不计入。

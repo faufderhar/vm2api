@@ -76,6 +76,17 @@ test('wrapped billing amounts and the ledger fill the monthly window', () => {
   assert.equal(usage.total_used, 7.5)
   assert.equal(usage.on_demand_cap, 0)
   assert.equal(usage.period_end, '2026-10-23T14:03:01.773Z')
+  assert.equal(usage.subscription_tier, null)
+})
+
+test('subscription tier is read from the credits config or the ledger', () => {
+  const credits = { config: { creditUsagePercent: 5 } }
+  assert.equal(
+    parseGrokBuildBilling({ config: { creditUsagePercent: 5, subscriptionTier: 'SuperGrokHeavy' } }).subscription_tier,
+    'SuperGrokHeavy',
+  )
+  assert.equal(parseGrokBuildBilling(credits, { subscriptionTier: 'super' }).subscription_tier, 'super')
+  assert.equal(parseGrokBuildBilling(credits, { config: { subscription_tier: 'heavy' } }).subscription_tier, 'heavy')
 })
 
 test('a fresh Grok Build sample is not fetched again until it is stale', () => {
