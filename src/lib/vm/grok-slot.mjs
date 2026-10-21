@@ -5,7 +5,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { atomicWriteJson, readJsonCached } from './vm-file.mjs'
-import { grokIdentityFromTokens } from '../oauth/grok-oauth.mjs'
+import { grokIdentityFromTokens, grokTokenTier } from '../oauth/grok-oauth.mjs'
 
 export function grokCredentialPath(projectRoot, vmId) {
   return path.join(projectRoot, 'vms', vmId, 'grok-credentials.json')
@@ -249,5 +249,6 @@ export function summarizeGrokSlot(projectRoot, vm = {}, now = Date.now()) {
     limited_reason: limitedUntil ? bag.limited_reason || null : null,
     last_refresh_at: bag.last_refresh_at || null,
     build_usage: publicGrokBuildUsage(bag),
+    token_tier: grokTokenTier(account?.access_token),
   }
 }

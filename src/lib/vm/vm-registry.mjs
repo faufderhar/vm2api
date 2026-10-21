@@ -243,6 +243,7 @@ export function summarizeVm(vm, projectRoot = null, routing = null) {
     grok_limited_until: grok?.limited_until || null,
     grok_limited_reason: grok?.limited_reason || null,
     grok_build: grok?.build_usage || null,
+    grok_token_tier: grok?.token_tier ?? null,
     claude_reset_credits: isClaude ? vm.claude_reset_credits || null : null,
   }
 }

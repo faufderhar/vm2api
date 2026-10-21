@@ -619,11 +619,20 @@ export function vmRunning(vm: Vm | undefined): boolean {
  * 带 heavy 的是 SuperGrok Heavy，其余 super / pro 是 SuperGrok，X Premium 系列单列。
  * 认不出的原样显示；没有同步结果时显示「Grok」，不猜套餐。
  */
-/** 账单同步到的订阅档；老记录可能只有 `plan_type`。 */
+/**
+ * 订阅档：先用账单同步到的 `subscription_tier`，老记录可能只有 `plan_type`；
+ * 都没有时用 access token 的 `tier` 声明。xAI 没公开数字档对应哪个套餐，
+ * 所以数字原样写成「Tier N」，不硬套 SuperGrok / Heavy。
+ */
 export function grokSubscriptionTier(vm: Vm | undefined): string {
-  return String(
+  const billed = String(
     grokStateOf(vm).build_usage?.subscription_tier || vm?.plan_type || ''
   ).trim()
+  if (billed) return billed
+  const claim = vm?.grok_token_tier
+  if (typeof claim === 'number' && Number.isFinite(claim))
+    return `Tier ${claim}`
+  return typeof claim === 'string' ? claim.trim() : ''
 }
 
 export function grokPlanLabel(tier: unknown): string {

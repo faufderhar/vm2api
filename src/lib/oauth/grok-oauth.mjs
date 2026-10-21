@@ -339,14 +339,7 @@ export function generateGrokAuthUrl({ routing, vmId, proxyUrl } = {}) {
 /**
  * Start a device-code login. The device_code stays on the server; the panel only gets the user code.
  */
-export async function startGrokDeviceLogin({
-  routing,
-  vmId,
-  proxyUrl,
-  fetchImpl,
-  timeoutMs,
-  projectRoot,
-} = {}) {
+export async function startGrokDeviceLogin({ routing, vmId, proxyUrl, fetchImpl, timeoutMs, projectRoot } = {}) {
   sweepExpired()
   if (!vmId) throw fail('vm_required', 'vm_id required (先创建虚拟机)')
   if (egressMissing(proxyUrl, fetchImpl)) {
@@ -368,7 +361,10 @@ export async function startGrokDeviceLogin({
   })
   if (res.error) throw fail(res.error, 'xAI 设备码请求失败，请检查槽位代理后重试', { status: 502 })
   if ((res.status || 0) >= 400) {
-    throw fail('device_code_failed', `xAI 设备码请求失败 (HTTP ${res.status})`, { status: 502, upstream_status: res.status })
+    throw fail('device_code_failed', `xAI 设备码请求失败 (HTTP ${res.status})`, {
+      status: 502,
+      upstream_status: res.status,
+    })
   }
   const payload = res.payload || {}
   const deviceCode = String(payload.device_code || '').trim()
@@ -410,14 +406,7 @@ export async function startGrokDeviceLogin({
 }
 
 /** One device-code poll. Pending is not an error; the panel calls this again. */
-export async function pollGrokDeviceLogin({
-  sessionId,
-  vmId,
-  proxyUrl,
-  fetchImpl,
-  timeoutMs,
-  projectRoot,
-} = {}) {
+export async function pollGrokDeviceLogin({ sessionId, vmId, proxyUrl, fetchImpl, timeoutMs, projectRoot } = {}) {
   sweepExpired()
   const session = await loadDeviceSession(projectRoot, sessionId)
   if (!session) return { ok: false, error: 'session_expired', status: 'expired' }
@@ -462,7 +451,13 @@ export async function pollGrokDeviceLogin({
     return { ok: false, error: oauthError, status: 'failed', upstream_status: res.status }
   }
   if ((res.status || 0) >= 400) {
-    return { ok: false, error: 'exchange_failed', status: 'pending', interval_sec: session.interval, upstream_status: res.status }
+    return {
+      ok: false,
+      error: 'exchange_failed',
+      status: 'pending',
+      interval_sec: session.interval,
+      upstream_status: res.status,
+    }
   }
   const tok = tokenResult(res.payload)
   if (!tok.access_token) return { ok: false, error: 'exchange_empty', status: 'failed' }
@@ -531,7 +526,8 @@ export async function exchangeGrokAuthCode({ sessionId, code, vmId, proxyUrl, fe
   if (res.status === 400 || res.status === 401 || res.status === 403) {
     throw fail('exchange_rejected', 'xAI 拒绝了授权码，请重新生成授权链接', { upstream_status: res.status })
   }
-  if (res.status >= 400) throw fail('exchange_failed', `xAI 换票失败 (HTTP ${res.status})`, { upstream_status: res.status })
+  if (res.status >= 400)
+    throw fail('exchange_failed', `xAI 换票失败 (HTTP ${res.status})`, { upstream_status: res.status })
   const tok = tokenResult(res.payload)
   if (!tok.access_token) throw fail('exchange_empty', 'xAI 换票响应缺少 access_token')
   sessions.delete(sessionId)
@@ -581,6 +577,14 @@ function decodeJwtClaims(token) {
   } catch {
     return null
   }
+}
+
+/** `tier` claim on the xAI access token (seen as a number, e.g. 5). Display only, not verified. */
+export function grokTokenTier(accessToken) {
+  const tier = decodeJwtClaims(accessToken)?.tier
+  if (typeof tier === 'number' && Number.isFinite(tier)) return tier
+  if (typeof tier === 'string' && tier.trim()) return tier.trim()
+  return null
 }
 
 /** Display-only identity. Claims are decoded, not verified. */

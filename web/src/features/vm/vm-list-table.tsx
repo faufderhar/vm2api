@@ -349,7 +349,7 @@ function TierBadge({ vm }: { vm: Vm }) {
   )
 }
 
-/** 平台标签已写着 Grok，这里只放套餐；账单还没同步到订阅档时说明一句，不猜。 */
+/** 平台标签已写着 Grok，这里只放套餐；账单和令牌都没有订阅档时说明一句，不猜。 */
 function GrokPlanBadge({ vm }: { vm: Vm }) {
   if (!vm.has_token) return null
   const tier = grokSubscriptionTier(vm)
@@ -357,7 +357,7 @@ function GrokPlanBadge({ vm }: { vm: Vm }) {
     return (
       <span
         className='shrink-0 text-[11px] text-muted-foreground'
-        title='Grok Build 账单还没同步到订阅档，探测后显示'
+        title='账单和 access token 里都没有订阅档'
       >
         套餐未同步
       </span>

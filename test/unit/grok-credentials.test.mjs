@@ -75,17 +75,12 @@ test('routing defaults are disabled and fail closed without OAuth config', () =>
 test('routing rejects non-https endpoints and unsupported protocol modes', () => {
   assert.equal(grokOauthConfig({ grok: { oauth: { ...OAUTH, token_url: 'http://x.test/t' } } }).ok, false)
   assert.throws(() => validateGrokRoutingPatch({ grok: { oauth: { token_url: 'http://x.test/t' } } }), /https/)
-  assert.equal(
-    grokOauthConfig({ grok: { oauth: { token_url: 'https://auth.example.test/token' } } }).ok,
-    false,
-  )
+  assert.equal(grokOauthConfig({ grok: { oauth: { token_url: 'https://auth.example.test/token' } } }).ok, false)
   assert.throws(
     () => validateGrokRoutingPatch({ grok: { oauth: { authorize_url: 'https://evil.example/authorize' } } }),
     /x\.ai/,
   )
-  assert.doesNotThrow(() =>
-    validateGrokRoutingPatch({ grok: { oauth: { token_url: 'http://127.0.0.1:9/token' } } }),
-  )
+  assert.doesNotThrow(() => validateGrokRoutingPatch({ grok: { oauth: { token_url: 'http://127.0.0.1:9/token' } } }))
   assert.throws(
     () => validateGrokRoutingPatch({ grok: { protocols: { 'openai.completions': { mode: 'native' } } } }),
     /reject/,
@@ -100,13 +95,16 @@ test('routing rejects non-https endpoints and unsupported protocol modes', () =>
 
 test('auth url requires config and proxy, and carries PKCE S256', () => {
   resetGrokAuthUrlSessions()
-  assert.throws(() => generateGrokAuthUrl({ routing: {}, vmId: 'vm-g1', proxyUrl: 'socks5h://p' }), (err) => {
-    assert.equal(err.code, 'grok_oauth_not_configured')
-    assert.equal(err.status, 503)
-    assert.ok(err.missing.includes('authorize_url'))
-    assert.ok(err.missing.includes('redirect_uri'))
-    return true
-  })
+  assert.throws(
+    () => generateGrokAuthUrl({ routing: {}, vmId: 'vm-g1', proxyUrl: 'socks5h://p' }),
+    (err) => {
+      assert.equal(err.code, 'grok_oauth_not_configured')
+      assert.equal(err.status, 503)
+      assert.ok(err.missing.includes('authorize_url'))
+      assert.ok(err.missing.includes('redirect_uri'))
+      return true
+    },
+  )
   assert.throws(() => generateGrokAuthUrl({ routing, vmId: 'vm-g1' }), { code: 'proxy_required' })
   const out = generateGrokAuthUrl({ routing, vmId: 'vm-g1', proxyUrl: 'socks5h://127.0.0.1:1080' })
   const url = new URL(out.auth_url)
@@ -300,7 +298,8 @@ test('empty proxy url is the slot route, not an unbound SOCKS5', async () => {
     sessionId: started.session_id,
     vmId: 'vm-g1',
     proxyUrl: '',
-    fetchImpl: async () => tokenResponse(200, { access_token: 'at-direct', refresh_token: 'rt-direct', expires_in: 60 }),
+    fetchImpl: async () =>
+      tokenResponse(200, { access_token: 'at-direct', refresh_token: 'rt-direct', expires_in: 60 }),
   })
   assert.equal(polled.ok, true)
   assert.equal(polled.access_token, 'at-direct')
@@ -324,7 +323,9 @@ test('identity is decoded from id_token claims', () => {
 test('credential input parsing covers modes and rejects foreign secrets', () => {
   assert.equal(parseGrokCredentialInput('at', 'access_token').access_token, 'at')
   assert.equal(parseGrokCredentialInput('rt', 'refresh_token').refresh_token, 'rt')
-  const json = parseGrokCredentialInput(JSON.stringify({ tokens: { access_token: 'a', refresh_token: 'r', expires_in: 60 } }))
+  const json = parseGrokCredentialInput(
+    JSON.stringify({ tokens: { access_token: 'a', refresh_token: 'r', expires_in: 60 } }),
+  )
   assert.equal(json.refresh_token, 'r')
   assert.ok(json.expires_at > Date.now())
   assert.throws(() => parseGrokCredentialInput('sk-ant-oat01-x', 'access_token'), { code: 'wrong_platform' })
@@ -350,6 +351,18 @@ test('credential file is 0600 and summaries never carry tokens', () => {
   const text = JSON.stringify(summary) + JSON.stringify(vm)
   assert.equal(text.includes('secret-at'), false)
   assert.equal(text.includes('secret-rt'), false)
+})
+
+test('summary exposes the access token tier claim without the token', () => {
+  const root = tempProject()
+  const at = jwt({ sub: 'u1', tier: 5, scope: 'openid' })
+  upsertGrokAccount(root, 'vm-g1', { access_token: at, refresh_token: 'rt', expires_at: Date.now() + 3600_000 })
+  const vm = JSON.parse(fs.readFileSync(path.join(root, 'vms', 'vm-g1.json'), 'utf8'))
+  const summary = summarizeGrokSlot(root, vm)
+  assert.equal(summary.token_tier, 5)
+  assert.equal(JSON.stringify(summary).includes(at), false)
+  upsertGrokAccount(root, 'vm-g1', { access_token: 'opaque', refresh_token: 'rt' }, { replaceCredentials: true })
+  assert.equal(summarizeGrokSlot(root, vm).token_tier, null)
 })
 
 test('ensure token: fresh token skips refresh, concurrent callers share one refresh', async () => {

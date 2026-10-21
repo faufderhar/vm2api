@@ -2001,6 +2001,7 @@ export function enrichVm(v, accountQuota, active, extras = {}) {
     grok_limited_until: grokSlot ? v.grok_limited_until || null : null,
     grok_limited_reason: grokSlot ? v.grok_limited_reason || null : null,
     grok_build: grokSlot ? v.grok_build || null : null,
+    grok_token_tier: grokSlot ? (v.grok_token_tier ?? null) : null,
     ...(q.weekly_split ? { weekly_split: q.weekly_split } : {}),
     fable_inflight: fablePool.fable_inflight,
     fable_max: fablePool.fable_max,

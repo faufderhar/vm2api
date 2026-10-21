@@ -599,6 +599,20 @@ describe('Grok plan label follows Grok Build subscription_tier', () => {
     ).toMatchObject({ key: 'grok', label: 'Heavy' })
     expect(claudeTier({ id: 'g', ...grok } as Vm).label).toBe('Grok')
   })
+  it('falls back to the access token tier claim', () => {
+    const grok = { platform: 'xai', family: 'grok', has_token: true } as const
+    expect(
+      claudeTier({ id: 'g', ...grok, grok_token_tier: 5 } as Vm).label
+    ).toBe('Tier 5')
+    expect(
+      claudeTier({
+        id: 'g',
+        ...grok,
+        grok_token_tier: 5,
+        grok_build: { subscription_tier: 'heavy' },
+      } as Vm).label
+    ).toBe('Heavy')
+  })
 })
 
 describe('GPT plan label follows OpenAI plan_type', () => {

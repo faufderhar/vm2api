@@ -344,6 +344,8 @@ export type Vm = {
   grok_limited_reason?: string | null
   /** 列表视图上的 Grok Build 用量。详情里的 `grok.build_usage` 与此相同。 */
   grok_build?: GrokBuildUsage | null
+  /** xAI access token 的 `tier` 声明（目前见到的是数字）。账单没有订阅档时用它。 */
+  grok_token_tier?: number | string | null
   codex_kernel?: boolean
   inference_engine?: 'go' | 'rust' | null
   resolved_inference_engine?: 'go' | 'rust' | null
