@@ -110,7 +110,7 @@ pub async fn refresh_account(
 async fn resolve_token_url(client: &reqwest::Client, config: &Config) -> Result<String, String> {
     let configured = config.oauth.token_url.trim();
     if !configured.is_empty() {
-        if !allowed_oauth_url(configured) {
+        if !allowed_configured_token_url(configured) {
             return Err("grok_oauth_not_configured".to_string());
         }
         return Ok(configured.to_string());
@@ -139,12 +139,28 @@ async fn resolve_token_url(client: &reqwest::Client, config: &Config) -> Result<
     Ok(token_url)
 }
 
+fn is_loopback_host(url: &reqwest::Url) -> bool {
+    let host = url.host_str().unwrap_or("").to_ascii_lowercase();
+    host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]"
+}
+
+/// Same rule as Node's isGrokOauthEndpoint: an operator may point token_url at a
+/// loopback mock IdP. Only discovery results are held to https on x.ai.
+fn allowed_configured_token_url(value: &str) -> bool {
+    if allowed_oauth_url(value) {
+        return true;
+    }
+    reqwest::Url::parse(value)
+        .map(|url| matches!(url.scheme(), "http" | "https") && is_loopback_host(&url))
+        .unwrap_or(false)
+}
+
 fn allowed_oauth_url(value: &str) -> bool {
     let Ok(url) = reqwest::Url::parse(value) else {
         return false;
     };
     let host = url.host_str().unwrap_or("").to_ascii_lowercase();
-    if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+    if is_loopback_host(&url) {
         // Discovery could otherwise point token_endpoint at this machine and
         // the refresh token would be posted there.
         return false;
@@ -252,5 +268,19 @@ mod tests {
         assert!(!allowed_oauth_url("https://localhost/token"));
         assert!(!allowed_oauth_url("https://evil.example/token"));
         assert!(!allowed_oauth_url("http://auth.x.ai/oauth2/token"));
+    }
+
+    #[test]
+    fn configured_token_url_may_be_a_loopback_mock() {
+        assert!(allowed_configured_token_url("http://127.0.0.1:9/token"));
+        assert!(allowed_configured_token_url("http://localhost:9/token"));
+        assert!(allowed_configured_token_url(
+            "https://auth.x.ai/oauth2/token"
+        ));
+        assert!(!allowed_configured_token_url("https://evil.example/token"));
+        assert!(!allowed_configured_token_url(
+            "http://auth.x.ai/oauth2/token"
+        ));
+        assert!(!allowed_configured_token_url("file:///tmp/token"));
     }
 }
