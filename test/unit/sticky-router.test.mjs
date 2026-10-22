@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -9,6 +10,7 @@ import {
   explicitParentSessionId,
   isShortProbeRequest,
   mergeStickyConfig,
+  scopeStickyKey,
 } from '../../src/lib/pool/sticky-router.mjs'
 import { ProxyPool } from '../../src/lib/vm/proxy-pool.mjs'
 
@@ -859,4 +861,21 @@ test('replaceSession remints the outbound session on the same VM', () => {
   assert.equal(r.resolve('sess:a').sessionId, null)
   assert.equal(r.resolve('sess:a').slotIndex, null)
   r.db?.close?.()
+})
+
+test('a conversation bound under the old fingerprint keeps its account after the reminder change', () => {
+  const r = new StickyRouter({ dataDir: tmpDir(), config: { sticky: { enabled: true, ttl_seconds: 600 } } })
+  const req = { headers: {}, apiKeyRecord: { id: 7 } }
+  const text = 'fix the build <system-reminder>today is Monday</system-reminder>'
+  const body = { messages: [{ role: 'user', content: [{ type: 'text', text }] }] }
+  // Before the change the reminder was part of the hash.
+  const oldFingerprint = crypto.createHash('sha256').update(text).digest('hex').slice(0, 24)
+  const legacyKey = scopeStickyKey(r.isolateKey(`ch:${oldFingerprint}`, req), 'xai')
+  const [current] = r.collectPoolKeys(req, body, { platform: 'xai' })
+  assert.notEqual(current, legacyKey)
+  // Nothing bound under the old key: no extra alias.
+  assert.deepEqual(r.collectPoolKeys(req, body, { platform: 'xai' }), [current])
+  r.bind(legacyKey, { accountId: 'vm-old', vmId: 'vm-old' })
+  assert.deepEqual(r.collectPoolKeys(req, body, { platform: 'xai' }), [current, legacyKey])
+  assert.equal(r.resolve(r.extractPoolKey(req, body, { platform: 'xai' })).vmId, 'vm-old')
 })

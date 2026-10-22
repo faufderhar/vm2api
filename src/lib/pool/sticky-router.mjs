@@ -117,6 +117,37 @@ export function firstUserFingerprint(body = {}) {
   return crypto.createHash('sha256').update(text).digest('hex').slice(0, 24)
 }
 
+/**
+ * The fingerprint before reminders were stripped and Responses `input_text` parts were read.
+ * Only used to find conversations bound under it; see StickyRouter.fingerprintKeys.
+ */
+function legacyFirstUserFingerprint(body = {}) {
+  const msgs = Array.isArray(body?.messages) ? body.messages : Array.isArray(body?.input) ? body.input : []
+  const user = msgs.find((m) => String(m?.role || m?.type || '').toLowerCase() === 'user') || msgs[0]
+  let text = ''
+  if (user) {
+    const c = user.content ?? user.text ?? user.input
+    if (typeof c === 'string') text = c
+    else if (Array.isArray(c)) {
+      text = firstUserIdentityText(
+        c.map((part) =>
+          typeof part === 'string' ? part : part?.type === 'text' && typeof part.text === 'string' ? part.text : '',
+        ),
+      )
+    }
+  } else if (typeof body?.input === 'string') {
+    text = body.input
+  } else if (typeof body?.prompt === 'string') {
+    text = body.prompt
+  }
+  text = String(text || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 4000)
+  if (!text) return ''
+  return crypto.createHash('sha256').update(text).digest('hex').slice(0, 24)
+}
+
 /** Side queries spawned by a live parent turn. Not a new conversation. */
 export const COMPANION_PARENT_MS = 120_000
 
@@ -226,6 +257,21 @@ export class StickyRouter {
     return `k${id}:${raw}`
   }
 
+  /**
+   * `ch:` keys from the first user message. A conversation bound under the older
+   * fingerprint keeps that key as an alias while its binding lives, so a deploy does
+   * not move it to another account. Unbound old keys are not added.
+   */
+  fingerprintKeys(req, body = {}, platform = null) {
+    const fp = firstUserFingerprint(body)
+    if (!fp) return []
+    const key = this.isolateKey(`ch:${fp}`, req)
+    const old = legacyFirstUserFingerprint(body)
+    if (!old || old === fp) return [key]
+    const oldKey = this.isolateKey(`ch:${old}`, req)
+    return this.resolve(scopeStickyKey(oldKey, platform)) ? [key, oldKey] : [key]
+  }
+
   extractKey(req, body = {}) {
     if (!this.config.enabled) return null
     const mode = this.config.mode || 'conversation'
@@ -263,9 +309,8 @@ export class StickyRouter {
     for (const k of this.config.body_keys || []) {
       if (body?.[k]) return this.isolateKey(String(body[k]), req)
     }
-    const fp = firstUserFingerprint(body)
-    if (fp) return this.isolateKey(`ch:${fp}`, req)
-    return null
+    const fingerprints = this.fingerprintKeys(req, body)
+    return fingerprints.find((key) => this.resolve(key)) || fingerprints[0] || null
   }
 
   /**
@@ -306,8 +351,7 @@ export class StickyRouter {
       if (id != null && id !== '') add(`k${id}:envelope`)
       if (keys.length) return keys
     }
-    const fingerprint = firstUserFingerprint(body)
-    if (fingerprint) add(this.isolateKey(`ch:${fingerprint}`, req))
+    for (const key of this.fingerprintKeys(req, body, platform)) add(key)
     return keys
   }
 
