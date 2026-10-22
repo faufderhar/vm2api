@@ -1,7 +1,7 @@
 import { findClaudeSecurityMonitorPrompt } from '../identity/crs-persona.mjs'
 import { getModelEntry } from './model-policy.mjs'
 import { officialMessagesBody } from './anthropic-messages.mjs'
-import { stripIllegalCacheControlFields } from './cache-ttl.mjs'
+import { enforceCacheTtlOrder, fillMissingCacheTtl, stripIllegalCacheControlFields } from './cache-ttl.mjs'
 
 function textOf(content) {
   if (typeof content === 'string') return content
@@ -68,8 +68,11 @@ function incompatible(message, code = 'classifier_model_incompatible') {
   throw error
 }
 
-/** Both transports use this policy; repeated assembly never adds headroom twice. */
-export function prepareClassifierBody(input, { stream = true } = {}) {
+/**
+ * Both transports use this policy; repeated assembly never adds headroom twice.
+ * `cacheTtl` fills ttl-less caller markers (Anthropic would read them as 5m); explicit TTLs stay.
+ */
+export function prepareClassifierBody(input, { stream = true, cacheTtl = null } = {}) {
   const entry = getModelEntry(input.model)
   if (entry._heuristic) incompatible('Classifier model capabilities are unknown; specify a supported model explicitly.')
   if (input.max_tokens != null && (!Number.isInteger(input.max_tokens) || input.max_tokens <= 0))
@@ -132,6 +135,7 @@ export function prepareClassifierBody(input, { stream = true } = {}) {
   }
   if (markers > 4) incompatible('Classifier cache control exceeds four breakpoints.', 'classifier_invalid_cache')
   body = stripIllegalCacheControlFields(body)
+  if (cacheTtl) body = enforceCacheTtlOrder(fillMissingCacheTtl(body, cacheTtl))
   return body
 }
 

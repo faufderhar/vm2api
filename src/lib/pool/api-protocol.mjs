@@ -107,7 +107,7 @@ export async function runApiInference({
   let body = isOpenAI
     ? { ...claudeToOpenAIResponsesRequest({ ...canonical, model: picked.upstream_model }), stream: true }
     : { ...canonical, model: picked.upstream_model, stream: true }
-  if (requestContext) Object.assign(body, prepareClassifierBody(body))
+  if (requestContext) Object.assign(body, prepareClassifierBody(body, { cacheTtl }))
   if (!isOpenAI)
     body = sealClaudeCodeCch(ensureBillingAttribution(body), {
       enabled: routing?.compatibility?.cch_enabled !== false,

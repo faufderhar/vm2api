@@ -272,7 +272,8 @@ export function prepareCliHopBody(
     routing = null,
   } = {},
 ) {
-  if (requestContext?.purpose === 'auto_mode_classifier') return prepareClassifierBody(canonicalBody, { stream })
+  if (requestContext?.purpose === 'auto_mode_classifier')
+    return prepareClassifierBody(canonicalBody, { stream, cacheTtl })
   let body = removeCacheControlFields(officialMessagesBody(canonicalBody, { stream, preserveContentShape: true }))
   const windowTokens = Number(autoCompactWindow)
   if (Number.isInteger(windowTokens) && windowTokens >= 100_000 && windowTokens <= 1_000_000) {
@@ -399,7 +400,7 @@ export function prepareOutboundAttempt({
     identified = stampBillingPromptId(identified, sessionId, firstUserText)
   }
   if (requestContext?.purpose === 'auto_mode_classifier')
-    return { body: prepareClassifierBody(identified, { stream }), toolNames: {} }
+    return { body: prepareClassifierBody(identified, { stream, cacheTtl }), toolNames: {} }
   // Official Claude Code places its own breakpoints; adding ours would shift the
   // prefix it already caches.
   let cleaned = prepareAnthropicRequest(identified, {

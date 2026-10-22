@@ -35,6 +35,45 @@ test('classifier assembly retains caller fields across both outbound paths', () 
   }
 })
 
+function ttlLessClassifier() {
+  const input = classifierFixture({ verdict: 'severity' })
+  for (const block of [...input.system, ...input.messages[0].content]) {
+    if (block.cache_control) block.cache_control = { type: 'ephemeral' }
+  }
+  return input
+}
+
+function markerTtls(body) {
+  return [...body.system, ...body.messages.flatMap((m) => m.content)]
+    .filter((block) => block.cache_control)
+    .map((block) => block.cache_control.ttl)
+}
+
+test('classifier markers without ttl take the configured cache TTL on every outbound path', () => {
+  for (const ttl of ['1h', '5m']) {
+    const bodies = [
+      prepareCliHopBody(ttlLessClassifier(), { requestContext: context, cacheTtl: ttl }),
+      prepareOutboundAttempt({
+        canonicalBody: ttlLessClassifier(),
+        identity: {},
+        requestContext: context,
+        cacheTtl: ttl,
+      }).body,
+      prepareClassifierBody(ttlLessClassifier(), { cacheTtl: ttl }),
+    ]
+    for (const body of bodies) assert.deepEqual(markerTtls(body), [ttl, ttl], ttl)
+  }
+  assert.deepEqual(markerTtls(prepareClassifierBody(ttlLessClassifier())), [undefined, undefined])
+})
+
+test('classifier keeps explicit caller TTLs and stays 1h-before-5m', () => {
+  const input = ttlLessClassifier()
+  input.system[0].cache_control = { type: 'ephemeral', ttl: '5m' }
+  const body = prepareClassifierBody(input, { cacheTtl: '1h' })
+  assert.deepEqual(markerTtls(body), ['5m', '5m'])
+  assert.deepEqual(markerTtls(prepareClassifierBody(classifierFixture(), { cacheTtl: '5m' })), ['1h', '1h'])
+})
+
 test('classifier outbound skips thinking_display rewrite on envelope and worker finalize', () => {
   const input = {
     ...classifierFixture({ model: 'claude-sonnet-5-5' }),
