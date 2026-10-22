@@ -125,9 +125,24 @@ function normalizeOauth(raw) {
   }
 }
 
+/**
+ * The chat proxy receives the slot's access token, so it is held to xAI's own hosts
+ * like the OAuth endpoints: https on grok.com or x.ai.
+ */
+export function isGrokBaseUrl(value) {
+  try {
+    const url = new URL(String(value || ''))
+    const host = url.hostname.toLowerCase()
+    const xai = ['grok.com', 'x.ai'].some((domain) => host === domain || host.endsWith(`.${domain}`))
+    return url.protocol === 'https:' && xai && !url.username && !url.password
+  } catch {
+    return false
+  }
+}
+
 function normalizeBaseUrl(raw) {
   const value = str(raw).replace(/\/+$/, '')
-  return value && isHttpsUrl(value) ? value : DEFAULT_GROK_BASE_URL
+  return value && isGrokBaseUrl(value) ? value : DEFAULT_GROK_BASE_URL
 }
 
 export function normalizeGrokRouting(raw = {}) {
@@ -159,8 +174,8 @@ export function validateGrokRoutingPatch(body = {}) {
   if (Object.prototype.hasOwnProperty.call(grok, 'enabled') && typeof grok.enabled !== 'boolean') {
     throw typedError('grok.enabled 必须是布尔', 'invalid_grok')
   }
-  if (Object.prototype.hasOwnProperty.call(grok, 'base_url') && !isHttpsUrl(str(grok.base_url))) {
-    throw typedError('grok.base_url 必须是 https 地址', 'invalid_grok_base_url')
+  if (Object.prototype.hasOwnProperty.call(grok, 'base_url') && !isGrokBaseUrl(str(grok.base_url))) {
+    throw typedError('grok.base_url 必须是 https://*.grok.com 或 https://*.x.ai', 'invalid_grok_base_url')
   }
   if (Object.prototype.hasOwnProperty.call(grok, 'oauth')) {
     const oauth = grok.oauth

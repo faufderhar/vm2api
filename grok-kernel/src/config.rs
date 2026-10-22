@@ -43,6 +43,18 @@ pub struct Config {
     pub platform: Option<PlatformInfo>,
 }
 
+/// The chat proxy gets the access token: https on grok.com or x.ai only, as in Node.
+fn allowed_base_url(value: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(value) else {
+        return false;
+    };
+    let host = url.host_str().unwrap_or("").to_ascii_lowercase();
+    let xai = ["grok.com", "x.ai"]
+        .iter()
+        .any(|domain| host == *domain || host.ends_with(&format!(".{domain}")));
+    url.scheme() == "https" && xai && url.username().is_empty() && url.password().is_none()
+}
+
 impl Config {
     pub fn load(path: &std::path::Path) -> Result<Self, String> {
         let text = fs::read_to_string(path).map_err(|err| format!("read config: {err}"))?;
@@ -55,8 +67,8 @@ impl Config {
         if config.internal_token.is_empty() {
             return Err("internal_token is required".to_string());
         }
-        if !config.base_url.starts_with("https://") {
-            return Err("base_url must be https".to_string());
+        if !allowed_base_url(&config.base_url) {
+            return Err("base_url must be https on grok.com or x.ai".to_string());
         }
         Ok(config)
     }
@@ -94,6 +106,16 @@ mod tests {
                 refresh_skew_sec: 300,
             },
         }
+    }
+
+    #[test]
+    fn base_url_stays_on_xai_hosts() {
+        assert!(allowed_base_url("https://cli-chat-proxy.grok.com"));
+        assert!(allowed_base_url("https://api.x.ai"));
+        assert!(!allowed_base_url("http://cli-chat-proxy.grok.com"));
+        assert!(!allowed_base_url("https://grok.com.evil.example"));
+        assert!(!allowed_base_url("https://evil.example"));
+        assert!(!allowed_base_url("https://user:pw@api.x.ai"));
     }
 
     #[test]

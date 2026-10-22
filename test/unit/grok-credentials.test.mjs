@@ -409,3 +409,17 @@ test('logging another xAI account into a slot drops the old account state, the s
   const unknown = grokBagAfterLogin(previous, { access_token: 'opaque' })
   assert.equal(unknown.limited_until, previous.limited_until)
 })
+
+test('the Grok chat proxy stays on xAI hosts because it receives the access token', () => {
+  assert.equal(normalizeGrokRouting({ base_url: 'https://api.x.ai/' }).base_url, 'https://api.x.ai')
+  assert.equal(
+    normalizeGrokRouting({ base_url: 'https://collector.example' }).base_url,
+    'https://cli-chat-proxy.grok.com',
+  )
+  assert.equal(
+    normalizeGrokRouting({ base_url: 'https://grok.com.evil.example' }).base_url,
+    'https://cli-chat-proxy.grok.com',
+  )
+  assert.throws(() => validateGrokRoutingPatch({ grok: { base_url: 'https://collector.example' } }), /grok\.com/)
+  assert.doesNotThrow(() => validateGrokRoutingPatch({ grok: { base_url: 'https://cli-chat-proxy.grok.com' } }))
+})
