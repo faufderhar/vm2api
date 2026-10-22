@@ -60,29 +60,50 @@ export function createRateLimiter({ capacity = 60, refillPerSec = 1, maxKeys = 1
   }
 }
 
-/** Fixed window counter. Used for login, which sits in front of the API-key limiter. */
+/**
+ * Fixed window counter. Used for login, which sits in front of the API-key limiter.
+ * Calling it counts one attempt and says whether the key is over `limit`;
+ * `.hit(key)` counts and returns the total, `.count(key)` only reads it.
+ */
 export function createAttemptLimiter({ limit = 30, windowMs = 60_000, maxKeys = 10000 } = {}) {
   const buckets = new Map()
-  return function tooMany(key) {
-    const now = Date.now()
+  const live = (id, now) => {
+    const bucket = buckets.get(id)
+    if (bucket && now - bucket.started <= windowMs) return bucket
+    if (bucket) buckets.delete(id)
+    return null
+  }
+  const makeRoom = (now) => {
+    if (buckets.size < maxKeys) return
+    for (const [storedId, stored] of buckets) {
+      if (now - stored.started > windowMs) buckets.delete(storedId)
+    }
+    if (buckets.size < maxKeys) return
+    // Rotating names fills the map with single attempts. Drop the least-used counter,
+    // never the busy one under attack, and never refuse everyone because the map is full.
+    let victim = null
+    for (const [storedId, stored] of buckets) {
+      if (!victim || stored.count < victim[1].count) victim = [storedId, stored]
+    }
+    if (victim) buckets.delete(victim[0])
+  }
+  const hit = (key, now = Date.now()) => {
     const id = String(key || 'unknown')
-    let bucket = buckets.get(id)
-    if (!bucket || now - bucket.started > windowMs) {
-      if (bucket) buckets.delete(id)
-      if (buckets.size >= maxKeys) {
-        for (const [storedId, stored] of buckets) {
-          if (now - stored.started > windowMs) buckets.delete(storedId)
-        }
-      }
-      // A full map of live counters must not drop the oldest one. Rotating
-      // usernames would otherwise erase the admin bucket and reset the limit.
-      if (buckets.size >= maxKeys) return true
+    let bucket = live(id, now)
+    if (!bucket) {
+      makeRoom(now)
       bucket = { started: now, count: 0 }
       buckets.set(id, bucket)
     }
     bucket.count += 1
-    return bucket.count > limit
+    return bucket.count
   }
+  const count = (key, now = Date.now()) => live(String(key || 'unknown'), now)?.count || 0
+  const tooMany = (key) => hit(key) > limit
+  tooMany.hit = hit
+  tooMany.count = count
+  tooMany.limit = limit
+  return tooMany
 }
 
 export function isLoopbackAddress(address) {
@@ -92,11 +113,23 @@ export function isLoopbackAddress(address) {
   return raw === '127.0.0.1' || raw === '::1' || raw === '::ffff:127.0.0.1'
 }
 
+// Headers a reverse proxy commonly adds. nginx's plain proxy_pass adds none of them,
+// so a loopback peer must also have asked for a loopback Host.
+const PROXY_HEADERS = ['x-forwarded-for', 'x-forwarded-proto', 'x-forwarded-host', 'x-real-ip', 'forwarded', 'via']
+
+function isLoopbackHost(raw) {
+  if (raw == null) return true
+  const value = String(raw).trim().toLowerCase()
+  const host = value.startsWith('[') ? value.slice(1, value.indexOf(']')) : value.replace(/:\d+$/, '')
+  return host === 'localhost' || isLoopbackAddress(host)
+}
+
 export function isLoopbackRequest(req, env = process.env) {
   if (!isLoopbackAddress(req?.socket?.remoteAddress)) return false
   const hops = forwardedHops(req)
-  const claimedProxy = hops.length > 0 || req?.headers?.['x-forwarded-proto'] != null
-  if (!claimedProxy) return true
+  const claimedProxy = PROXY_HEADERS.some((name) => req?.headers?.[name] != null)
+  // A proxy that sent none of those still forwards the public Host (proxy_set_header Host $host).
+  if (!claimedProxy) return isLoopbackHost(req?.headers?.host)
   // A reverse proxy on this host makes every remote client look like loopback.
   if (!trustProxy(env)) return false
   const client = hops.length ? hops[hops.length - 1] : ''
@@ -320,21 +353,37 @@ function forwardedHops(req) {
     .filter(Boolean)
 }
 
-/**
- * Login limits are per account, not one bucket for every browser behind a proxy.
- * Without TRUST_PROXY the TCP peer is counted and X-Forwarded-For is ignored.
- * A trusted proxy appends the address it accepted, so the right-most hop is used.
- */
-export function loginRateLimited(limiter, req, username, env = process.env) {
+function loginKeys(req, username, env) {
   const name = String(username || '')
     .trim()
     .toLowerCase()
   const peer = String(req?.socket?.remoteAddress || 'unknown')
   const hops = forwardedHops(req)
   const client = trustProxy(env) && hops.length ? hops[hops.length - 1] : peer
-  const accountLimited = limiter(`user:${name || '-'}`)
-  const clientLimited = limiter(`client:${client}`)
-  return accountLimited || clientLimited
+  const account = `user:${name || '-'}`
+  return { client: `client:${client}`, account, failed: `failed:${account}@${client}` }
+}
+
+/**
+ * Counts this login attempt and says whether to refuse it before checking the password.
+ * Without TRUST_PROXY the TCP peer is counted and X-Forwarded-For is ignored.
+ * A trusted proxy appends the address it accepted, so the right-most hop is used.
+ *
+ * Every attempt counts against its client. An account only counts failed passwords,
+ * and once over the limit it refuses the clients that already failed on it. Anyone can
+ * fail logins for `admin`, so refusing every client would let them lock the admin out.
+ */
+export function loginRateLimited(limiter, req, username, env = process.env) {
+  const keys = loginKeys(req, username, env)
+  if (limiter.hit(keys.client) > limiter.limit) return true
+  return limiter.count(keys.account) >= limiter.limit && limiter.count(keys.failed) > 0
+}
+
+/** Call after a wrong password; see loginRateLimited. */
+export function recordLoginFailure(limiter, req, username, env = process.env) {
+  const keys = loginKeys(req, username, env)
+  limiter.hit(keys.account)
+  limiter.hit(keys.failed)
 }
 
 /**

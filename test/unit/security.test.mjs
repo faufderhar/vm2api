@@ -103,8 +103,40 @@ test('a full login limiter does not forget a live account when new names arrive'
   assert.equal(limiter('user:admin'), false)
   assert.equal(limiter('user:admin'), true)
   assert.equal(limiter('user:other'), false)
-  assert.equal(limiter('user:another'), true)
+  // Full: the least-used counter makes room. A full map never refuses everyone.
+  assert.equal(limiter('user:another'), false)
   assert.equal(limiter('user:admin'), true)
+})
+
+test('failed logins from elsewhere do not lock the account owner out', async () => {
+  const { loginRateLimited, recordLoginFailure, createAttemptLimiter } = await import(
+    `../../src/lib/core/security.mjs?lockout=${Date.now()}`
+  )
+  const limiter = createAttemptLimiter({ limit: 3, windowMs: 60_000 })
+  const from = (address) => ({ socket: { remoteAddress: address }, headers: {} })
+  for (const address of ['198.51.100.1', '198.51.100.2', '198.51.100.3']) {
+    assert.equal(loginRateLimited(limiter, from(address), 'admin', {}), false)
+    recordLoginFailure(limiter, from(address), 'admin', {})
+  }
+  // The account is over its limit: clients that failed on it wait, a clean one may try.
+  assert.equal(loginRateLimited(limiter, from('198.51.100.1'), 'admin', {}), true)
+  assert.equal(loginRateLimited(limiter, from('203.0.113.50'), 'admin', {}), false)
+  // Each new address gets one guess, then it is refused too.
+  recordLoginFailure(limiter, from('203.0.113.50'), 'admin', {})
+  assert.equal(loginRateLimited(limiter, from('203.0.113.50'), 'admin', {}), true)
+})
+
+test('a loopback peer is not this machine when the request names a public host or a proxy header', async () => {
+  const { isLoopbackRequest } = await import(`../../src/lib/core/security.mjs?host=${Date.now()}`)
+  const local = (headers) => ({ socket: { remoteAddress: '127.0.0.1' }, headers })
+  assert.equal(isLoopbackRequest(local({ host: '127.0.0.1:8080' }), {}), true)
+  assert.equal(isLoopbackRequest(local({ host: 'localhost' }), {}), true)
+  assert.equal(isLoopbackRequest(local({ host: '[::1]:8080' }), {}), true)
+  assert.equal(isLoopbackRequest(local({}), {}), true)
+  // nginx proxy_pass with `proxy_set_header Host $host` and nothing else.
+  assert.equal(isLoopbackRequest(local({ host: 'panel.example.com' }), {}), false)
+  assert.equal(isLoopbackRequest(local({ host: '127.0.0.1', 'x-real-ip': '203.0.113.8' }), {}), false)
+  assert.equal(isLoopbackRequest(local({ host: '127.0.0.1', via: '1.1 proxy' }), {}), false)
 })
 
 test('a missing user row only keeps the env admin session', async () => {

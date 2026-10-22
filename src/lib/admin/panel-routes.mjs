@@ -17,6 +17,7 @@ import {
   createAttemptLimiter,
   masterMayAdminister,
   loginRateLimited,
+  recordLoginFailure,
 } from '../core/security.mjs'
 import { loadDistillRules, saveDistillRules, validateDistillPatch } from '../core/distill-detect.mjs'
 import { applyRefusalGuardPatch, refusalGuardPolicy } from '../core/refusal-guard.mjs'
@@ -1375,6 +1376,7 @@ export function createPanelHandler(ctx) {
       const password = body.password || body.pass || body.p || ''
       const authed = await verifyPanelLogin(username, password)
       if (!authed) {
+        recordLoginFailure(loginAttempts, req, username)
         return json(res, 401, { ok: false, error: { message: '用户名或密码错误', type: 'auth' } })
       }
       if (authed.source === 'env') {
