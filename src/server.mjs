@@ -1161,9 +1161,9 @@ const server = http.createServer(async (req, res) => {
       return await handleUserUsage(req, res, {
         json,
         requireAuth,
+        apiKeyStore,
         stickyRouter,
         accountQuota,
-        apiKeyStore,
         getPoolScheduler: () => poolScheduler,
       })
     }
@@ -1172,10 +1172,10 @@ const server = http.createServer(async (req, res) => {
         json,
         readBody,
         requireAuth,
+        apiKeyStore,
         cfg,
         stickyRouter,
         accountQuota,
-        apiKeyStore,
         getPoolScheduler: () => poolScheduler,
         getRoutingConfig: () => routingConfig,
       })

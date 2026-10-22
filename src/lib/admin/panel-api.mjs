@@ -1923,6 +1923,8 @@ export function enrichVm(v, accountQuota, active, extras = {}) {
     note: v.note || null,
     region: v.region || null,
     node_id: v.node_id || null,
+    owner_user_id: v.owner_user_id || null,
+    origin: v.origin || null,
     ...(canRevealClusterNodes(extras.role || 'admin') && v.node_id
       ? { node_name: nodeNameOf(extras.clusterNodes, v.node_id) }
       : {}),
