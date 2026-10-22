@@ -2,7 +2,12 @@ import type { GrokBuildUsage, Vm } from '@/types/panel-vm'
 import { expiresAtToMs } from '@/lib/fable-status'
 import { fmtAgo, fmtUsd } from '@/lib/format'
 import { grokAuthErrorText, grokStateOf } from '@/lib/vm-kind'
-import { grokPlanLabel, grokSubscriptionTier } from '@/lib/vm-status'
+import {
+  GROK_TOKEN_TIER_HINT,
+  grokPlanLabel,
+  grokSubscriptionTier,
+  grokTierFromToken,
+} from '@/lib/vm-status'
 import { Field, ResetAt } from '@/features/vm/detail-section-primitives'
 
 const GROK_BUILD_ERROR: Record<string, string> = {
@@ -106,6 +111,14 @@ export function GrokStatusPanel({ vm, now }: { vm: Vm; now: number }) {
               {grokPlanLabel(tier) !== tier ? (
                 <span className='ml-1.5 font-mono text-xs text-muted-foreground'>
                   {tier}
+                </span>
+              ) : null}
+              {grokTierFromToken(vm) ? (
+                <span
+                  className='ml-1.5 text-xs text-muted-foreground'
+                  title={GROK_TOKEN_TIER_HINT}
+                >
+                  推断
                 </span>
               ) : null}
             </>

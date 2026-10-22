@@ -6,6 +6,8 @@ import {
   claudeTier,
   openaiPlanLabel,
   grokPlanLabel,
+  grokSubscriptionTier,
+  grokTierFromToken,
   credentialStatus,
   fleetCounts,
   fleetGroup,
@@ -615,6 +617,21 @@ describe('Grok plan label follows Grok Build subscription_tier', () => {
         grok_build: { subscription_tier: 'heavy' },
       } as Vm).label
     ).toBe('Heavy')
+  })
+  it('reads a numeric string tier claim like a number and says it is inferred', () => {
+    const grok = { platform: 'xai', family: 'grok', has_token: true } as const
+    const vm = { id: 'g', ...grok, grok_token_tier: '5' } as unknown as Vm
+    expect(grokSubscriptionTier(vm)).toBe('Tier 5')
+    expect(claudeTier(vm).label).toBe('Heavy')
+    expect(grokTierFromToken(vm)).toBe(true)
+    expect(
+      grokTierFromToken({
+        id: 'g',
+        ...grok,
+        grok_token_tier: 5,
+        grok_build: { subscription_tier: 'heavy' },
+      } as Vm)
+    ).toBe(false)
   })
 })
 

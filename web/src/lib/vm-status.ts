@@ -624,16 +624,32 @@ export function vmRunning(vm: Vm | undefined): boolean {
  * 都没有时用 access token 的 `tier` 声明，写成「Tier N」交给 `grokPlanLabel`
  * 映射；没确认过的数字档原样显示。
  */
-export function grokSubscriptionTier(vm: Vm | undefined): string {
-  const billed = String(
+function grokBilledTier(vm: Vm | undefined): string {
+  return String(
     grokStateOf(vm).build_usage?.subscription_tier || vm?.plan_type || ''
   ).trim()
-  if (billed) return billed
+}
+
+/** access token 的 tier 声明；数字和数字字符串都写成「Tier N」。 */
+function grokClaimedTier(vm: Vm | undefined): string {
   const claim = vm?.grok_token_tier
   if (typeof claim === 'number' && Number.isFinite(claim))
     return `Tier ${claim}`
-  return typeof claim === 'string' ? claim.trim() : ''
+  const text = typeof claim === 'string' ? claim.trim() : ''
+  return /^\d+$/.test(text) ? `Tier ${text}` : text
 }
+
+export function grokSubscriptionTier(vm: Vm | undefined): string {
+  return grokBilledTier(vm) || grokClaimedTier(vm)
+}
+
+/** 订阅档只来自令牌声明（账单没给）。界面上要注明是推断的。 */
+export function grokTierFromToken(vm: Vm | undefined): boolean {
+  return !grokBilledTier(vm) && !!grokClaimedTier(vm)
+}
+
+export const GROK_TOKEN_TIER_HINT =
+  '账单没有返回订阅档，按 access token 的 tier 声明推断'
 
 /** access token `tier` 数字档 → 套餐。只收录实测确认过的：5 = SuperGrok Heavy。 */
 const GROK_TOKEN_TIER: Record<string, string> = { tier5: 'Heavy' }

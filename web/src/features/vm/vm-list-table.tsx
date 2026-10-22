@@ -9,8 +9,10 @@ import { tierVisual } from '@/lib/tier-visual'
 import { cn } from '@/lib/utils'
 import { isCodexVm, isGrokVm, slotNameLabel } from '@/lib/vm-kind'
 import {
+  GROK_TOKEN_TIER_HINT,
   grokPlanLabel,
   grokSubscriptionTier,
+  grokTierFromToken,
   credentialStatus,
   fleetGroup,
   poolStatus,
@@ -369,7 +371,9 @@ function GrokPlanBadge({ vm }: { vm: Vm }) {
         'shrink-0 rounded px-1.5 py-0.5 text-[10px] leading-none font-bold tracking-[0.03em] uppercase',
         tierVisual(vm).badge
       )}
-      title={tier}
+      title={
+        grokTierFromToken(vm) ? `${tier}（${GROK_TOKEN_TIER_HINT}）` : tier
+      }
     >
       {grokPlanLabel(tier)}
     </span>
