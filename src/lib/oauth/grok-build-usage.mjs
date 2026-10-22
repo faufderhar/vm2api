@@ -174,7 +174,7 @@ async function fetchGrokBuildDocument({ projectRoot, vm, query = '', forward }) 
   const payload = await readGrokKernelJson(response).catch(() => null)
   if (response?.kernelError) {
     const code = String(payload?.error?.code || 'kernel_error')
-    if (/credential|token|refresh|unauthorized/i.test(code)) {
+    if (code === 'refresh_rejected' || code === 'grok_no_credential' || code === 'grok_token_expired') {
       if (code === 'refresh_rejected') persistGrokRefreshRejected(projectRoot, vm.id)
       return fail('upstream_auth', 'Grok Build 账单需要重新登录', 401)
     }

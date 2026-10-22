@@ -68,3 +68,96 @@ test('caller identity fields never reach xAI', async () => {
   }
   assert.equal(buildGrokOutbound('openai.chat', body, 'native', { stream: false }).body.temperature, 0.2)
 })
+
+test('a token endpoint hiccup is a short 503 hold, a dead refresh token is a 401', async () => {
+  const { grokKernelErrorStatus, grokUpstreamCall } = await import('../../src/lib/protocol/handle-grok.mjs')
+  const { codexFailureHold } = await import('../../src/lib/protocol/handle-codex.mjs')
+  const kernel = (code) => async () => ({
+    statusCode: code === 'refresh_rejected' ? 401 : 503,
+    kernelError: true,
+    headers: {},
+    async *[Symbol.asyncIterator]() {
+      yield Buffer.from(JSON.stringify({ error: { code, message: 'x' } }))
+    },
+  })
+  const call = (code) =>
+    grokUpstreamCall({
+      projectRoot: '/x',
+      vmId: 'vm',
+      envelope: {},
+      stream: false,
+      ops: { callGrokKernel: kernel(code) },
+    })
+  const hiccup = await call('refresh_failed')
+  assert.equal(hiccup.status, 503)
+  assert.equal(hiccup.body.error.code, 'refresh_failed')
+  const now = 1_000_000
+  assert.equal(codexFailureHold(hiccup, now).until, now + 30_000)
+  const dead = await call('refresh_rejected')
+  assert.equal(dead.status, 401)
+  assert.equal(codexFailureHold(dead, now).until, now + 5 * 60_000)
+  // Codes are fixed: anything unknown is retryable, not a login problem.
+  assert.equal(grokKernelErrorStatus('unauthorized'), 503)
+  assert.equal(grokKernelErrorStatus('grok_token_expired'), 401)
+})
+
+test('a slot credential failure reaches the caller as 503, not as a 401 about their key', async (t) => {
+  const fs = await import('node:fs')
+  const os = await import('node:os')
+  const path = await import('node:path')
+  const { handleGrokProtocol } = await import('../../src/lib/protocol/handle-grok.mjs')
+  const { upsertGrokAccount } = await import('../../src/lib/vm/grok-slot.mjs')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'grok-hop-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  fs.mkdirSync(path.join(root, 'vms', 'vm-g'), { recursive: true })
+  fs.writeFileSync(
+    path.join(root, 'vms', 'vm-g.json'),
+    JSON.stringify({
+      id: 'vm-g',
+      platform: 'xai',
+      family: 'grok',
+      status: 'running',
+      proxy: { id: 'px-local', scheme: 'local' },
+      grok: {},
+    }),
+  )
+  upsertGrokAccount(root, 'vm-g', { access_token: 'at', refresh_token: 'rt', expires_at: Date.now() + 3_600_000 })
+  const sent = {}
+  const res = {
+    headersSent: false,
+    setHeader() {},
+    once() {},
+    off() {},
+  }
+  const json = (_res, status, body) => {
+    sent.status = status
+    sent.body = body
+  }
+  const body = { model: 'grok-4.3', messages: [{ role: 'user', content: 'hi' }] }
+  await handleGrokProtocol({
+    req: { headers: {}, once() {}, off() {} },
+    res,
+    protocol: 'openai.chat',
+    ctx: { body, path: '/v1/chat/completions' },
+    inbound: body,
+    logBag: {},
+    stats: { errors: 0, requests: 0, by_route: {} },
+    json,
+    writeSSEHeaders() {},
+    routing: { grok: { enabled: true }, failover: { max_attempts: 1 } },
+    projectRoot: root,
+    ops: {
+      writeGrokKernelConfig: () => ({ agentId: 'a' }),
+      callGrokKernel: async () => ({
+        statusCode: 401,
+        kernelError: true,
+        headers: {},
+        async *[Symbol.asyncIterator]() {
+          yield Buffer.from(JSON.stringify({ error: { code: 'refresh_rejected' } }))
+        },
+      }),
+    },
+  })
+  assert.equal(sent.status, 503)
+  assert.equal(sent.body.error.code, 'refresh_rejected')
+})

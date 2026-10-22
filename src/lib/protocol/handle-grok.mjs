@@ -207,10 +207,9 @@ export async function grokUpstreamCall({ projectRoot, vmId, envelope, stream, si
       const text = await readAll(res)
       const payload = parseJson(text)
       const kernelCode = res.kernelError ? String(payload?.error?.code || 'kernel_error') : ''
-      const authFailure = /credential|token|refresh|unauthorized/i.test(kernelCode)
       return {
         ok: false,
-        status: res.kernelError ? (kernelCode === 'proxy_required' ? 503 : authFailure ? 401 : 502) : status,
+        status: res.kernelError ? grokKernelErrorStatus(kernelCode) : status,
         headers,
         kernelError: !!res.kernelError,
         emitted,
@@ -274,6 +273,17 @@ export async function grokUpstreamCall({ projectRoot, vmId, envelope, stream, si
     clearTimeout(timer)
     signal?.removeEventListener?.('abort', onParentAbort)
   }
+}
+
+/** Kernel codes that mean this slot needs a new login. Everything else is worth a later retry. */
+const GROK_LOGIN_REQUIRED = new Set(['refresh_rejected', 'grok_no_credential', 'grok_token_expired'])
+
+/**
+ * 401 sends the request to another slot and holds this one for 5 minutes. A token endpoint
+ * hiccup (refresh_failed, oauth_transport, ...) is a 503: 30 seconds, like any upstream 5xx.
+ */
+export function grokKernelErrorStatus(code) {
+  return GROK_LOGIN_REQUIRED.has(String(code || '')) ? 401 : 503
 }
 
 function dataJson(line) {
@@ -867,6 +877,16 @@ export async function handleGrokProtocol({
   stats.errors++
   logBag.error_code = last?.body?.error?.code || 'grok_upstream'
   logBag.upstream_status = last?.status || 0
+  // The caller's own key was accepted. A 401 here is a slot credential; SDKs would read it as theirs.
+  if (Number(last?.status) === 401) {
+    return json(res, 503, {
+      error: {
+        type: 'api_error',
+        code: last?.body?.error?.code || 'grok_upstream_auth',
+        message: CLIENT_POOL_UNAVAILABLE_MESSAGE,
+      },
+    })
+  }
   return json(res, last?.status || 502, last?.body || { error: { type: 'api_error', code: 'grok_upstream' } })
 }
 
