@@ -4,7 +4,6 @@
 
 - 调用方的 `x-kin-log` / `x-kin-debug` 只能调高日志级别，不能调低：原来带 `x-kin-log: off` 的请求不写日志，计费页和统计里就看不到这次调用。`x-kin-debug: 1` 仍可让单个请求保存入站请求体与响应。
 - 调用方重复使用同一个 `x-request-id` 时，后面的请求改用网关生成的新 ID 记录，响应头 `x-request-id` 也是这个新 ID。原来只有第一次请求留下日志，之后同 ID 的请求全部漏记（计费页看不到），debug 记录还会被后来的同 ID 请求覆盖。
-- 管理员在面板里建的 API 密钥调 `/v1/usage` 和 `/v1/messages/count_tokens` 时返回 503「号池当前没有可用账号」，`/v1/messages` 却正常。这两个接口现在和 `/v1/messages` 一样，把管理员名下的密钥当平台密钥调度。
 - 代理地址的本机/内网/元数据拦截补上几种写法：IPv4 映射的 IPv6（`::ffff:127.0.0.1`、`::ffff:a9fe:a9fe` 等，原来经 URL 规范化后一律放行）、IPv4 兼容和 NAT64 地址，以及 `127.1`、`2130706433`、`0x7f.1` 这类简写 IPv4。槽位出口的地理位置查询也按域名解析结果检查，不再只看字面地址。
 - 响应里的 `kin` 调试信息（槽位 ID、上游账号 ID）只返回给主密钥调用，托管密钥带 `x-kin-debug: 1` 不再看到。
 - 未登录请求带随机面板 token 或错误 API 密钥时不再每次都读会话文件或扫描密钥表：会话文件只在内容变化后重读，旧版明文密钥全部迁移完以后不再逐行比对。
@@ -46,6 +45,25 @@
 - 公网主密钥不再能调用 `/admin`。停用账号或改角色会立刻作废该用户的登录；下次请求也会按数据库里的角色和停用状态拒绝。数据库密钥改存到数据目录外面的 `secrets/db.secret`，旧的 `data/db.secret` 启动时迁过去。代理默认拒绝本机、内网和解析后落到这些地址的域名，本机实验可设 `VM2API_ALLOW_PRIVATE_PROXY=1`。首次探测 SSH 只读取主机指纹，确认后才发送密码或私钥。登录按账号分开限流；反代后要设 `TRUST_PROXY=1` 才会按浏览器地址限流。面板密码不能再用公开默认值 `123456`。`/` 和 `/health` 不再返回当前槽位。终端票据改走 WebSocket 子协议，不再放在地址里。
 - 同一平台有多个账号时，调度等级、负载或分数接近的情况下，按用量窗口的 7 天重置时间比较，时间更早的账号优先。没有这个时间的仍按原来的槽位顺序。粘性会话和手动等级不变。
 - 安装脚本和容器入口不再保留公开默认密码 `123456`：密码为空或仍是这个值时生成随机密码，并只打印一次；已经改过的密码不动。登录按来源地址限流。主密钥只有本机回环地址能进管理面板。没配数据库密钥时会生成仅本机可读的 `data/db.secret`，之后写入的凭据列加密保存。`/health` 不再返回探针详情和内核信息，`/v1/meta` 必须带密钥且不返回邮箱。代理拒绝云元数据和链路本地地址，本机 `127.0.0.1` 仍可用。内核空令牌直接拒绝。默认日志改为 `normal`。
+
+## 1.3.215 — 2026-10-22
+
+- `/v1/usage` 与 `/v1/messages/count_tokens` 传入 `apiKeyStore`，与 Messages 一致解析密钥属主角色；面板会话无 `apiKeyRecord` 时按会话角色收窄作用域（admin/super → 平台池，user → 仅本人 VM），避免租户 peek 平台账号用量或 admin 托管密钥误报 503。（#658，#677）
+- 管理端 `enrichVm` 输出 `owner_user_id`、`origin`，租户自建槽位不再显示「平台池（未分配）」；槽位重建 `buildRecreatedVmRecord` 保留 `origin`，避免租户自建槽被误判为 `admin_assigned` 并影响配额与删租户回收。（#677）
+
+已部署机升级：更新 Node 控制面与 `web/dist` 后重启一次。无迁移、无新依赖，不必 `wrap-cli/sync`、不必 `fetch:payload`、不必重建槽。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.3.214 — 2026-10-22
+
+- OpenAI Responses 上游：生命周期元数据（`response.created` / `queued` / `in_progress` / `metadata` / `keepalive`）在首条真实模型输出前不 commit attempt；仅 metadata 或 `overload` / `slow_down` 等早退失败时保持 `committed: false`，failover 仍可重试。（#645）
+
+已部署机升级：更新 Node 控制面与 `web/dist` 后重启一次。无迁移、无新依赖，不必 `wrap-cli/sync`、不必 `fetch:payload`、不必重建槽。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.3.213 — 2026-10-22
+
+- 官方透传（`compatibility.official_cc_passthrough`、`codex.official_passthrough`）：system/instructions、messages/input、tools、cache_control、采样字段等 body 仍完全透传；outbound session 与 Codex `prompt_cache_key` 恢复 attempt/VM rebuild/mint（不再沿用入站 session 或调用方 cache key）；`metadata.user_id` 继续重绑槽位 device/account。默认开关仍关。（#676）
+
+已部署机升级：更新 Node 控制面与 `web/dist` 后重启一次。启用时在面板打开对应开关并保存投影；不必 `wrap-cli/sync`、不必 `fetch:payload`、不必重建槽。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
 
 ## 1.3.212 — 2026-10-22
 
