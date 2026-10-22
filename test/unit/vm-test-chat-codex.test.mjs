@@ -12,6 +12,9 @@ import {
   testChatCredentialMode,
 } from '../../src/lib/admin/vm-test-chat.mjs'
 
+// Fixtures bind slots to a 127.0.0.1 SOCKS, which production blocks by default.
+process.env.VM2API_ALLOW_PRIVATE_PROXY = '1'
+
 function seedCodexVm(root, id = 'vm-codex-01') {
   const vms = path.join(root, 'vms')
   fs.mkdirSync(path.join(vms, id), { recursive: true })

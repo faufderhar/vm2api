@@ -14,6 +14,9 @@ import {
 import { clearModelsCache } from '../../src/lib/protocol/models.mjs'
 import { readCatalogSync, syncClaudeCatalog } from '../../src/lib/admin/catalog-monitor.mjs'
 
+// Fixtures bind slots to a 127.0.0.1 SOCKS, which production blocks by default.
+process.env.VM2API_ALLOW_PRIVATE_PROXY = '1'
+
 function seedClaudeVm(root, id) {
   fs.mkdirSync(path.join(root, 'vms'), { recursive: true })
   fs.writeFileSync(

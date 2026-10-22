@@ -21,6 +21,9 @@ import {
   mergeOpenAIQuotaPolicy,
 } from '../../src/lib/pool/openai-quota-policy.mjs'
 
+// Fixtures bind slots to a 127.0.0.1 SOCKS, which production blocks by default.
+process.env.VM2API_ALLOW_PRIVATE_PROXY = '1'
+
 test('OpenAI local quota gate blocks equality without inventing a reset and recovers after reset', () => {
   const now = Date.parse('2026-10-06T00:00:00.000Z')
   const reset = new Date(now + 60_000).toISOString()

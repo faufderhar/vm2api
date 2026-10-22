@@ -24,6 +24,9 @@ import { rewritePoolErrorForClient, mapUpstreamError } from '../../src/lib/core/
 import { evaluateAccount } from '../../src/lib/pool/availability.mjs'
 import { listQuotaFromHeaders } from '../../src/lib/pool/quota-window.mjs'
 
+// Fixtures bind slots to a 127.0.0.1 SOCKS, which production blocks by default.
+process.env.VM2API_ALLOW_PRIVATE_PROXY = '1'
+
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'kin-quota-band-'))
 }

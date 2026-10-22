@@ -6,6 +6,9 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 
+// Fixtures bind slots to a 127.0.0.1 SOCKS, which production blocks by default.
+process.env.VM2API_ALLOW_PRIVATE_PROXY = '1'
+
 // Panel sessions persist under KIN_DATA_DIR at module load; keep them in an owned temp dir.
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-tenant-guards-data-'))
 const previousDataDir = process.env.KIN_DATA_DIR

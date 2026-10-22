@@ -2,6 +2,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createUsageProbeMonitor, normalizeUsageProbeConfig } from '../../src/lib/oauth/usage-probe-monitor.mjs'
 
+// Fixtures bind slots to a 127.0.0.1 SOCKS, which production blocks by default.
+process.env.VM2API_ALLOW_PRIVATE_PROXY = '1'
+
 const reset = Date.parse('2026-10-17T01:00:00.000Z')
 const vm = { id: 'vm-01', status: 'running', has_refresh: true, proxy: { host: '127.0.0.1', port: 1080 } }
 function account(id = 'account-a', extra = {}) {

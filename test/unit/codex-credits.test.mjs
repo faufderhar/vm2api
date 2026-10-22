@@ -23,6 +23,9 @@ import {
 import { evaluateOpenAIQuotaGate } from '../../src/lib/pool/openai-quota-policy.mjs'
 import { resetOpenAIAccountRuntime } from '../../src/lib/pool/openai-account-runtime.mjs'
 
+// Fixtures bind slots to a 127.0.0.1 SOCKS, which production blocks by default.
+process.env.VM2API_ALLOW_PRIVATE_PROXY = '1'
+
 beforeEach(() => resetOpenAIAccountRuntime())
 
 const NOW = Date.parse('2026-10-17T12:00:00Z')

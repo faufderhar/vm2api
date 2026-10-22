@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- 修复代理默认拒绝本机和内网后，节点上走本机出口的 Grok / Codex 槽也被拦下的问题。节点出口转发和容器的部署代理（`HTTPS_PROXY` / `ALL_PROXY`）是平台自己的路由，现在放行；租户绑定的 127.0.0.1、内网 SOCKS 仍默认拒绝，需要时设 `VM2API_ALLOW_PRIVATE_PROXY=1`。
 - 列表视图的 Grok 槽也显示订阅套餐。Grok Build 账单实际不返回订阅档，改为在账单没有时读 access token 的 `tier` 声明，实测 `tier: 5` 是 SuperGrok Heavy，显示为 Heavy；没确认过的数字档显示为「Tier N」。令牌本身不下发给面板。
 - 虚拟机页 Grok 槽的套餐徽标显示账号订阅档（SuperGrok、Heavy、Premium+ 等），不再一律写「Grok」。订阅档取自 Grok Build 账单同步，现在积分和月账单两份文档的顶层和 `config` 都会读；还没同步到时仍显示「Grok」。详情里的「订阅档」同时显示短名和原始值。（#1）
 

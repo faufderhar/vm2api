@@ -7,6 +7,9 @@ import {
   createUsageProbeMonitor,
 } from '../../src/lib/oauth/usage-probe-monitor.mjs'
 
+// Fixtures bind slots to a 127.0.0.1 SOCKS, which production blocks by default.
+process.env.VM2API_ALLOW_PRIVATE_PROXY = '1'
+
 const live = {
   id: 'vm-13',
   status: 'running',

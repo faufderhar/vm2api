@@ -10,6 +10,9 @@ import {
   snapshotOauth,
 } from '../../src/lib/vm/execution-context.mjs'
 
+// Fixtures bind slots to a 127.0.0.1 SOCKS, which production blocks by default.
+process.env.VM2API_ALLOW_PRIVATE_PROXY = '1'
+
 function writeVm(root, id, patch = {}) {
   const vm = {
     id,

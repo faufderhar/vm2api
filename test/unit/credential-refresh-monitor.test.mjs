@@ -16,6 +16,9 @@ import {
   persistOauthToVm,
 } from '../../src/lib/oauth/oauth-credentials.mjs'
 
+// Fixtures bind slots to a 127.0.0.1 SOCKS, which production blocks by default.
+process.env.VM2API_ALLOW_PRIVATE_PROXY = '1'
+
 const offSlot = {
   id: 'vm-09',
   status: 'paused',

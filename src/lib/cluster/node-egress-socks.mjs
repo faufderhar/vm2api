@@ -13,6 +13,7 @@
  */
 import crypto from 'node:crypto'
 import net from 'node:net'
+import { registerPlatformEgressEndpoint } from '../vm/proxy-policy.mjs'
 
 const HANDSHAKE_TIMEOUT_MS = 15_000
 const MAX_CONNECTIONS = 256
@@ -149,6 +150,7 @@ export function createNodeEgressSocks({ openChannel, host = '127.0.0.1' }) {
   }
 
   return {
+    host,
     listen() {
       return new Promise((resolve, reject) => {
         server.once('error', reject)
@@ -182,6 +184,7 @@ export function openNodeChannel(client, host, port) {
 }
 
 let front = null
+let unregisterFront = () => {}
 
 /** Bound once at server start, next to bindPlacement. `clientFor` throws when the node link is not ready. */
 export async function startNodeEgressSocks({ clientFor }) {
@@ -189,7 +192,9 @@ export async function startNodeEgressSocks({ clientFor }) {
   const created = createNodeEgressSocks({
     openChannel: (nodeId, host, port) => openNodeChannel(clientFor(nodeId), host, port),
   })
-  await created.listen()
+  const port = await created.listen()
+  // Its loopback URL must pass the private-proxy block that tenant SOCKS get.
+  unregisterFront = registerPlatformEgressEndpoint(created.host, port)
   front = created
   return front
 }
@@ -197,6 +202,8 @@ export async function startNodeEgressSocks({ clientFor }) {
 export async function stopNodeEgressSocks() {
   const current = front
   front = null
+  unregisterFront()
+  unregisterFront = () => {}
   if (current) await current.close()
 }
 

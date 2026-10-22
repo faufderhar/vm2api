@@ -9,6 +9,9 @@ import { SeatPlanner, budgetAllows, rankSeatCandidates } from '../../src/lib/poo
 import { servePoolSeatStream } from '../../src/lib/admin/pool-seat-stream.mjs'
 import { AccountQuota } from '../../src/lib/pool/account-quota.mjs'
 
+// Fixtures bind slots to a 127.0.0.1 SOCKS, which production blocks by default.
+process.env.VM2API_ALLOW_PRIVATE_PROXY = '1'
+
 const MODEL = 'claude-test'
 
 function project(specs) {

@@ -13,7 +13,51 @@ export function privateProxyAllowed(env = process.env) {
   return String(env.VM2API_ALLOW_PRIVATE_PROXY || '').trim() === '1'
 }
 
+// Same keys and order as egress.mjs LOCAL_PROXY_ENV_KEYS. Importing it here would be a cycle.
+const DEPLOYMENT_PROXY_ENV_KEYS = Object.freeze(['HTTPS_PROXY', 'https_proxy', 'ALL_PROXY', 'all_proxy'])
+const DEFAULT_PROXY_PORTS = Object.freeze({ 'socks5:': '1080', 'socks5h:': '1080', 'http:': '80', 'https:': '443' })
+const platformEndpoints = new Set()
+
+function endpointKey(host, port) {
+  const name = normalizeSocksHost(host).trim().toLowerCase()
+  const number = String(port || '').trim()
+  return name && number ? `${name}:${number}` : ''
+}
+
+function urlEndpoint(raw) {
+  try {
+    const url = new URL(String(raw || ''))
+    return endpointKey(url.hostname, url.port || DEFAULT_PROXY_PORTS[url.protocol])
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * A SOCKS listener this process opened for itself, such as the node egress front.
+ * Its loopback URL is the platform's own route, not a tenant proxy. Returns an unregister function.
+ */
+export function registerPlatformEgressEndpoint(host, port) {
+  const key = endpointKey(host, port)
+  if (!key) return () => {}
+  platformEndpoints.add(key)
+  return () => platformEndpoints.delete(key)
+}
+
+/** A proxy URL the platform resolved itself: a registered listener or the deployment proxy env. */
+function platformEgressUrl(proxy, env = process.env) {
+  if (!proxy?.url) return false
+  const key = urlEndpoint(proxy.url)
+  if (!key) return false
+  if (platformEndpoints.has(key)) return true
+  return DEPLOYMENT_PROXY_ENV_KEYS.some((name) => {
+    const value = String(env?.[name] || '').trim()
+    return !!value && urlEndpoint(value) === key
+  })
+}
+
 function platformLocalEgress(proxy) {
+  if (platformEgressUrl(proxy)) return true
   const id = String(proxy?.id || '').trim()
   if (id === 'px-local' || id.startsWith('px-local-')) return true
   const scheme = String(proxy?.scheme || proxy?.kind || '')

@@ -16,6 +16,9 @@ import {
   resolveOutboundSessionId,
 } from '../../src/lib/identity/identity-rewrite.mjs'
 
+// Fixtures bind slots to a 127.0.0.1 SOCKS, which production blocks by default.
+process.env.VM2API_ALLOW_PRIVATE_PROXY = '1'
+
 function project() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-pool-scheduler-'))
   const vms = path.join(root, 'vms')
