@@ -49,6 +49,55 @@ test('only a managed key explicitly marked api uses the Anthropic address path',
   assert.equal(resolveInferenceBackend({ headers: { 'x-kin-backend': 'api' } }), 'oauth')
 })
 
+test('tenant api-category keys cannot reach platform API endpoints', async () => {
+  const response = fakeResponse()
+  let picked = 0
+  const handler = createHandleProtocol({
+    json: (_res, status, body) => {
+      response.status = status
+      response.body = body
+      return body
+    },
+    writeSSEHeaders() {},
+    readBody: async () => ({ model: 'claude-haiku-4-5', messages: [{ role: 'user', content: 'hello' }] }),
+    requireAuth: () => true,
+    cfg: {
+      rewrite: { enabled: false },
+      intercept: { rules: [] },
+      distill: { enabled: false },
+      limits: { max_body_bytes: 1024 * 1024, upstream_timeout_ms: 2000 },
+      paths: { data: os.tmpdir() },
+    },
+    requestLog: { start: () => ({ request_id: 'api-tenant-test' }), finish() {} },
+    stickyRouter: {},
+    accountQuota: {},
+    apiKeyStore: { acquire: () => ({ ok: true }), release() {}, users: { getById: () => ({ role: 'user' }) } },
+    apiScheduler: {
+      pick: () => {
+        picked += 1
+        return { ok: false }
+      },
+    },
+    apiEndpointStore: {},
+    stats: { errors: 0, requests: 0, by_route: {}, passthrough: 0, rewrite: 0, convert: 0 },
+    routingConfig: { failover: {} },
+    groupsRepo: { rateMultiplier: () => 1 },
+  })
+  const req = {
+    method: 'POST',
+    url: '/v1/messages',
+    headers: { authorization: 'Bearer sk-vm-tenant', 'user-agent': 'test-client' },
+    apiKeyKind: 'managed',
+    apiKeyRecord: { category: 'api', user_id: 'u1' },
+    once() {},
+    off() {},
+  }
+  await handler.handleProtocol(req, response, 'anthropic.messages', '/v1/messages')
+  assert.equal(response.status, 403)
+  assert.equal(response.body.error.code, 'api_backend_forbidden')
+  assert.equal(picked, 0)
+})
+
 test('messagesUrl appends /v1/messages?beta=true', () => {
   assert.equal(messagesUrl('https://api.example.com'), 'https://api.example.com/v1/messages?beta=true')
   assert.equal(messagesUrl('https://api.example.com/'), 'https://api.example.com/v1/messages?beta=true')

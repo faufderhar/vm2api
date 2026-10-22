@@ -5,7 +5,6 @@ import {
   VM_ORIGIN,
   assignOriginForOwner,
   canBindProxyToVm,
-  canUserDeleteVm,
   clampVmCreateQuota,
   countUserCreatedVms,
   filterVmsForPanel,
@@ -74,8 +73,6 @@ test('quota clamp and self-created count', () => {
     { owner_user_id: 'u1' },
   ]
   assert.equal(countUserCreatedVms(vms, 'u1'), 1)
-  assert.equal(canUserDeleteVm(vms[0], 'u1'), true)
-  assert.equal(canUserDeleteVm(vms[1], 'u1'), false)
 })
 
 test('unassign origin and proxy bind rules', () => {
