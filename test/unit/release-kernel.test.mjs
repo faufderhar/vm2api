@@ -1,11 +1,19 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import crypto from 'node:crypto'
 import {
   downloadReleaseKernel,
   isAllowedKernelUrl,
+  kernelReleaseHttpStatus,
   selectKernelAsset,
   selectCliNodeAsset,
 } from '../../src/lib/admin/release-kernel.mjs'
+
+const DIGEST_64_ZERO = `sha256:${crypto.createHash('sha256').update(Buffer.alloc(64)).digest('hex')}`
+
+function sha256Digest(bytes) {
+  return `sha256:${crypto.createHash('sha256').update(bytes).digest('hex')}`
+}
 
 function fakeElf64Amd64() {
   const buf = Buffer.alloc(64)
@@ -30,6 +38,7 @@ test('selectKernelAsset accepts only the kin-kernel GitHub asset', () => {
         size: 64,
         url: 'https://api.github.com/repos/dofastted/vm2api/releases/assets/9',
         browser_download_url: 'https://evil.example/kin-kernel',
+        digest: DIGEST_64_ZERO,
       },
     ],
   })
@@ -45,6 +54,7 @@ test('selectKernelAsset accepts only the kin-kernel GitHub asset', () => {
           name: 'cli-node',
           size: 64,
           url: 'https://api.github.com/repos/dofastted/vm2api/releases/assets/8',
+          digest: DIGEST_64_ZERO,
         },
       ],
     }).asset,
@@ -93,21 +103,25 @@ test('kernel download follows GitHub asset redirects and refuses other hosts', a
                 name: 'kin-kernel',
                 size: elf.length,
                 browser_download_url: 'https://github.com/dofastted/vm2api/releases/download/v1.2.3/kin-kernel',
+                digest: sha256Digest(elf),
               },
               {
                 name: 'cli-node',
                 size: elf.length,
                 browser_download_url: 'https://github.com/dofastted/vm2api/releases/download/v1.2.3/cli-node',
+                digest: sha256Digest(elf),
               },
               {
                 name: 'cc-node',
                 size: elf.length,
                 browser_download_url: 'https://github.com/dofastted/vm2api/releases/download/v1.2.3/cc-node',
+                digest: sha256Digest(elf),
               },
               {
                 name: 'kin-kernel-crag',
                 size: elf.length,
                 browser_download_url: 'https://github.com/dofastted/vm2api/releases/download/v1.2.3/kin-kernel-crag',
+                digest: sha256Digest(elf),
               },
             ],
           }),
@@ -157,21 +171,25 @@ test('kernel download follows GitHub asset redirects and refuses other hosts', a
                 name: 'kin-kernel',
                 size: 64,
                 url: 'https://api.github.com/repos/dofastted/vm2api/releases/assets/4',
+                digest: DIGEST_64_ZERO,
               },
               {
                 name: 'cli-node',
                 size: 64,
                 url: 'https://api.github.com/repos/dofastted/vm2api/releases/assets/5',
+                digest: DIGEST_64_ZERO,
               },
               {
                 name: 'cc-node',
                 size: 64,
                 url: 'https://api.github.com/repos/dofastted/vm2api/releases/assets/6',
+                digest: DIGEST_64_ZERO,
               },
               {
                 name: 'kin-kernel-crag',
                 size: 64,
                 url: 'https://api.github.com/repos/dofastted/vm2api/releases/assets/7',
+                digest: DIGEST_64_ZERO,
               },
             ],
           }),
@@ -192,4 +210,75 @@ test('kernel download follows GitHub asset redirects and refuses other hosts', a
     }).then((r) => r.code),
     'kernel_tag_invalid',
   )
+})
+
+function releaseWith(files) {
+  return async (url) => {
+    const href = String(url)
+    if (href.endsWith('/releases/latest')) {
+      return new Response(
+        JSON.stringify({
+          tag_name: 'v1.2.3',
+          assets: files.map((file) => ({
+            name: file.name,
+            size: file.bytes.length,
+            browser_download_url: `https://github.com/dofastted/vm2api/releases/download/v1.2.3/${file.name}`,
+            ...(file.digest === undefined ? {} : { digest: file.digest }),
+          })),
+        }),
+        { status: 200 },
+      )
+    }
+    const file = files.find((f) => href.endsWith(`/download/v1.2.3/${f.name}`))
+    if (file) return new Response(file.served ?? file.bytes, { status: 200 })
+    throw new Error(`unexpected ${url}`)
+  }
+}
+
+function releaseFiles(elf) {
+  return ['kin-kernel', 'cli-node', 'cc-node', 'kin-kernel-crag'].map((name) => ({
+    name,
+    bytes: elf,
+    digest: sha256Digest(elf),
+  }))
+}
+
+test('a release asset without a sha256 digest is refused before anything is downloaded', async () => {
+  const elf = fakeElf64Amd64()
+  for (const digest of [undefined, null, '', 'md5:0123', `sha256:${'g'.repeat(64)}`, 'sha256:abc']) {
+    const files = releaseFiles(elf)
+    files[1].digest = digest
+    let downloads = 0
+    const fetchImpl = releaseWith(files)
+    const result = await downloadReleaseKernel({
+      fetchImpl: async (url, opts) => {
+        if (!String(url).endsWith('/releases/latest')) downloads += 1
+        return fetchImpl(url, opts)
+      },
+    })
+    assert.equal(result.ok, false, String(digest))
+    assert.equal(result.code, 'cli_node_digest_missing', String(digest))
+    assert.equal(downloads, 0)
+  }
+  assert.equal(kernelReleaseHttpStatus('cli_node_digest_missing'), 502)
+})
+
+test('bytes that do not hash to the published sha256 are refused', async () => {
+  const elf = fakeElf64Amd64()
+  const tampered = Buffer.from(elf)
+  tampered[63] = 0x01
+  for (const index of [0, 1, 2, 3]) {
+    const files = releaseFiles(elf)
+    files[index].served = tampered
+    const result = await downloadReleaseKernel({ fetchImpl: releaseWith(files) })
+    assert.equal(result.ok, false)
+    assert.equal(result.code, ['kernel', 'cli_node', 'cc_node', 'crag'][index] + '_digest_mismatch')
+    assert.equal(result.bytes, undefined)
+    assert.equal(kernelReleaseHttpStatus(result.code), 502)
+  }
+  const upper = releaseFiles(elf).map((file) => ({
+    ...file,
+    digest: file.digest.toUpperCase().replace('SHA256', 'sha256'),
+  }))
+  assert.equal((await downloadReleaseKernel({ fetchImpl: releaseWith(upper) })).ok, true)
 })

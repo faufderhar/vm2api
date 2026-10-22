@@ -1,5 +1,6 @@
 import test, { after, before } from 'node:test'
 import assert from 'node:assert/strict'
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -144,6 +145,10 @@ test('kernel upload rejects non-ELF payloads', async () => {
   }
 })
 
+function sha256Digest(bytes) {
+  return `sha256:${crypto.createHash('sha256').update(bytes).digest('hex')}`
+}
+
 function releaseFetch(
   elf,
   {
@@ -152,6 +157,8 @@ function releaseFetch(
     ccBytes = fakeElf64Amd64('github-cc-node'),
     cragBytes = fakeElf64Amd64('github-crag'),
     status = 200,
+    // The sha256 GitHub publishes for kin-kernel; defaults to the bytes actually served.
+    kernelDigest = sha256Digest(assetBytes),
   } = {},
 ) {
   return async (url) => {
@@ -165,21 +172,25 @@ function releaseFetch(
               name: 'kin-kernel',
               size: assetBytes.length,
               url: 'https://api.github.com/repos/dofastted/vm2api/releases/assets/9',
+              digest: kernelDigest,
             },
             {
               name: 'cli-node',
               size: cliBytes.length,
               url: 'https://api.github.com/repos/dofastted/vm2api/releases/assets/8',
+              digest: sha256Digest(cliBytes),
             },
             {
               name: 'cc-node',
               size: ccBytes.length,
               url: 'https://api.github.com/repos/dofastted/vm2api/releases/assets/7',
+              digest: sha256Digest(ccBytes),
             },
             {
               name: 'kin-kernel-crag',
               size: cragBytes.length,
               url: 'https://api.github.com/repos/dofastted/vm2api/releases/assets/6',
+              digest: sha256Digest(cragBytes),
             },
           ],
         }),
@@ -278,6 +289,24 @@ test('github kernel release replaces host kernel and syncs stopped slots', async
     const cleared = JSON.parse(fs.readFileSync(path.join(project, 'share', 'wrap-cli', 'SAMPLE.json'), 'utf8'))
     assert.equal(cleared.source, 'upload')
     assert.equal(cleared.release_tag, undefined)
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true })
+  }
+})
+
+test('github kernel release refuses bytes that do not match the published sha256', async () => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-panel-kernel-release-digest-'))
+  try {
+    seedWrapTemplate(project)
+    const elf = fakeElf64Amd64('github-kernel')
+    const { response, handlePanel } = panelFor(project, {
+      fetchImpl: releaseFetch(elf, { kernelDigest: sha256Digest(fakeElf64Amd64('what-the-release-built')) }),
+    })
+    await handlePanel({ method: 'POST' }, {}, new URL('http://localhost/api/panel/wrap-cli/kernel/release'))
+    assert.equal(response.status, 502)
+    assert.equal(response.body.error.code, 'kernel_digest_mismatch')
+    assert.equal(fs.existsSync(path.join(project, 'bin', 'kin-kernel')), false)
+    assert.equal(fs.existsSync(path.join(project, 'share', 'wrap-cli', 'kin-kernel.bin')), false)
   } finally {
     fs.rmSync(project, { recursive: true, force: true })
   }

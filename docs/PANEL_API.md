@@ -89,7 +89,7 @@
 | GET | `/wrap-cli` | kernel / wrap 样本 inspect：`ok, dir, kernel_bin, glibc_shim, wrapper, meta, kernel`。`kernel.source` 为 `configured`（仓内 `KIN_KERNEL_BIN` / `bin/kin-kernel`）或 `sample` |
 | POST | `/wrap-cli/make` | `{ glibc_vm? }` 重整 share/wrap-cli；叠上仓内最新 kernel；可从指定槽拷 glibc shim |
 | POST | `/wrap-cli/kernel` | 原始 `application/octet-stream` linux amd64 ELF。替换仓内 `bin/kin-kernel` 与 `share/wrap-cli/kin-kernel.bin`。不自动同步槽位 |
-| POST | `/wrap-cli/kernel/release` | `{ ids?, restart?, tag? }` 下载 GitHub Release 的 `kin-kernel`（默认 latest；`tag` 必须是 `vX.Y.Z`）。校验 linux amd64 ELF 后替换仓内二进制，再按 `/wrap-cli/sync` 铺到槽并 bounce dataplane。不 `docker rm`。下载或 ELF 失败不写文件。HTTP 200 表示槽同步也成功 |
+| POST | `/wrap-cli/kernel/release` | `{ ids?, restart?, tag? }` 下载 GitHub Release 的 `kin-kernel`（默认 latest；`tag` 必须是 `vX.Y.Z`）。每个文件（`kin-kernel`、`cli-node`、`cc-node`、`kin-kernel-crag`）的 sha256 必须等于 GitHub 为该附件记录的 `digest`，Release 没给 `digest` 时不下载（`*_digest_missing`），不符时不安装（`*_digest_mismatch`），二者都是 502。再校验 linux amd64 ELF 后替换仓内二进制，按 `/wrap-cli/sync` 铺到槽并 bounce dataplane。不 `docker rm`。下载、校验或 ELF 失败不写文件。HTTP 200 表示槽同步也成功 |
 | POST | `/wrap-cli/sync` | `{ ids?, restart? }` 铺到槽 `.kin`（cli-node ELF + **最新** kernel.bin + 包装器）。kernel 优先仓内二进制，不被旧母样本盖回。`restart` 默认 true：有 kernel 字节变化时复制并 rust 槽 bounce kernel。**`restart: false`** 只读对比仓内 kernel 与各槽 `.kin`（含待重启标记），**不** hold 调度、**不**复制、**不**重启；用于升级前判断是否需要动槽 |
 | POST | `/vms/:id/wrap-cli/promote` | 从该槽晋升 wrap 文件，不复制凭证/SOCKS。下次 sync 仍优先仓内最新 kernel |
 | POST | `/vms/:id/wrap-cli/repair` | 单槽重装 kernel。`{ wrap, kernel }`；wrap 成功时 HTTP 200 |
