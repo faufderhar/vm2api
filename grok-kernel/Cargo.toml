@@ -14,7 +14,7 @@ axum = { version = "0.8", default-features = false, features = ["http1", "json",
 futures-util = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "socks", "rustls-tls", "http2", "gzip"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "fs", "time", "io-util"] }
 uuid = { version = "1", features = ["v4"] }

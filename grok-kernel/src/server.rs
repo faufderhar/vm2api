@@ -394,6 +394,19 @@ mod tests {
             .iter()
             .any(|(_, value)| value.contains("from-node")));
     }
+    #[test]
+    fn envelope_body_keeps_client_key_order() {
+        let envelope: Envelope = serde_json::from_str(
+            r#"{"purpose":"inference","path":"/v1/responses","body":{"model":"grok-4","stream":true,"input":[{"role":"user","content":"hi"}],"instructions":"x","tools":[]}}"#,
+        )
+        .unwrap();
+        // send() serializes the body with reqwest's .json(), which is serde_json::to_vec.
+        let sent = serde_json::to_string(&envelope.body.unwrap()).unwrap();
+        assert_eq!(
+            sent,
+            r#"{"model":"grok-4","stream":true,"input":[{"role":"user","content":"hi"}],"instructions":"x","tools":[]}"#
+        );
+    }
     #[tokio::test]
     async fn missing_proxy_fails_before_dial() {
         let config = Config {
