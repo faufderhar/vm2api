@@ -1,6 +1,5 @@
-use kin_grok_kernel::config::Config;
 use kin_grok_kernel::headers::PlatformInfo;
-use kin_grok_kernel::server::{build_client, serve, App};
+use kin_grok_kernel::server::{serve, App};
 use std::path::Path;
 use std::sync::Arc;
 fn strip_proxy_env() {
@@ -24,21 +23,13 @@ async fn main() {
         eprintln!("usage: kin-grok-kernel <config.json>");
         std::process::exit(2);
     });
-    let config = Config::load(Path::new(&config_path)).unwrap_or_else(|err| {
-        eprintln!("kin-grok-kernel: {err}");
-        std::process::exit(1);
-    });
-    let socket_path = config.socket_path.clone();
-    let client = build_client(&config).unwrap_or_else(|err| {
-        eprintln!("kin-grok-kernel: {err}");
-        std::process::exit(1);
-    });
-    let app = Arc::new(App {
-        config,
-        client,
-        refresh: tokio::sync::Mutex::new(()),
-        platform: PlatformInfo::current(),
-    });
+    let app =
+        App::watching(Path::new(&config_path), PlatformInfo::current()).unwrap_or_else(|err| {
+            eprintln!("kin-grok-kernel: {err}");
+            std::process::exit(1);
+        });
+    let socket_path = app.runtime().config.socket_path.clone();
+    let app = Arc::new(app);
     tokio::select! {
         result = serve(app) => {
             if let Err(err) = result {

@@ -16,10 +16,13 @@ import {
   grokOauthConfig,
 } from '../protocol/grok-route.mjs'
 import { assertProxyAllowed } from '../vm/proxy-policy.mjs'
+import { writeJsonIfChanged } from '../vm/vm-file.mjs'
 
 const starts = new Map()
 const sockets = new Map()
 const inFlight = new Map()
+// Project root seen per slot, so stopGrokKernel can find a kernel it did not spawn.
+const roots = new Map()
 
 function kernelEnv(env = process.env) {
   return Object.fromEntries(Object.entries(env).filter(([key]) => !/^(https?|all|no)_proxy$/i.test(key)))
@@ -55,6 +58,7 @@ export function grokKernelPaths(projectRoot, vmId) {
     configPath: path.join(runDir, 'grok-kernel.json'),
     tokenPath: path.join(runDir, 'grok-kernel.token'),
     stampPath: path.join(runDir, 'grok-kernel.stamp'),
+    pidPath: path.join(runDir, 'grok-kernel.pid'),
     agentIdPath: path.join(runDir, 'grok-agent-id'),
     credentialPath: path.join(projectRoot, 'vms', vmId, 'grok-credentials.json'),
     refreshLockPath: path.join(runDir, 'grok-refresh.lock'),
@@ -92,6 +96,7 @@ export function writeGrokKernelConfig(projectRoot, vm, { proxyUrl = '', proxyReq
   const proxy = String(proxyUrl || '')
   if (proxy) assertProxyAllowed({ url: proxy })
   const paths = grokKernelPaths(projectRoot, vm.id)
+  roots.set(vm.id, projectRoot)
   fs.mkdirSync(paths.runDir, { recursive: true })
   const oauth = grokOauthConfig(routing)
   const resolved = oauth.ok ? oauth.config : {}
@@ -113,7 +118,9 @@ export function writeGrokKernelConfig(projectRoot, vm, { proxyUrl = '', proxyReq
       refresh_skew_sec: Number(resolved.refresh_skew_sec) || 300,
     },
   }
-  fs.writeFileSync(paths.configPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 })
+  // Called on every hop. Same bytes leave the file alone; a change lands in one rename,
+  // so the kernel never reads half a config when it reloads.
+  writeJsonIfChanged(paths.configPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 })
   return { ...paths, agentId, stamp: configStamp(config) }
 }
 
@@ -148,7 +155,12 @@ function waitForChildExit(child, timeoutMs) {
 export function stopGrokKernel(vmId) {
   const child = starts.get(vmId)
   starts.delete(vmId)
-  if (!child) return null
+  if (!child) {
+    // Spawned before a Node restart: only the pid file knows it.
+    const projectRoot = roots.get(vmId)
+    if (projectRoot) stopOrphanKernel(grokKernelPaths(projectRoot, vmId)).catch(() => {})
+    return null
+  }
   const socketPath = sockets.get(vmId)
   child.once('exit', () => {
     sockets.delete(vmId)
@@ -164,9 +176,67 @@ export function stopGrokKernel(vmId) {
   return child
 }
 
-async function recycle(vmId, socketPath) {
-  const child = stopGrokKernel(vmId)
-  if (!child) return true
+/** The pid in grok-kernel.pid, only while it is still this slot's kernel. */
+function orphanKernelPid(paths) {
+  let pid = 0
+  try {
+    pid = Number(fs.readFileSync(paths.pidPath, 'utf8').trim())
+  } catch {
+    return 0
+  }
+  if (!Number.isInteger(pid) || pid <= 1) return 0
+  try {
+    // A reused pid must not be killed: check it runs the kernel on this slot's config.
+    const cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0')
+    const isKernel = cmdline.some((arg) => path.basename(arg) === 'kin-grok-kernel')
+    return isKernel && cmdline.includes(paths.configPath) ? pid : 0
+  } catch {
+    return 0
+  }
+}
+
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function waitForPidExit(pid, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (!pidAlive(pid)) return true
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  return !pidAlive(pid)
+}
+
+/** A kernel this process did not spawn, such as one left over from before a Node restart. */
+async function stopOrphanKernel(paths) {
+  const pid = orphanKernelPid(paths)
+  if (!pid) return true
+  try {
+    process.kill(pid, 'SIGTERM')
+  } catch {}
+  if (!(await waitForPidExit(pid, 2000))) {
+    try {
+      process.kill(pid, 'SIGKILL')
+    } catch {}
+    if (!(await waitForPidExit(pid, 1000))) return false
+  }
+  try {
+    fs.unlinkSync(paths.socketPath)
+  } catch {}
+  return true
+}
+
+async function recycle(vmId, paths) {
+  const socketPath = paths.socketPath
+  const child = starts.get(vmId)
+  if (!child) return stopOrphanKernel(paths)
+  stopGrokKernel(vmId)
   const exited = await waitForChildExit(child, 2000)
   if (!exited) {
     try {
@@ -204,8 +274,19 @@ export function grokKernelHealth(projectRoot, vmId, { timeoutMs = 500 } = {}) {
         timeout: timeoutMs,
       },
       (res) => {
-        res.resume()
-        resolve({ ok: res.statusCode === 200, status: res.statusCode })
+        let body = ''
+        res.setEncoding('utf8')
+        res.on('data', (chunk) => {
+          if (body.length < 4096) body += chunk
+        })
+        res.on('end', () => {
+          let hotReload = false
+          try {
+            hotReload = JSON.parse(body)?.hot_reload === true
+          } catch {}
+          resolve({ ok: res.statusCode === 200, status: res.statusCode, hotReload })
+        })
+        res.on('error', () => resolve({ ok: false, reason: 'health_error' }))
       },
     )
     req.on('timeout', () => {
@@ -221,6 +302,7 @@ export async function ensureGrokKernel({ projectRoot, vmId, timeoutMs = 8000 } =
   const bin = grokKernelBinPath()
   if (!bin) return { ok: false, reason: 'bin_missing' }
   const paths = grokKernelPaths(projectRoot, vmId)
+  roots.set(vmId, projectRoot)
   if (!fs.existsSync(paths.configPath)) return { ok: false, reason: 'config_missing' }
   let wanted = ''
   try {
@@ -232,11 +314,21 @@ export async function ensureGrokKernel({ projectRoot, vmId, timeoutMs = 8000 } =
   try {
     stamped = fs.readFileSync(paths.stampPath, 'utf8').trim()
   } catch {}
-  if (wanted && stamped && wanted !== stamped && grokKernelInFlight(vmId) <= 1) {
-    const gone = await recycle(vmId, paths.socketPath)
+  const quickMs = Math.min(800, Math.max(200, Number(timeoutMs) || 800))
+  if (wanted && stamped && wanted !== stamped) {
+    const running = await waitForHealth(projectRoot, vmId, quickMs)
+    if (running.ok && running.health?.hotReload) {
+      // The kernel re-reads grok-kernel.json on its next request. Nothing to restart.
+      fs.writeFileSync(paths.stampPath, `${wanted}\n`, { mode: 0o600 })
+      return { ok: true, reused: true }
+    }
+    // An older kernel only reads its config at start. Restart it when no other
+    // request is streaming through it; the next quiet moment picks the change up.
+    if (running.ok && grokKernelInFlight(vmId) > 1) return { ok: true, reused: true, stale: true }
+    const gone = await recycle(vmId, paths)
     if (!gone) return { ok: false, reason: 'recycle_timeout' }
   }
-  const live = await waitForHealth(projectRoot, vmId, Math.min(800, Math.max(200, Number(timeoutMs) || 800)))
+  const live = await waitForHealth(projectRoot, vmId, quickMs)
   if (live.ok) return { ok: true, reused: true }
   const current = starts.get(vmId)
   if (current && !childHasExited(current)) return waitForHealth(projectRoot, vmId, timeoutMs)
@@ -248,6 +340,8 @@ export async function ensureGrokKernel({ projectRoot, vmId, timeoutMs = 8000 } =
   starts.set(vmId, child)
   sockets.set(vmId, paths.socketPath)
   fs.writeFileSync(paths.stampPath, `${wanted}\n`, { mode: 0o600 })
+  // After a Node restart this is the only handle on the detached kernel.
+  if (child.pid) fs.writeFileSync(paths.pidPath, `${child.pid}\n`, { mode: 0o600 })
   return waitForHealth(projectRoot, vmId, timeoutMs)
 }
 

@@ -46,8 +46,12 @@ fn default_version() -> String {
 impl Config {
     pub fn load(path: &std::path::Path) -> Result<Self, String> {
         let text = fs::read_to_string(path).map_err(|err| format!("read config: {err}"))?;
+        Self::parse(&text)
+    }
+
+    pub fn parse(text: &str) -> Result<Self, String> {
         let config: Config =
-            serde_json::from_str(&text).map_err(|err| format!("parse config: {err}"))?;
+            serde_json::from_str(text).map_err(|err| format!("parse config: {err}"))?;
         if config.internal_token.is_empty() {
             return Err("internal_token is required".to_string());
         }

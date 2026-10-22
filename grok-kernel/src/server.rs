@@ -15,7 +15,8 @@ use futures_util::TryStreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use uuid::Uuid;
 const HOP_HEADERS: &[&str] = &[
@@ -29,11 +30,83 @@ const HOP_HEADERS: &[&str] = &[
     "upgrade",
     "content-length",
 ];
-pub struct App {
+/// One loaded config and the HTTP client built for its proxy. A request keeps the
+/// runtime it started with, so a reload never changes the exit under a live stream.
+pub struct Runtime {
     pub config: Config,
     pub client: reqwest::Client,
+}
+struct Current {
+    runtime: Arc<Runtime>,
+    text: String,
+}
+pub struct App {
+    socket_path: PathBuf,
+    config_path: Option<PathBuf>,
+    current: Mutex<Current>,
     pub refresh: tokio::sync::Mutex<()>,
     pub platform: PlatformInfo,
+}
+impl App {
+    /// A fixed config. The kernel binary uses `watching` instead.
+    pub fn new(config: Config, client: reqwest::Client, platform: PlatformInfo) -> Self {
+        Self {
+            socket_path: config.socket_path.clone(),
+            config_path: None,
+            current: Mutex::new(Current {
+                runtime: Arc::new(Runtime { config, client }),
+                text: String::new(),
+            }),
+            refresh: tokio::sync::Mutex::new(()),
+            platform,
+        }
+    }
+    /// Load `path` and pick up later edits to it. Node rewrites the file when the
+    /// slot's proxy, base URL or OAuth settings change; no restart is needed.
+    pub fn watching(path: &Path, platform: PlatformInfo) -> Result<Self, String> {
+        let text = std::fs::read_to_string(path).map_err(|err| format!("read config: {err}"))?;
+        let config = Config::parse(&text)?;
+        let client = build_client(&config)?;
+        Ok(Self {
+            socket_path: config.socket_path.clone(),
+            config_path: Some(path.to_path_buf()),
+            current: Mutex::new(Current {
+                runtime: Arc::new(Runtime { config, client }),
+                text,
+            }),
+            refresh: tokio::sync::Mutex::new(()),
+            platform,
+        })
+    }
+    /// The current runtime, reloaded first when the config file changed. The file is
+    /// small and read on every call: an mtime check misses a same-size rewrite within
+    /// one timestamp tick. A file that does not parse or names a bad proxy keeps the
+    /// previous runtime.
+    pub fn runtime(&self) -> Arc<Runtime> {
+        let mut current = self
+            .current
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(text) = self
+            .config_path
+            .as_ref()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+        {
+            if text != current.text {
+                let loaded = Config::parse(&text)
+                    .and_then(|config| build_client(&config).map(|client| (config, client)));
+                match loaded {
+                    Ok((config, client)) => {
+                        current.runtime = Arc::new(Runtime { config, client });
+                    }
+                    Err(err) => eprintln!("kin-grok-kernel: kept the previous config: {err}"),
+                }
+                // A bad file is reported once, not on every request.
+                current.text = text;
+            }
+        }
+        current.runtime.clone()
+    }
 }
 #[derive(Debug)]
 struct KernelFailure {
@@ -86,7 +159,7 @@ pub fn build_client(config: &Config) -> Result<reqwest::Client, String> {
     builder.build().map_err(|err| err.to_string())
 }
 pub async fn serve(app: Arc<App>) -> Result<(), String> {
-    let socket_path = app.config.socket_path.clone();
+    let socket_path = app.socket_path.clone();
     if let Some(parent) = socket_path.parent() {
         std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
@@ -114,7 +187,7 @@ async fn health(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
             "internal token rejected",
         );
     }
-    Json(json!({ "ok": true })).into_response()
+    Json(json!({ "ok": true, "hot_reload": true })).into_response()
 }
 async fn forward(
     State(app): State<Arc<App>>,
@@ -135,8 +208,9 @@ async fn forward(
 }
 async fn dispatch(app: &App, envelope: Envelope) -> Result<Response, KernelFailure> {
     let _ = envelope.stream;
+    let rt = app.runtime();
     // No proxy and no local-route exception: refuse before building an upstream request.
-    if !app.config.dial_allowed() {
+    if !rt.config.dial_allowed() {
         return Err(KernelFailure::new(
             StatusCode::BAD_REQUEST,
             "proxy_required",
@@ -145,16 +219,16 @@ async fn dispatch(app: &App, envelope: Envelope) -> Result<Response, KernelFailu
     }
     let method = normalize_method(&envelope)?;
     validate_target(&envelope, &method)?;
-    let token = prepare_token(app, false).await?;
-    let headers = headers_for(app, &envelope, &token);
-    let url = upstream_url(&app.config.base_url, &envelope.path, &envelope.query);
-    let mut response = send(app, &method, &url, &headers, envelope.body.clone()).await?;
+    let token = prepare_token(app, &rt, false).await?;
+    let headers = headers_for(app, &rt, &envelope, &token);
+    let url = upstream_url(&rt.config.base_url, &envelope.path, &envelope.query);
+    let mut response = send(&rt, &method, &url, &headers, envelope.body.clone()).await?;
     if response.status() == StatusCode::UNAUTHORIZED {
         let _ = response.bytes().await;
-        match prepare_token(app, true).await {
+        match prepare_token(app, &rt, true).await {
             Ok(fresh) => {
-                let headers = headers_for(app, &envelope, &fresh);
-                response = send(app, &method, &url, &headers, envelope.body.clone()).await?;
+                let headers = headers_for(app, &rt, &envelope, &fresh);
+                response = send(&rt, &method, &url, &headers, envelope.body.clone()).await?;
             }
             Err(failure) => return Err(failure),
         }
@@ -167,7 +241,7 @@ async fn dispatch(app: &App, envelope: Envelope) -> Result<Response, KernelFailu
         .map_err(|err| std::io::Error::other(err));
     Ok((status, headers, Body::from_stream(stream)).into_response())
 }
-fn headers_for(app: &App, envelope: &Envelope, token: &str) -> HeaderList {
+fn headers_for(app: &App, rt: &Runtime, envelope: &Envelope, token: &str) -> HeaderList {
     match envelope.purpose.as_str() {
         "models" => models_headers(token, &app.platform),
         "billing" => billing_headers(token, &app.platform),
@@ -178,7 +252,7 @@ fn headers_for(app: &App, envelope: &Envelope, token: &str) -> HeaderList {
                 envelope.request_id.clone()
             };
             let agent_id = if envelope.agent_id.is_empty() {
-                credentials::load_agent_id(&app.config.agent_id_path)
+                credentials::load_agent_id(&rt.config.agent_id_path)
             } else {
                 envelope.agent_id.clone()
             };
@@ -196,8 +270,8 @@ fn headers_for(app: &App, envelope: &Envelope, token: &str) -> HeaderList {
         }
     }
 }
-async fn prepare_token(app: &App, force: bool) -> Result<String, KernelFailure> {
-    let account = credentials::read_account(&app.config.credentials_path).map_err(|code| {
+async fn prepare_token(app: &App, rt: &Runtime, force: bool) -> Result<String, KernelFailure> {
+    let account = credentials::read_account(&rt.config.credentials_path).map_err(|code| {
         KernelFailure::new(
             StatusCode::UNAUTHORIZED,
             code,
@@ -205,7 +279,7 @@ async fn prepare_token(app: &App, force: bool) -> Result<String, KernelFailure> 
         )
     })?;
     let stale =
-        force || token_needs_refresh(&account, app.config.oauth.refresh_skew_sec, oauth::now_ms());
+        force || token_needs_refresh(&account, rt.config.oauth.refresh_skew_sec, oauth::now_ms());
     if !stale {
         return Ok(account.access_token);
     }
@@ -220,7 +294,7 @@ async fn prepare_token(app: &App, force: bool) -> Result<String, KernelFailure> 
         ));
     }
     let _guard = app.refresh.lock().await;
-    match oauth::refresh_account(&app.client, &app.config).await {
+    match oauth::refresh_account(&rt.client, &rt.config).await {
         Ok(refreshed) => Ok(refreshed.access_token),
         Err(_) if !force && !account.access_token.is_empty() => Ok(account.access_token),
         Err(code) => Err(KernelFailure::new(
@@ -231,15 +305,15 @@ async fn prepare_token(app: &App, force: bool) -> Result<String, KernelFailure> 
     }
 }
 async fn send(
-    app: &App,
+    rt: &Runtime,
     method: &str,
     url: &str,
     headers: &HeaderList,
     body: Option<Value>,
 ) -> Result<reqwest::Response, KernelFailure> {
     let mut builder = match method {
-        "GET" => app.client.get(url),
-        "POST" => app.client.post(url),
+        "GET" => rt.client.get(url),
+        "POST" => rt.client.post(url),
         _ => {
             return Err(KernelFailure::new(
                 StatusCode::BAD_REQUEST,
@@ -336,12 +410,13 @@ fn copy_headers(source: &reqwest::header::HeaderMap) -> HeaderMap {
     out
 }
 fn token_ok(app: &App, headers: &HeaderMap) -> bool {
+    let rt = app.runtime();
     let presented = headers
         .get("x-kin-internal-token")
         .and_then(|value| value.to_str().ok())
         .unwrap_or("");
-    !app.config.internal_token.is_empty()
-        && same_secret(presented, app.config.internal_token.as_str())
+    !rt.config.internal_token.is_empty()
+        && same_secret(presented, rt.config.internal_token.as_str())
 }
 
 /// Hash both sides first so a different length does not return early.
@@ -394,6 +469,41 @@ mod tests {
             .iter()
             .any(|(_, value)| value.contains("from-node")));
     }
+    fn config_text(dir: &Path, proxy_url: &str) -> String {
+        json!({
+            "socket_path": dir.join("grok.sock"),
+            "credentials_path": dir.join("cred.json"),
+            "agent_id_path": dir.join("agent"),
+            "refresh_lock_path": dir.join("lock"),
+            "internal_token": "secret",
+            "proxy_url": proxy_url,
+            "proxy_required": true,
+            "base_url": "https://cli-chat-proxy.grok.com",
+            "oauth": { "client_id": "client" }
+        })
+        .to_string()
+    }
+    #[test]
+    fn config_edits_reach_the_next_request() {
+        let dir = std::env::temp_dir().join(format!("grok-kernel-reload-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("grok-kernel.json");
+        std::fs::write(&path, config_text(&dir, "socks5h://10.0.0.1:1080")).unwrap();
+        let app = App::watching(&path, PlatformInfo::current()).unwrap();
+        let first = app.runtime();
+        assert_eq!(first.config.proxy_url, "socks5h://10.0.0.1:1080");
+        // Same bytes written again: keep the client and its pooled connections.
+        std::fs::write(&path, config_text(&dir, "socks5h://10.0.0.1:1080")).unwrap();
+        assert!(Arc::ptr_eq(&first, &app.runtime()));
+        std::fs::write(&path, config_text(&dir, "socks5h://10.0.0.2:1080")).unwrap();
+        let second = app.runtime();
+        assert_eq!(second.config.proxy_url, "socks5h://10.0.0.2:1080");
+        // A request that started earlier still holds its own runtime.
+        assert_eq!(first.config.proxy_url, "socks5h://10.0.0.1:1080");
+        std::fs::write(&path, "{ not json").unwrap();
+        assert_eq!(app.runtime().config.proxy_url, "socks5h://10.0.0.2:1080");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     #[test]
     fn envelope_body_keeps_client_key_order() {
         let envelope: Envelope = serde_json::from_str(
@@ -426,12 +536,8 @@ mod tests {
                 refresh_skew_sec: 300,
             },
         };
-        let app = App {
-            client: build_client(&config).unwrap(),
-            config,
-            refresh: tokio::sync::Mutex::new(()),
-            platform: PlatformInfo::current(),
-        };
+        let client = build_client(&config).unwrap();
+        let app = App::new(config, client, PlatformInfo::current());
         let envelope = Envelope {
             method: "POST".to_string(),
             path: "/v1/responses".to_string(),
