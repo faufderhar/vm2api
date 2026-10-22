@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 import {
   normalizeNotifyConfig,
   mergeNotifyConfig,
@@ -10,6 +11,8 @@ import {
   DEFAULT_NOTIFY,
   formatNotifyMessage,
   notifyChannelsReady,
+  sendEmailNotify,
+  smtpDataText,
   sendTelegramNotify,
   sendWecomNotify,
   wecomWebhookUrl,
@@ -369,6 +372,15 @@ test('wecom webhook is redacted, merged and accepts a bare key', async () => {
   assert.equal(wecomWebhookUrl('abcd1234-ef56-7890'), url)
   assert.equal(wecomWebhookUrl('http://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=x'), '')
   assert.equal(wecomWebhookUrl('not a url'), '')
+  for (const other of [
+    'https://example.com/cgi-bin/webhook/send?key=x',
+    'https://qyapi.weixin.qq.com.evil.test/cgi-bin/webhook/send?key=x',
+    'https://qyapi.weixin.qq.com:8443/cgi-bin/webhook/send?key=x',
+    'https://u:p@qyapi.weixin.qq.com/cgi-bin/webhook/send?key=x',
+    'https://qyapi.weixin.qq.com/cgi-bin/other?key=x',
+  ]) {
+    assert.equal(wecomWebhookUrl(other), '', other)
+  }
   assert.equal(
     notifyChannelsReady(normalizeNotifyConfig({ wecom: { enabled: true, webhook: 'bad url' } })).wecom,
     false,
@@ -432,4 +444,70 @@ test('dispatch includes wecom and the test helper routes to it', async () => {
     snapshot: summarizePoolAvailability([]),
   })
   assert.equal(out.channel, 'wecom')
+})
+
+/** Scripted SMTP peer: answers each client line in order and records what it was sent. */
+function fakeSmtp({ starttls }) {
+  const sent = []
+  const socket = new (class extends EventEmitter {})()
+  const reply = (text) => setImmediate(() => socket.emit('data', Buffer.from(text)))
+  socket.write = (data) => {
+    const line = String(data)
+    sent.push(line)
+    if (line.startsWith('EHLO')) reply(`250-smtp.test\r\n${starttls ? '250-STARTTLS\r\n' : ''}250 AUTH LOGIN\r\n`)
+    else if (line.startsWith('STARTTLS')) reply('220 go ahead\r\n')
+    else if (line.startsWith('AUTH') || sent.at(-2)?.startsWith('AUTH')) reply('334 next\r\n')
+    else if (sent.at(-3)?.startsWith('AUTH')) reply('235 ok\r\n')
+    else if (line.startsWith('DATA')) reply('354 send\r\n')
+    else if (line.startsWith('QUIT')) reply('221 bye\r\n')
+    else reply('250 ok\r\n')
+  }
+  socket.end = () => {}
+  socket.destroy = () => {}
+  reply('220 smtp.test ready\r\n')
+  return { socket, sent }
+}
+
+const EMAIL_CFG = {
+  email: { host: 'smtp.test', port: 587, secure: false, user: 'ops', pass: 'hunter2', to: ['a@x.test'] },
+}
+
+test('email refuses to log in when the server offers no STARTTLS', async () => {
+  const peer = fakeSmtp({ starttls: false })
+  await assert.rejects(
+    sendEmailNotify(EMAIL_CFG, { title: 't', text: 'x' }, { connect: async () => peer.socket }),
+    /smtp_starttls_unavailable/,
+  )
+  assert.equal(
+    peer.sent.some((line) => line.includes(Buffer.from('hunter2').toString('base64'))),
+    false,
+  )
+})
+
+test('email upgrades to TLS before AUTH and dot-stuffs the body', async () => {
+  const peer = fakeSmtp({ starttls: true })
+  let upgraded = false
+  const result = await sendEmailNotify(
+    EMAIL_CFG,
+    { title: 't', text: 'line one\n.\nQUIT\n.leading dot\r\nlast' },
+    {
+      connect: async () => peer.socket,
+      upgradeTls: async (socket) => {
+        upgraded = true
+        return socket
+      },
+    },
+  )
+  assert.equal(result.ok, true)
+  assert.equal(upgraded, true)
+  const auth = peer.sent.findIndex((line) => line.startsWith('AUTH'))
+  const tls = peer.sent.findIndex((line) => line.startsWith('STARTTLS'))
+  assert.ok(tls >= 0 && tls < auth)
+  const data = peer.sent.find((line) => line.includes('Subject:'))
+  assert.match(data, /\r\nline one\r\n\.\.\r\nQUIT\r\n\.\.leading dot\r\nlast\r\n\.\r\n$/)
+})
+
+test('smtpDataText doubles leading dots and normalizes line ends', () => {
+  assert.equal(smtpDataText('a\n.\r.b\r\nc'), 'a\r\n..\r\n..b\r\nc')
+  assert.equal(smtpDataText(null), '')
 })

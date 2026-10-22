@@ -171,6 +171,12 @@ import { materializeRemoteImageSources } from './images.mjs'
 import { applyMinMaxTokens } from './min-max-tokens.mjs'
 import { detectWarmupIntercept, formatWarmupSse, warmupMockMessage } from './warmup-intercept.mjs'
 
+/**
+ * Images bodies are decoded into several copies (multipart, base64 data URL, JSON), so they get
+ * a tighter cap than chat: one upload at OpenAI's 50 MB per-image limit.
+ */
+export const IMAGES_MAX_BODY_BYTES = 50 * 1024 * 1024
+
 export function createHandleProtocol(deps) {
   const json = (...args) => deps.json(...args)
   const writeSSEHeaders = (...args) => deps.writeSSEHeaders(...args)
@@ -1990,7 +1996,10 @@ export function createHandleProtocol(deps) {
     }
     let body
     try {
-      const raw = await readRawBody(req, inboundBodyLimit(getRouting(), cfg.limits.max_body_bytes))
+      const raw = await readRawBody(
+        req,
+        Math.min(IMAGES_MAX_BODY_BYTES, inboundBodyLimit(getRouting(), cfg.limits.max_body_bytes)),
+      )
       const contentType = req.headers?.['content-type']
       if (kind === 'edits' && isMultipartFormData(contentType)) {
         const converted = await normalizeImageEditBody(raw, contentType)

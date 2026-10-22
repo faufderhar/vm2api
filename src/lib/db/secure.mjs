@@ -13,6 +13,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 const PREFIX = 'enc:v1:'
+const GCM_TAG_BYTES = 16
 let persistedSecret
 // The data dir the server opened. `npm start` without KIN_DATA_DIR still has one.
 let bootDataDir = ''
@@ -127,8 +128,13 @@ export function decryptString(value, secret = dbSecret()) {
   if (!s.startsWith(PREFIX)) return s
   const [ivB64, tagB64, ctB64] = s.slice(PREFIX.length).split(':')
   const key = deriveKey(secret)
-  const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(ivB64, 'base64'))
-  decipher.setAuthTag(Buffer.from(tagB64, 'base64'))
+  const tag = Buffer.from(tagB64 || '', 'base64')
+  // encryptString always writes a full 16-byte tag; a shorter one would weaken authentication.
+  if (tag.length !== GCM_TAG_BYTES) throw new Error('encrypted value has an invalid authentication tag')
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(ivB64, 'base64'), {
+    authTagLength: GCM_TAG_BYTES,
+  })
+  decipher.setAuthTag(tag)
   const out = Buffer.concat([decipher.update(Buffer.from(ctB64, 'base64')), decipher.final()])
   return out.toString('utf8')
 }

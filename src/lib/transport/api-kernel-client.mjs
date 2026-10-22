@@ -94,10 +94,12 @@ export async function startApiKernelProcess(cfg) {
   try {
     fs.rmSync(socketPath, { force: true })
   } catch {}
-  const child = spawn(binPath, ['-socket', socketPath, '-token', token], {
+  // The token goes in the environment: argv is world-readable in /proc, environ is not.
+  const child = spawn(binPath, ['-socket', socketPath], {
     detached: true,
     stdio: 'ignore',
     windowsHide: true,
+    env: { ...process.env, KIN_API_KERNEL_SECRET: token },
   })
   child.once('error', (err) => console.error(`[api-kernel] spawn error: ${err.message}`))
   child.unref()

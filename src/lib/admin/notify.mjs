@@ -567,6 +567,17 @@ function smtpRead(socket, timeoutMs) {
   })
 }
 
+/**
+ * Message text for SMTP DATA: CRLF line ends, and a leading "." doubled (RFC 5321 4.5.2)
+ * so no line of the text can end DATA early and have the rest read as commands.
+ */
+export function smtpDataText(text) {
+  return String(text || '')
+    .split(/\r\n|\r|\n/)
+    .map((line) => (line.startsWith('.') ? `.${line}` : line))
+    .join('\r\n')
+}
+
 function smtpWrite(socket, line) {
   socket.write(line.endsWith('\r\n') ? line : `${line}\r\n`)
 }
@@ -641,10 +652,15 @@ export async function sendEmailNotify(cfg, message, opts = {}) {
   try {
     await talk(null, new Set([220]))
     const ehlo = await talk(`EHLO kin-gateway`, new Set([250]))
-    if (!email.secure && /STARTTLS/i.test(ehlo.text)) {
-      await talk('STARTTLS', new Set([220]))
-      socket = await (opts.upgradeTls || upgradeStartTls)(socket, { host: email.host, timeoutMs })
-      await talk('EHLO kin-gateway', new Set([250]))
+    if (!email.secure) {
+      if (/STARTTLS/i.test(ehlo.text)) {
+        await talk('STARTTLS', new Set([220]))
+        socket = await (opts.upgradeTls || upgradeStartTls)(socket, { host: email.host, timeoutMs })
+        await talk('EHLO kin-gateway', new Set([250]))
+      } else if (email.user) {
+        // A missing STARTTLS may be a stripped one; never send the password in the clear.
+        throw new Error('smtp_starttls_unavailable')
+      }
     }
     if (email.user) {
       await talk('AUTH LOGIN', new Set([334]))
@@ -666,7 +682,7 @@ export async function sendEmailNotify(cfg, message, opts = {}) {
       'Content-Transfer-Encoding: 8bit',
       `Date: ${stamp}`,
       '',
-      String(message.text || ''),
+      smtpDataText(message.text),
       '.',
     ].join('\r\n')
     await talk(body, new Set([250]))
@@ -729,8 +745,12 @@ export function wecomWebhookUrl(value) {
   } catch {
     return ''
   }
-  if (url.protocol !== 'https:' || !url.searchParams.get('key')) return ''
-  return url.toString()
+  // Only WeCom's own robot endpoint: this URL receives pool status and is fetched by the gateway.
+  if (url.protocol !== 'https:' || url.hostname !== 'qyapi.weixin.qq.com' || url.port || url.username) return ''
+  if (url.pathname !== '/cgi-bin/webhook/send') return ''
+  const key = url.searchParams.get('key')
+  if (!key) return ''
+  return WECOM_WEBHOOK_BASE + encodeURIComponent(key)
 }
 
 function redactWecomError(text, cfg) {

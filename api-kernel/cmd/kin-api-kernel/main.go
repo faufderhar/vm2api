@@ -17,15 +17,21 @@ import (
 	"github.com/dofastted/kin-gateway/api-kernel/internal/server"
 )
 
+// tokenEnv carries the internal token; /proc/<pid>/environ is readable only by the same user.
+const tokenEnv = "KIN_API_KERNEL_SECRET"
+
 func main() {
 	socket := flag.String("socket", "", "unix socket path")
-	token := flag.String("token", "", "internal token")
+	token := flag.String("token", "", "internal token (prefer "+tokenEnv+": argv is world-readable in /proc)")
 	flag.Parse()
 	if *socket == "" {
 		log.Fatal(" -socket is required")
 	}
+	if env := strings.TrimSpace(os.Getenv(tokenEnv)); env != "" {
+		*token = env
+	}
 	if strings.TrimSpace(*token) == "" {
-		log.Fatal(" -token is required")
+		log.Fatal(tokenEnv + " or -token is required")
 	}
 	socketDir := filepath.Dir(*socket)
 	if err := os.MkdirAll(socketDir, 0o700); err != nil {

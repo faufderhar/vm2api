@@ -375,13 +375,21 @@ function forwardedHops(req) {
     .filter(Boolean)
 }
 
+/**
+ * The caller's address: the TCP peer, or with TRUST_PROXY the right-most X-Forwarded-For hop,
+ * which the trusted proxy appended. Any hop to its left is whatever the client chose to send.
+ */
+export function requestClientAddress(req, env = process.env) {
+  const hops = forwardedHops(req)
+  if (trustProxy(env) && hops.length) return hops[hops.length - 1]
+  return String(req?.socket?.remoteAddress || '')
+}
+
 function loginKeys(req, username, env) {
   const name = String(username || '')
     .trim()
     .toLowerCase()
-  const peer = String(req?.socket?.remoteAddress || 'unknown')
-  const hops = forwardedHops(req)
-  const client = trustProxy(env) && hops.length ? hops[hops.length - 1] : peer
+  const client = requestClientAddress(req, env) || 'unknown'
   const account = `user:${name || '-'}`
   return { client: `client:${client}`, account, failed: `failed:${account}@${client}` }
 }
@@ -433,7 +441,13 @@ function parseCookie(header) {
     if (i < 0) continue
     const k = part.slice(0, i).trim()
     const v = part.slice(i + 1).trim()
-    if (k) out[k] = decodeURIComponent(v)
+    if (!k) continue
+    // A malformed %-escape in any cookie on this host must not fail the whole request.
+    try {
+      out[k] = decodeURIComponent(v)
+    } catch {
+      out[k] = v
+    }
   }
   return out
 }

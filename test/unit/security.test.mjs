@@ -369,3 +369,23 @@ test('an unknown panel token rereads the session file only after it changed', as
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('a malformed cookie escape does not fail panel token extraction', async () => {
+  const { extractPanelToken } = await import(`../../src/lib/core/security.mjs?cookie-escape=${Date.now()}`)
+  assert.equal(
+    extractPanelToken({ headers: { cookie: 'other=%E0%A4%A; kin_panel_token=kin-panel-abc' } }),
+    'kin-panel-abc',
+  )
+  assert.equal(extractPanelToken({ headers: { cookie: 'kin_panel_token=%ZZ' } }), '%ZZ')
+})
+
+test('the client address trusts X-Forwarded-For only behind a declared proxy, and only its last hop', async () => {
+  const { requestClientAddress } = await import(`../../src/lib/core/security.mjs?client-addr=${Date.now()}`)
+  const req = { socket: { remoteAddress: '10.0.0.9' }, headers: { 'x-forwarded-for': '6.6.6.6, 203.0.113.7' } }
+  assert.equal(requestClientAddress(req, {}), '10.0.0.9')
+  assert.equal(requestClientAddress(req, { TRUST_PROXY: '1' }), '203.0.113.7')
+  assert.equal(
+    requestClientAddress({ socket: { remoteAddress: '10.0.0.9' }, headers: {} }, { TRUST_PROXY: '1' }),
+    '10.0.0.9',
+  )
+})

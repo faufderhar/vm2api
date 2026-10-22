@@ -2,6 +2,15 @@
 
 ## 未发布
 
+- 通知邮件：服务器不在 EHLO 里提供 STARTTLS 时，配置了用户名的发信直接失败（`smtp_starttls_unavailable`），不再把 SMTP 密码明文发出（STARTTLS 可能被中间人剥掉）。端口 465 隐式 TLS 和不需要登录的发信不受影响。正文按 RFC 5321 做点转义并统一 CRLF，正文里单独一个 `.` 的行不会再提前结束邮件。
+- 请求日志的客户端 IP 只在设了 `TRUST_PROXY=1` 时取 `X-Forwarded-For` 最后一跳（反代追加的那一跳），否则取 TCP 对端；原来无条件取第一跳，调用方可以随便填。与登录限流同一规则。
+- 同域名下任何 Cookie 带非法 `%` 转义时，面板和 API 请求不再整体返回 500。
+- 管理台页面加上 `Content-Security-Policy`（只允许本站脚本、禁止被嵌入 iframe、禁止插件）、`X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff` 和 `Referrer-Policy: same-origin`。`connect-src` 仍放开 http(s)/ws(s)，以免面板保存的跨域 API Base 用不了。
+- 数据库加密字段解密时要求完整的 16 字节 GCM 认证标签，截短的标签直接拒绝。
+- `kin-api-kernel` 的内部 token 改由环境变量 `KIN_API_KERNEL_SECRET` 传入，不再出现在 `/proc/<pid>/cmdline`（同机任何用户都能读）。Docker 部署每次启动都会换上镜像里的新二进制；**手动部署（非 Docker）需要重新编译 `kin-api-kernel`**，旧二进制拿不到 token 会启动失败。
+- 拦截规则 `set_body_field` 的字段路径里出现 `__proto__`、`constructor`、`prototype` 时忽略该条，不再能改到全局原型；改嵌套字段时先复制，不再改动原始请求体。
+- 企业微信机器人地址只接受 `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…` 或直接填 key。已保存的其他地址（例如自建转发）会视为未配置，需要改回官方地址。
+- 生图接口请求体上限改为 50 MiB（OpenAI 单张图片上传上限），不再沿用对话的 128 MiB；生图请求体要解码出多份拷贝，原来一个大上传就要占用数百 MB 内存。
 - API 密钥的额度、并发和 RPM 现在对 GPT（Codex）、Grok、生图（`/v1/images/*`）和 `/v1/alpha/search` 也生效。原来只有 Claude 和 API 直连会占密钥并发、累加美元额度和请求次数，其余平台的请求不计入，设了额度的密钥可以无限调用 GPT、Grok 和生图。生图按 `image_cost` 美元计入额度，Responses 带 `image_generation` 工具时模型费用加图像费用一起计入。客户端中途取消且没有用量的请求不计。**升级后 GPT / Grok 用量会开始消耗密钥额度**，额度设得偏小的密钥可能很快用完。
 - 生图请求不带 `model` 时按上游默认模型 `gpt-image-2.5-flare` 检查是否停用。原来不写 `model` 就跳过检查，管理员停用该模型后仍能生图。`/v1/images/*` 和 Responses `image_generation` 工具都已修复；写了网关不认识的模型 id 仍原样转发。
 - 备份恢复期间，不带 `/v1` 的 `/completions`、`/messages/count_tokens`、`/alpha/search`、`/images/generations`、`/images/edits` 和 Responses WebSocket 握手也返回 503，和 `/v1` 路径一致。原来这些请求会在数据库切换时继续处理。

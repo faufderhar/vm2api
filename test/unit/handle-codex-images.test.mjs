@@ -235,11 +235,11 @@ test('a non-JSON upstream answer is a 502, and upstream errors pass through', as
   assert.equal(rejected.logBag.final_state, 'upstream_error')
 })
 
-function protocolHarness(rows, { apiKeyStore = null, codexOps = undefined } = {}) {
+function protocolHarness(rows, { apiKeyStore = null, codexOps = undefined, maxBodyBytes = 1 << 20 } = {}) {
   return createHandleProtocol({
     apiKeyStore,
     codexOps,
-    cfg: { limits: { max_body_bytes: 1 << 20 }, rewrite: { enabled: false }, paths: { project: root } },
+    cfg: { limits: { max_body_bytes: maxBodyBytes }, rewrite: { enabled: false }, paths: { project: root } },
     json(res, status, body) {
       res.statusCode = status
       res.body = body
@@ -406,4 +406,18 @@ test('an image call waits its turn on a busy key and is refused before any slot 
   assert.equal(calls, 0)
   assert.equal(keys.getById(created.id).requests, 0)
   keys.release(rec)
+})
+
+test('an images body over the 50 MiB images cap is refused before parsing', async () => {
+  const rows = []
+  // The gateway-wide default (128 MiB) would admit it; the images cap must not.
+  const { handleImages } = protocolHarness(rows, { maxBodyBytes: 128 * 1024 * 1024 })
+  const big = Buffer.alloc(50 * 1024 * 1024 + 1, 0x41)
+  const req = Readable.from([big])
+  req.headers = { 'content-type': 'multipart/form-data; boundary=x' }
+  const res = fakeRes()
+  await handleImages(req, res, '/v1/images/edits', 'edits')
+  res.finish()
+  assert.equal(res.statusCode, 413)
+  assert.equal(res.body.error.code, 'body_too_large')
 })
