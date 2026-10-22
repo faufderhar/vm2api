@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- 发往 xAI 的 Grok 请求体不再带调用方的 `user`、`safety_identifier`、`prompt_cache_key` 和 `metadata`。grok-shell 不发这些字段，共用订阅时它们会让 xAI 在一个账号上看到很多不同的终端用户。缓存命中靠内核发送的 `x-grok-conv-id`，不受影响。
 - Grok 槽访问 auth.x.ai 的请求（发现地址、设备码登录和轮询、授权码换票、导入 Refresh Token、刷新）全部改由该槽的 `kin-grok-kernel` 从槽位出口发出，Node 不再直接访问，xAI 那边不会再看到 `node-fetch/1.0` 的 User-Agent；同一账号只有一个客户端。Node 也不再后台定时刷新 token，改为内核在发请求前按需刷新，和 CLI 一致。面板「立即刷新」对本机出口的 Grok 槽原来总是报「没有出口」，已修复。
 - Grok 内核收到 401 重试时，如果文件里已经是比被拒那个更新的 token 就直接用，不再多刷新一次。内核错误码改为固定值，不再把底层网络报错原文带给调用方和日志。
 - Grok Build 账单后台最多 30 分钟读一次（原来跟 Claude 一样每 5 分钟），读失败等 5 分钟再试，refresh token 已被拒的槽不再去读；面板手动刷新照常立即读取。需要重新编译 `kin-grok-kernel`；旧版内核进程会被自动替换。

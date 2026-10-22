@@ -42,3 +42,29 @@ test('a hop without one writes the kernel config itself', async () => {
   assert.equal((await hop(hopOps(writes), null)).ok, true)
   assert.equal(writes.length, 1)
 })
+
+test('caller identity fields never reach xAI', async () => {
+  const { buildGrokOutbound } = await import('../../src/lib/protocol/handle-grok.mjs')
+  const body = {
+    model: 'grok-4.3',
+    user: 'tenant-42@corp',
+    safety_identifier: 'sid-9',
+    prompt_cache_key: 'pck',
+    metadata: { user_id: 'u', team: 'acme' },
+    client_metadata: { a: 1 },
+    temperature: 0.2,
+    messages: [{ role: 'user', content: 'hi' }],
+  }
+  for (const [protocol, mode] of [
+    ['openai.chat', 'native'],
+    ['openai.responses', 'native'],
+    ['anthropic.messages', 'native'],
+    ['anthropic.messages', 'convert'],
+  ]) {
+    const out = buildGrokOutbound(protocol, body, mode, { stream: false })
+    for (const key of ['user', 'safety_identifier', 'prompt_cache_key', 'metadata', 'client_metadata']) {
+      assert.equal(key in out.body, false, `${protocol}/${mode} kept ${key}`)
+    }
+  }
+  assert.equal(buildGrokOutbound('openai.chat', body, 'native', { stream: false }).body.temperature, 0.2)
+})

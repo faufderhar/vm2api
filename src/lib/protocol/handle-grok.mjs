@@ -99,14 +99,31 @@ function anthropicSystemText(system) {
 }
 
 /**
+ * Caller fields that identify the end user or the caller's own client. grok-shell does not
+ * send them; on a shared subscription they would show xAI one distinct user per tenant.
+ * Prompt caching rides on x-grok-conv-id, which the kernel sends, not on prompt_cache_key.
+ */
+const GROK_CALLER_IDENTITY_KEYS = ['user', 'safety_identifier', 'prompt_cache_key', 'metadata']
+
+function stripGrokCallerIdentity(body) {
+  const next = stripCodexIdentity(body)
+  for (const key of GROK_CALLER_IDENTITY_KEYS) delete next[key]
+  return next
+}
+
+/**
  * Outbound body and upstream route per inbound protocol. Native modes pass the body through
  * (identity fields stripped); `anthropic.messages` convert goes through Responses like Codex.
  */
 export function buildGrokOutbound(protocol, body, mode, { stream }) {
-  const clean = stripCodexIdentity(body)
+  const clean = stripGrokCallerIdentity(body)
   if (protocol === 'anthropic.messages' && mode === 'convert') {
     const converted = anthropicToCodexResponses({ ...clean, system: anthropicSystemText(clean.system) })
-    return { path: UPSTREAM_PATHS['openai.responses'], body: { ...converted, stream: true }, convert: true }
+    return {
+      path: UPSTREAM_PATHS['openai.responses'],
+      body: { ...stripGrokCallerIdentity(converted), stream: true },
+      convert: true,
+    }
   }
   const path = UPSTREAM_PATHS[protocol]
   if (!path) return null
