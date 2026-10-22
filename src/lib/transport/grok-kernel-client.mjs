@@ -32,6 +32,7 @@ export function grokKernelEnvelope({
   }
 }
 
+/** `timeoutMs` bounds the wait for response headers, not how long a stream may run. */
 export function callGrokKernel({ projectRoot, vmId, envelope, signal, timeoutMs = 300_000 } = {}) {
   const { socketPath, tokenPath } = grokKernelPaths(projectRoot, vmId)
   let token = ''
@@ -55,6 +56,8 @@ export function callGrokKernel({ projectRoot, vmId, envelope, signal, timeoutMs 
           signal,
         },
         (res) => {
+          // The limit is for the response head. The body is a stream that the caller's idle timer watches.
+          clearTimeout(timer)
           res.kernelError = res.headers['x-kin-kernel-error'] === '1'
           resolve(res)
         },

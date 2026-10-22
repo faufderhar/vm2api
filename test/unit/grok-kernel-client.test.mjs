@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { grokKernelEnvelope } from '../../src/lib/transport/grok-kernel-client.mjs'
+import http from 'node:http'
+import { callGrokKernel, grokKernelEnvelope } from '../../src/lib/transport/grok-kernel-client.mjs'
 import { writeGrokKernelConfig } from '../../src/lib/transport/grok-kernel-supervisor.mjs'
 
 test('the kernel envelope has no access token', () => {
@@ -49,4 +50,44 @@ test('a metadata or link-local proxy is refused before the kernel config is writ
     (error) => error.code === 'proxy_host_blocked',
   )
   assert.equal(fs.existsSync(path.join(root, 'vms', 'vm-g', 'run', 'grok-kernel.json')), false)
+})
+
+function fakeKernel(t, handler) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-grok-kernel-call-'))
+  const runDir = path.join(root, 'vms', 'vm-1', 'run')
+  fs.mkdirSync(runDir, { recursive: true })
+  fs.writeFileSync(path.join(runDir, 'grok-kernel.token'), 'token\n')
+  const server = http.createServer(handler)
+  t.after(() => {
+    server.close()
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+  return new Promise((resolve) => server.listen(path.join(runDir, 'grok-kernel.sock'), () => resolve(root)))
+}
+
+test('a stream may run past timeoutMs once the kernel answered', async (t) => {
+  const root = await fakeKernel(t, (req, res) => {
+    req.resume()
+    res.writeHead(200, { 'content-type': 'text/event-stream' })
+    let n = 0
+    const timer = setInterval(() => {
+      res.write(`data: ${n}\n\n`)
+      n += 1
+      if (n === 6) {
+        clearInterval(timer)
+        res.end()
+      }
+    }, 40)
+  })
+  const res = await callGrokKernel({ projectRoot: root, vmId: 'vm-1', envelope: {}, timeoutMs: 100 })
+  let body = ''
+  for await (const chunk of res) body += chunk
+  assert.equal(body.match(/data:/g).length, 6)
+})
+
+test('a kernel that never answers still times out', async (t) => {
+  const root = await fakeKernel(t, (req) => req.resume())
+  await assert.rejects(callGrokKernel({ projectRoot: root, vmId: 'vm-1', envelope: {}, timeoutMs: 100 }), {
+    code: 'grok_kernel_timeout',
+  })
 })

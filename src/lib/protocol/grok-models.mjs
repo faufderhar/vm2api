@@ -20,7 +20,8 @@ export async function fetchGrokUpstreamModels({ projectRoot, vm, forward, readJs
       if (!ready?.ok) {
         return { kernelError: true, statusCode: 503, headers: {}, async *[Symbol.asyncIterator]() {} }
       }
-      return callGrokKernel({ projectRoot, vmId: vm.id, envelope })
+      // A JSON document, not a stream: the whole read shares one deadline.
+      return callGrokKernel({ projectRoot, vmId: vm.id, envelope, signal: AbortSignal.timeout(60_000) })
     })
   let res
   try {
