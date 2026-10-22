@@ -138,6 +138,29 @@ export function grokBagFromAccount(account = {}, previous = {}) {
   }
 }
 
+function accountKey(source = {}) {
+  const id = str(source.account_id) || str(source.email).toLowerCase()
+  return id || null
+}
+
+/**
+ * Display bag after a login. Logging a different xAI account into the slot drops the
+ * previous account's 429 park, billing sample and refresh time. When either identity is
+ * unknown the park stays: skipping it could send a request to an account still limited.
+ */
+export function grokBagAfterLogin(previous = {}, account = {}) {
+  const before = accountKey(previous)
+  const after = accountKey(account)
+  const bag = { ...grokBagFromAccount(account, previous), auth_error: null }
+  if (before && after && before !== after) {
+    delete bag.limited_until
+    delete bag.limited_reason
+    delete bag.build_usage
+    delete bag.last_refresh_at
+  }
+  return bag
+}
+
 /** Patch vm.grok in vms/<id>.json. `fn` receives a copy of the bag and returns the next bag. */
 export function patchGrokBag(projectRoot, vmId, fn) {
   if (!projectRoot || !vmId) throw new Error('projectRoot and vmId required')

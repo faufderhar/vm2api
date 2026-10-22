@@ -32,7 +32,8 @@ import { RefusalGuardsRepo } from '../db/repos/refusal-guards-repo.mjs'
 import { RefusalDeviceBlocksRepo } from '../db/repos/refusal-device-blocks-repo.mjs'
 import { SettingsRepo } from '../db/repos/settings-repo.mjs'
 import { parseCodexImportPayload, upsertCodexAccount, readCodexAccounts } from '../vm/codex-slot.mjs'
-import { grokBagFromAccount, parseGrokCredentialInput, upsertGrokAccount } from '../vm/grok-slot.mjs'
+import { grokBagAfterLogin, parseGrokCredentialInput, upsertGrokAccount } from '../vm/grok-slot.mjs'
+import { grokRuntime } from '../pool/openai-account-runtime.mjs'
 import { generateAuthUrl, exchangeAuthCode, normalizeOauthFlavor } from '../oauth/oauth-auth-url.mjs'
 import { sessionKeyToOAuth, panelImportErrorPayload } from '../oauth/cookie-auth.mjs'
 import { enrichOauthIdentity } from '../oauth/oauth-identity.mjs'
@@ -491,7 +492,9 @@ async function commitImportedGrokVm({ cfg, existing, account, routingConfig = {}
   const saved = upsertGrokAccount(cfg.paths.project, existing.id, account, { replaceCredentials: true })
   existing.platform = 'xai'
   existing.family = 'grok'
-  existing.grok = { ...grokBagFromAccount(saved, existing.grok), auth_error: null }
+  existing.grok = grokBagAfterLogin(existing.grok || {}, saved)
+  // New credentials: a 401 hold from the old token no longer applies.
+  grokRuntime.clearAccountHold(existing.id)
   delete existing.claude
   delete existing.codex
   delete existing.codex_kernel

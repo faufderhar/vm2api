@@ -384,3 +384,28 @@ test('last refresh shows a kernel refresh recorded only in the credential file',
   const vm = { id: 'vm-g1', grok: { last_refresh_at: '2026-01-01T00:00:00.000Z' } }
   assert.equal(summarizeGrokSlot(root, vm).last_refresh_at, '2027-01-01T00:00:00.000Z')
 })
+
+test('logging another xAI account into a slot drops the old account state, the same account keeps it', async () => {
+  const { grokBagAfterLogin } = await import('../../src/lib/vm/grok-slot.mjs')
+  const previous = {
+    account_id: 'acct-old',
+    email: 'old@x.ai',
+    limited_until: Date.now() + 3_600_000,
+    limited_reason: 'rate_limited',
+    build_usage: { subscription_tier: 'heavy' },
+    last_refresh_at: '2026-10-01T00:00:00.000Z',
+    auth_error: { code: 'oauth_refresh_rejected' },
+  }
+  const other = grokBagAfterLogin(previous, { account_id: 'acct-new', email: 'new@x.ai', access_token: 'at' })
+  assert.equal(other.limited_until, undefined)
+  assert.equal(other.build_usage, undefined)
+  assert.equal(other.last_refresh_at, undefined)
+  assert.equal(other.auth_error, null)
+  assert.equal(other.account_id, 'acct-new')
+  const same = grokBagAfterLogin(previous, { account_id: 'acct-old', access_token: 'at2' })
+  assert.equal(same.limited_until, previous.limited_until)
+  assert.equal(same.auth_error, null)
+  // An opaque token says nothing about the account: keep the park rather than risk a limited account.
+  const unknown = grokBagAfterLogin(previous, { access_token: 'opaque' })
+  assert.equal(unknown.limited_until, previous.limited_until)
+})
