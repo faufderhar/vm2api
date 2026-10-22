@@ -4,7 +4,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { runInNewContext } from 'node:vm'
-import { listVms, isCodexVm } from '../../src/lib/vm/vm-registry.mjs'
+import { listVms } from '../../src/lib/vm/vm-registry.mjs'
+import { isClaudeVm } from '../../src/lib/vm/vm-kind.mjs'
 import {
   needsRefresh,
   expiresAtToMs,
@@ -426,14 +427,14 @@ for (const subscriptionType of [undefined, 'pro']) {
     )
     const source = fs.readFileSync(new URL('../../src/server.mjs', import.meta.url), 'utf8')
     const start = source.indexOf(
-      'for (const vm of listVms(cfg.paths.project)) {\n  if (isCodexVm(vm)) continue\n  try {\n    ensureSlotSubscriptionType',
+      'for (const vm of listVms(cfg.paths.project)) {\n  if (!isClaudeVm(vm)) continue\n  try {\n    ensureSlotSubscriptionType',
     )
     assert.ok(start >= 0, 'the startup credential migration must be exercised')
     const end = source.indexOf('\ncliNodeGuard =', start)
     assert.ok(end > start)
     runInNewContext(source.slice(start, end), {
       listVms,
-      isCodexVm,
+      isClaudeVm,
       ensureSlotSubscriptionType,
       path,
       cfg: { paths: { project: root } },
@@ -448,7 +449,7 @@ for (const subscriptionType of [undefined, 'pro']) {
     const mtime = fs.statSync(file).mtimeMs
     runInNewContext(source.slice(start, end), {
       listVms,
-      isCodexVm,
+      isClaudeVm,
       ensureSlotSubscriptionType,
       path,
       cfg: { paths: { project: root } },

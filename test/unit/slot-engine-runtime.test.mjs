@@ -9,6 +9,9 @@ import {
   switchSlotInferenceEngine,
 } from '../../src/lib/vm/slot-runtime.mjs'
 
+// Fixtures bind slots to a 127.0.0.1 SOCKS, which production blocks by default.
+process.env.VM2API_ALLOW_PRIVATE_PROXY = '1'
+
 function seedVmRecords(records) {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-slot-engine-'))
   const vmsDir = path.join(projectRoot, 'vms')
