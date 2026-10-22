@@ -202,10 +202,31 @@ function tightenSessionFile(file) {
   }
 }
 
+// Stat signature of the session file as last read or written; a miss rereads only a changed file.
+let sessionFileStamp = null
+
+function readSessionFileStamp() {
+  try {
+    const st = fs.statSync(sessionFile())
+    // atomicWriteJson renames a new inode into place, so ino catches same-mtime writes.
+    return `${st.ino}:${st.size}:${st.mtimeMs}`
+  } catch {
+    return null
+  }
+}
+
+/** Another process (or a restart) may have issued the token. Unauthenticated misses must stay cheap. */
+function reloadSessionsIfChanged() {
+  const stamp = readSessionFileStamp()
+  if (stamp === null || stamp === sessionFileStamp) return
+  loadSessions()
+}
+
 function loadSessions() {
   try {
     const f = sessionFile()
     if (!fs.existsSync(f)) return
+    sessionFileStamp = readSessionFileStamp()
     tightenSessionFile(f)
     const raw = JSON.parse(fs.readFileSync(f, 'utf8'))
     const now = Date.now()
@@ -234,6 +255,7 @@ function saveSessions() {
       if (s.exp > now) obj[token] = s
     }
     atomicWriteJson(f, obj, { mode: 0o600 })
+    sessionFileStamp = readSessionFileStamp()
   } catch (err) {
     console.warn(`kin-security: failed to persist panel sessions: ${err.message}`)
   }
@@ -271,7 +293,7 @@ export function verifyPanelSession(token) {
   let s = panelSessions.get(key)
   if (!s) {
     // reload from disk once (multi-process / restart)
-    loadSessions()
+    reloadSessionsIfChanged()
     s = panelSessions.get(key)
   }
   if (!s) return null

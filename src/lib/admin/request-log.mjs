@@ -11,7 +11,8 @@
  * (writes the previous data/request-logs/YYYY-MM-DD.jsonl format alongside).
  *
  * Env: KIN_REQUEST_LOG_MODE=off|normal|debug (default normal)
- * Per-request override: X-Kin-Debug: 1 or X-Kin-Log: debug|normal|off
+ * Per-request override: X-Kin-Debug: 1 or X-Kin-Log: debug|normal|off.
+ * A caller may only raise the mode; billing and audit read these rows.
  */
 
 import fs from 'node:fs'
@@ -33,6 +34,7 @@ export function presentedApiKeyForLog(token) {
 }
 
 const MODES = new Set(['off', 'normal', 'debug'])
+const MODE_RANK = { off: 0, normal: 1, debug: 2 }
 
 const DEFAULT_RETAIN_DAYS = 7
 const DEFAULT_DEBUG_RETAIN_DAYS = 3
@@ -344,20 +346,22 @@ function debugResponse(captured) {
 }
 
 export function resolveLogMode(envMode, req) {
+  const configured = String(envMode || 'normal')
+    .trim()
+    .toLowerCase()
+  const base = MODES.has(configured) ? configured : 'normal'
   const hdr = String(req?.headers?.['x-kin-log'] || '')
     .trim()
     .toLowerCase()
-  if (MODES.has(hdr)) return hdr
-  if (String(req?.headers?.['x-kin-debug'] || '') === '1') return 'debug'
-  const base = String(envMode || 'normal')
-    .trim()
-    .toLowerCase()
-  return MODES.has(base) ? base : 'normal'
+  const asked = MODES.has(hdr) ? hdr : String(req?.headers?.['x-kin-debug'] || '') === '1' ? 'debug' : null
+  // A caller may ask for more detail, never less: `off` would drop the billing row.
+  return asked && MODE_RANK[asked] > MODE_RANK[base] ? asked : base
 }
 
-export function newRequestId(req) {
+/** The client's X-Request-ID, unless another request already logged under it. */
+export function newRequestId(req, { taken = () => false } = {}) {
   const incoming = String(req?.headers?.['x-request-id'] || '').trim()
-  if (incoming && incoming.length <= 128) return incoming
+  if (incoming && incoming.length <= 128 && !taken(incoming)) return incoming
   return crypto.randomUUID()
 }
 
@@ -427,7 +431,15 @@ export class RequestLogStore {
   }
 
   start(req, { protocol = null, pathName = null } = {}) {
-    const requestId = newRequestId(req)
+    const requestId = newRequestId(req, {
+      taken: (id) => {
+        try {
+          return this.repo.hasRequestId(id)
+        } catch {
+          return false
+        }
+      },
+    })
     try {
       req.headers = req.headers || {}
     } catch {}
@@ -582,14 +594,25 @@ export class RequestLogStore {
     const classified = classifyRequestError(summary)
     if (classified?.error_class) summary.error_class = classified.error_class
 
+    let inserted = false
     try {
-      this.repo.insertSummaryIfAbsent(summary)
+      inserted = this.repo.insertSummaryIfAbsent(summary)
     } catch {}
+    if (!inserted && !ctx.logged) {
+      // Another request took this id after start(); keep the row under a fresh one.
+      summary.request_id = crypto.randomUUID()
+      ctx.request_id = summary.request_id
+      try {
+        inserted = this.repo.insertSummaryIfAbsent(summary)
+      } catch {}
+    }
+    if (inserted) ctx.logged = true
     if (this.jsonlMirror) this._appendJsonl(summary)
     this._mem.push(summary)
     if (this._mem.length > this._memMax) this._mem = this._mem.slice(-this._memMax)
 
-    if (ctx.mode === 'debug') {
+    // Only under an id this request owns; never over another request's record.
+    if (ctx.mode === 'debug' && ctx.logged) {
       const debugRec = {
         ...summary,
         headers: ctx.headers,

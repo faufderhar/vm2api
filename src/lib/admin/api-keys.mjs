@@ -192,6 +192,8 @@ export class ApiKeyStore {
     this.inflight = new Map() // id → count
     this.rpmBuckets = new Map() // id → number[] timestamps ms
     this.users = new UsersRepo(this.db)
+    // null = unknown. Once no plaintext row is left, a wrong key no longer scans the table.
+    this.legacyPlaintext = null
   }
 
   /** sub2api: an api key of a disabled/deleted user must not authenticate. */
@@ -214,6 +216,7 @@ export class ApiKeyStore {
     this.db = db
     this.repo = new ApiKeysRepo(db)
     this.users = new UsersRepo(db)
+    this.legacyPlaintext = null
   }
 
   list({ reveal = false } = {}) {
@@ -253,9 +256,12 @@ export class ApiKeyStore {
       return { ok: true, record: indexed }
     }
     // One-time migration for legacy plaintext rows.
-    for (const rec of this.repo.list()) {
-      if (String(rec.key || '').startsWith(HASH_MARKER)) continue
+    if (this.legacyPlaintext === false) return { ok: false, reason: 'invalid' }
+    const plaintext = this.repo.list().filter((rec) => !String(rec.key || '').startsWith(HASH_MARKER))
+    this.legacyPlaintext = plaintext.length > 0
+    for (const rec of plaintext) {
       if (timingSafeEqualStr(token, rec.key)) {
+        this.legacyPlaintext = null
         rec.key_hash = hash
         rec.key_prefix = String(token).slice(0, 10)
         rec.key_suffix = String(token).slice(-4)

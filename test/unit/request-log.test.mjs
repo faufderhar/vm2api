@@ -24,13 +24,59 @@ function tmpStore(mode = 'normal') {
 test('resolveLogMode: env + header overrides', () => {
   assert.equal(resolveLogMode('normal', { headers: {} }), 'normal')
   assert.equal(resolveLogMode('normal', { headers: { 'x-kin-debug': '1' } }), 'debug')
-  assert.equal(resolveLogMode('debug', { headers: { 'x-kin-log': 'off' } }), 'off')
   assert.equal(resolveLogMode('off', { headers: { 'x-kin-log': 'normal' } }), 'normal')
+})
+
+test('resolveLogMode: a caller header never lowers the configured mode', () => {
+  assert.equal(resolveLogMode('normal', { headers: { 'x-kin-log': 'off' } }), 'normal')
+  assert.equal(resolveLogMode('debug', { headers: { 'x-kin-log': 'off' } }), 'debug')
+  assert.equal(resolveLogMode('debug', { headers: { 'x-kin-log': 'normal' } }), 'debug')
+})
+
+test('a caller x-kin-log: off still leaves the billing row', () => {
+  const store = tmpStore('normal')
+  const ctx = store.start({ method: 'POST', headers: { 'x-kin-log': 'off' }, socket: {} }, { pathName: '/v1/messages' })
+  assert.equal(ctx.mode, 'normal')
+  assert.ok(store.finish(ctx, { status: 200, api_key_id: 'key_a', input_tokens: 10 }))
+  assert.equal(store.listNormal({ limit: 5 }).length, 1)
 })
 
 test('newRequestId keeps incoming X-Request-ID', () => {
   assert.equal(newRequestId({ headers: { 'x-request-id': 'rid-1' } }), 'rid-1')
   assert.match(newRequestId({ headers: {} }), /^[0-9a-f-]{36}$/i)
+  const taken = (id) => id === 'rid-1'
+  assert.match(newRequestId({ headers: { 'x-request-id': 'rid-1' } }, { taken }), /^[0-9a-f-]{36}$/i)
+})
+
+test('a reused X-Request-ID logs every request under its own id', () => {
+  const store = tmpStore('normal')
+  const ids = []
+  for (let i = 0; i < 3; i++) {
+    const ctx = store.start(
+      { method: 'POST', headers: { 'x-request-id': 'fixed-id' }, socket: {} },
+      { pathName: '/v1/messages' },
+    )
+    store.finish(ctx, { status: 200, api_key_id: 'key_a', input_tokens: 10 })
+    ids.push(ctx.request_id)
+  }
+  assert.equal(ids[0], 'fixed-id')
+  assert.equal(new Set(ids).size, 3)
+  assert.equal(store.listNormal({ limit: 10 }).length, 3)
+})
+
+test('two in-flight requests with one X-Request-ID both log, and neither debug record is replaced', () => {
+  const store = tmpStore('debug')
+  const start = () =>
+    store.start({ method: 'POST', headers: { 'x-request-id': 'shared-id' }, socket: {} }, { pathName: '/v1/messages' })
+  const first = start()
+  const second = start()
+  assert.equal(second.request_id, 'shared-id')
+  store.finish(first, { status: 200, inbound_body: { who: 'first' } })
+  store.finish(second, { status: 200, inbound_body: { who: 'second' } })
+  assert.notEqual(second.request_id, 'shared-id')
+  assert.deepEqual(store.getDebug('shared-id').inbound_body, { who: 'first' })
+  assert.deepEqual(store.getDebug(second.request_id).inbound_body, { who: 'second' })
+  assert.equal(store.listNormal({ limit: 10 }).length, 2)
 })
 
 test('summarizeBody counts messages and tools', () => {

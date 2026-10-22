@@ -336,3 +336,36 @@ test('existing loose panel session file is tightened on load', async () => {
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('an unknown panel token rereads the session file only after it changed', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-panel-reload-'))
+  const previous = process.env.KIN_DATA_DIR
+  process.env.KIN_DATA_DIR = dir
+  const file = path.join(dir, 'panel-sessions.json')
+  const realRead = fs.readFileSync
+  let reads = 0
+  fs.readFileSync = (target, ...rest) => {
+    if (target === file) reads += 1
+    return realRead.call(fs, target, ...rest)
+  }
+  try {
+    // Two module instances stand in for two processes sharing one data dir.
+    const issuer = await import(`../../src/lib/core/security.mjs?reload-a=${Date.now()}`)
+    const reader = await import(`../../src/lib/core/security.mjs?reload-b=${Date.now()}`)
+    const token = issuer.createPanelSession('admin', 60_000)
+    assert.equal(reader.verifyPanelSession(token).user, 'admin')
+
+    reads = 0
+    for (let i = 0; i < 5; i++) assert.equal(reader.verifyPanelSession(`kin-panel-unknown-${i}`), null)
+    assert.equal(reads, 0)
+
+    const later = issuer.createPanelSession('admin', 60_000)
+    assert.equal(reader.verifyPanelSession(later).user, 'admin')
+    assert.equal(reads, 1)
+  } finally {
+    fs.readFileSync = realRead
+    if (previous == null) delete process.env.KIN_DATA_DIR
+    else process.env.KIN_DATA_DIR = previous
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})

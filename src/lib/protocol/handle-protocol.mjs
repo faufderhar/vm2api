@@ -1756,7 +1756,8 @@ export function createHandleProtocol(deps) {
     const clientBody = hidePersonaUsageOnMessage(result.body, personaHideTokens, cacheTtl)
     if (protocol === 'anthropic.messages') {
       output = { ...clientBody }
-      if (String(req.headers['x-kin-debug'] || '') === '1') {
+      // Which slot and upstream account served the turn is operator data, not a tenant's.
+      if (req.apiKeyKind === 'master' && String(req.headers['x-kin-debug'] || '') === '1') {
         output.kin = {
           vm_id: result.vmId,
           account_id: result.accountId,

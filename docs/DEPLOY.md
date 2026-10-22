@@ -200,6 +200,21 @@ location / {
 
 `Connection ""` 会剥掉 Upgrade，终端或 Responses WS 握手拿不到 101，所以 shell / responses 路径单独放在前面。生产机的 Go 前门在 `:8787`、Node 在 `:8788` 时，这些 location 必须 `proxy_pass` 到 Node。终端症状和核对命令见 [nginx-shell.md](nginx-shell.md)。
 
+### 反代必须保留原 Host
+
+master key（`VM2API_API_KEY`）从本机调用时等同面板管理员，升级脚本靠这一点暂停和恢复调度。网关判断「本机」只能看连接来源是 127.0.0.1、`Host` 是本机地址、并且没有 `X-Forwarded-For`、`X-Real-IP`、`Forwarded`、`Via` 等反代头。下面两种部署会让外网请求满足这三条，**拿到 master key 的人就能从外网管理面板**：
+
+- nginx 每个转发到 Node 的 `location` 都要写 `proxy_set_header Host $host;`。不写时 nginx 默认发 `Host: 127.0.0.1:8787`，外网请求就像本机请求。上面的示例已经写了；自己加 `location` 时别漏。
+- 不要用纯 TCP 转发把 `:8787` 暴露出去，例如 socat、frp/nps 的 TCP 隧道、`ssh -R`、haproxy `mode tcp`、四层负载均衡转到 127.0.0.1。这类转发不改请求内容，客户端自己写 `Host: 127.0.0.1` 就会被当成本机。要转发请用 HTTP 层反代，并按上一条保留 `Host`，或让它加上 `X-Forwarded-For`（Caddy 的 `reverse_proxy` 默认会加）。
+
+master key 也是 `/v1` 推理密钥。发给客户端用的密钥请在面板「密钥」页另建，master key 只留给运维。
+
+核对方法：在另一台机器上用 master key 请求面板，应返回 403。
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $VM2API_API_KEY" https://你的域名/api/panel/me
+```
+
 ## 本机 Node（备选）
 
 `npm run fetch:payload` 拉 `bin/kin-{kernel,codex-kernel,oauth-auth}` 与 `share/`；`npm run build:egress && npm run build:worker`；`npm ci`、`pnpm -C web install --frozen-lockfile && npm run build:web`；以及占位 `vms/active.json`。单元：[deploy/vm2api.service](deploy/vm2api.service)。细节见 [BUILD.md](BUILD.md)。

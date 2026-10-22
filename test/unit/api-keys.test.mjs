@@ -78,6 +78,30 @@ test('reveal reports hash-only rows as unrecoverable', () => {
   assert.equal(store.authenticate(rec.key).ok, true, 'auth still works off the hash')
 })
 
+test('a plaintext legacy row still migrates, and wrong keys stop scanning once none is left', () => {
+  const store = tmpStore()
+  const rec = store.create({ name: 'plaintext' })
+  const row = store.getById(rec.id)
+  row.key = rec.key
+  row.key_hash = 'legacy-unhashed'
+  store.repo.update(row)
+  let scans = 0
+  const list = store.repo.list.bind(store.repo)
+  store.repo.list = (...args) => {
+    scans += 1
+    return list(...args)
+  }
+
+  assert.equal(store.authenticate('sk-vm-wrong-1').ok, false)
+  assert.equal(store.authenticate(rec.key).ok, true)
+  assert.match(store.getById(rec.id).key, /^hmac:/)
+
+  scans = 0
+  for (let i = 0; i < 5; i++) assert.equal(store.authenticate(`sk-vm-wrong-${i}`).ok, false)
+  assert.equal(scans, 1)
+  assert.equal(store.authenticate(rec.key).ok, true)
+})
+
 test('the public pepper upgrades only keys created before this data dir recorded the cutoff', () => {
   const store = tmpStore()
   const oldKey = store.create({ name: 'old-pepper' })

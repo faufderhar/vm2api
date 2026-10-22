@@ -83,7 +83,7 @@ function proxyHost(proxy) {
 function ipv4Kind(host) {
   const parts = host.split('.').map(Number)
   if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part))) return ''
-  if (parts.every((part) => part === 0)) return 'unspecified'
+  if (parts[0] === 0) return 'unspecified'
   if (parts[0] === 127) return 'loopback'
   if (parts[0] === 10) return 'private'
   if (parts[0] === 192 && parts[1] === 168) return 'private'
@@ -93,17 +93,68 @@ function ipv4Kind(host) {
   return ''
 }
 
+/** Eight 16-bit groups of a valid IPv6 literal, a trailing dotted IPv4 included. */
+function ipv6Groups(host) {
+  let text = host
+  const tail = []
+  const dotted = text.match(/:(\d+\.\d+\.\d+\.\d+)$/)
+  if (dotted) {
+    const p = dotted[1].split('.').map(Number)
+    tail.push((p[0] << 8) | p[1], (p[2] << 8) | p[3])
+    text = `${text.slice(0, -dotted[1].length)}0`
+  }
+  const [left, right] = text.split('::')
+  const parse = (part) => (part ? part.split(':').map((g) => Number.parseInt(g, 16)) : [])
+  const head = parse(left)
+  const rest = right === undefined ? [] : parse(right)
+  if (dotted) (rest.length ? rest : head).pop()
+  const fill = 8 - tail.length - head.length - rest.length
+  return [...head, ...Array(Math.max(0, fill)).fill(0), ...rest, ...tail]
+}
+
+/** IPv4-mapped, IPv4-compatible, SIIT and NAT64 forms reach the embedded IPv4 address. */
+function embeddedIpv4(g) {
+  const zero = (from, to) => g.slice(from, to).every((x) => x === 0)
+  const mapped = zero(0, 5) && g[5] === 0xffff
+  const translated = zero(0, 4) && g[4] === 0xffff && g[5] === 0
+  const compatible = zero(0, 6) && (g[6] !== 0 || g[7] > 1)
+  const nat64 = g[0] === 0x64 && g[1] === 0xff9b && zero(2, 6)
+  if (!mapped && !translated && !compatible && !nat64) return ''
+  return [g[6] >> 8, g[6] & 0xff, g[7] >> 8, g[7] & 0xff].join('.')
+}
+
 function ipv6Kind(host) {
-  if (host === '::' || host === '::0') return 'unspecified'
-  if (host === '::1') return 'loopback'
-  if (host.startsWith('::ffff:')) return ipv4Kind(host.slice('::ffff:'.length))
-  const head = host.split(':')[0]
-  if (/^fe[89ab][0-9a-f]{0,2}$/.test(head)) return 'linklocal'
-  if (/^f[cd][0-9a-f]{0,2}$/.test(head)) return 'ula'
+  const g = ipv6Groups(host)
+  if (g.every((x) => x === 0)) return 'unspecified'
+  if (g.slice(0, 7).every((x) => x === 0) && g[7] === 1) return 'loopback'
+  const v4 = embeddedIpv4(g)
+  if (v4) return v4 === '100.100.100.200' ? 'metadata' : ipv4Kind(v4)
+  if ((g[0] & 0xffc0) === 0xfe80) return 'linklocal'
+  if ((g[0] & 0xfe00) === 0xfc00) return 'ula'
   return ''
 }
 
-const HARD_BLOCK = new Set(['unspecified', 'linklocal'])
+/**
+ * Shorthand IPv4 that getaddrinfo accepts as an address (`127.1`, `2130706433`,
+ * `0x7f.0.0.1`, `0177.0.0.1`), as dotted quad; '' when the name is not one.
+ */
+function legacyIpv4(host) {
+  const parts = host.split('.')
+  if (parts.length > 4 || !/^[0-9a-fx.]+$/.test(host)) return ''
+  const nums = parts.map((p) => {
+    if (/^0x[0-9a-f]+$/.test(p)) return Number.parseInt(p.slice(2), 16)
+    if (/^0[0-7]*$/.test(p)) return Number.parseInt(p, 8)
+    if (/^[1-9]\d*$/.test(p)) return Number(p)
+    return Number.NaN
+  })
+  if (nums.some((n) => !Number.isFinite(n))) return ''
+  const last = nums.pop()
+  if (nums.some((n) => n > 255) || last >= 256 ** (4 - nums.length)) return ''
+  const value = nums.reduce((acc, n, i) => acc + n * 256 ** (3 - i), 0) + last
+  return [value >>> 24, (value >>> 16) & 0xff, (value >>> 8) & 0xff, value & 0xff].join('.')
+}
+
+const HARD_BLOCK = new Set(['unspecified', 'linklocal', 'metadata'])
 const PRIVATE_BLOCK = new Set(['loopback', 'private', 'cgnat', 'ula'])
 
 /**
@@ -126,11 +177,12 @@ export function isUnsafeProxyHost(proxy) {
   ) {
     return true
   }
-  if (host.startsWith('::ffff:')) host = host.slice('::ffff:'.length)
+  if (host.startsWith('::ffff:') && net.isIPv4(host.slice('::ffff:'.length))) host = host.slice('::ffff:'.length)
+  if (!net.isIP(host)) host = legacyIpv4(host) || host
+  if (host === '100.100.100.200') return true
   const kind = net.isIPv4(host) ? ipv4Kind(host) : net.isIPv6(host) ? ipv6Kind(host) : ''
   if (!kind) return false
   if (HARD_BLOCK.has(kind)) return true
-  if (host === '100.100.100.200') return true
   return PRIVATE_BLOCK.has(kind) && !privateProxyAllowed()
 }
 
