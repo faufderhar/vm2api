@@ -47,7 +47,7 @@ export function BillingPage() {
         ? split.gpt
         : platform === 'grok'
           ? split.grok
-        : split.claude
+          : split.claude
       : q.data?.totals || emptyTotals()
 
   return (

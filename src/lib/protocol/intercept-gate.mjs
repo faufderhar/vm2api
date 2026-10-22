@@ -5,7 +5,12 @@
  * persisted refusal/device cache, then the model. A block never hops.
  * Device bans and refusal rows are written here so both entry points share them.
  */
-import { detectDistill, distillBlockError, isNonClaudePlatformModel, isOpenaiPlatformModel } from '../core/distill-detect.mjs'
+import {
+  detectDistill,
+  distillBlockError,
+  isNonClaudePlatformModel,
+  isOpenaiPlatformModel,
+} from '../core/distill-detect.mjs'
 import {
   inboundRefusalDeviceId,
   matchStoredRefusal,
@@ -137,9 +142,14 @@ export async function evaluateProtocolIntercept({
   // is set, the slot decides GPT: a scope with no GPT pair and no named
   // account is out of range. Claude stays in the gate until a Claude pair
   // or a named account is selected; a GPT-only scope does not turn it off.
-  const foreignPlatform = isOpenaiPlatformModel(inbound, body) ? 'gpt' : isNonClaudePlatformModel(inbound, body) ? 'grok' : ''
+  const foreignPlatform = isOpenaiPlatformModel(inbound, body)
+    ? 'gpt'
+    : isNonClaudePlatformModel(inbound, body)
+      ? 'grok'
+      : ''
   if (foreignPlatform) {
-    const enabled = foreignPlatform === 'gpt' ? jev?.openai_platform_enabled === true : jev?.grok_platform_enabled === true
+    const enabled =
+      foreignPlatform === 'gpt' ? jev?.openai_platform_enabled === true : jev?.grok_platform_enabled === true
     if (!jevScopeConfigured(jev)) {
       if (!enabled) return pass('platform')
     } else if (!jevScopeWaits(jev, foreignPlatform)) {

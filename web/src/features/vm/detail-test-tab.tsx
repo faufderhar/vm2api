@@ -121,7 +121,9 @@ export function VmTestPanel(props: VmTestTabProps & { className?: string }) {
             />
           </div>
           <div className='space-y-1.5'>
-            <Label>{isCodex ? '思考档位' : grok ? '最大输出' : '思考预算'}</Label>
+            <Label>
+              {isCodex ? '思考档位' : grok ? '最大输出' : '思考预算'}
+            </Label>
             {isCodex ? (
               <Select
                 value={reasoningEffort}
@@ -166,12 +168,12 @@ export function VmTestPanel(props: VmTestTabProps & { className?: string }) {
                     ? '无凭证 · 测试会被拒绝，请先导入凭证'
                     : 'xAI OAuth · Grok 上游经槽代理'
                   : credType === 'none'
-                  ? '无凭证 · 测试会被拒绝，请先导入凭证'
-                  : `${credTypeLabel(credType)}${
-                      credType === 'setup-token' || credType === 'apikey'
-                        ? ' · 按 inference 入站，不走官方 Claude Code 四门'
-                        : ' · 官方 Claude Code 入站'
-                    }`}
+                    ? '无凭证 · 测试会被拒绝，请先导入凭证'
+                    : `${credTypeLabel(credType)}${
+                        credType === 'setup-token' || credType === 'apikey'
+                          ? ' · 按 inference 入站，不走官方 Claude Code 四门'
+                          : ' · 官方 Claude Code 入站'
+                      }`}
             </p>
           </div>
           {isCodex || grok ? null : (

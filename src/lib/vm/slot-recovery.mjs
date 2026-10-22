@@ -647,7 +647,8 @@ export function createSlotBridgeHealer({
       }
       // Watchdog targets are panel summaries; kin-egress needs the record's credentialed proxy.
       const proxy = (ops.getVm || getVm)(projectRoot, vm.id)?.proxy
-      if (isHeadlessSlotVm(vm) || !hasBoundExit(proxy) || isLocalEgressProxy(proxy) || proxyBlockedReason(proxy)) continue
+      if (isHeadlessSlotVm(vm) || !hasBoundExit(proxy) || isLocalEgressProxy(proxy) || proxyBlockedReason(proxy))
+        continue
       if (seenProxies.has(proxy.id)) continue
       seenProxies.add(proxy.id)
       if (egressAlive(proxy.id) || !due(`egress:${proxy.id}`)) continue

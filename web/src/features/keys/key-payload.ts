@@ -20,7 +20,8 @@ function nonNegative(value: number, label: string): number {
 }
 
 function groupTypeOf(value: string): KeyGroupType {
-  if (value === 'anthropic' || value === 'openai' || value === 'xai') return value
+  if (value === 'anthropic' || value === 'openai' || value === 'xai')
+    return value
   return 'all'
 }
 

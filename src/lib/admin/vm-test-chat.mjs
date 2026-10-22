@@ -123,7 +123,13 @@ export function testModelsView(platform) {
     items: listTestableModels(kind),
     platform: kind,
     protocol:
-      kind === 'openai' ? 'openai.responses' : kind === 'xai' ? 'openai.chat' : kind === 'anthropic' ? 'anthropic.messages' : null,
+      kind === 'openai'
+        ? 'openai.responses'
+        : kind === 'xai'
+          ? 'openai.chat'
+          : kind === 'anthropic'
+            ? 'anthropic.messages'
+            : null,
     inbound_path:
       kind === 'openai'
         ? '/v1/responses'
@@ -559,9 +565,7 @@ function chatMessageText(message) {
   if (typeof message === 'string') return message
   if (typeof message.content === 'string') return message.content
   if (!Array.isArray(message.content)) return ''
-  return message.content
-    .map((part) => (typeof part === 'string' ? part : part?.text || part?.content || ''))
-    .join('')
+  return message.content.map((part) => (typeof part === 'string' ? part : part?.text || part?.content || '')).join('')
 }
 
 async function consumeMessagesResponse(res) {
@@ -1029,10 +1033,10 @@ export async function runVmTestChat(opts = {}) {
     grok
       ? '推理 api-kernel / xAI'
       : codex
-      ? '推理 codex-kernel / ChatGPT'
-      : cliHop
-        ? `推理 ${inferenceEngine} / cli-hop ${dataplane}`
-        : `推理 ${inferenceEngine} / http hop`,
+        ? '推理 codex-kernel / ChatGPT'
+        : cliHop
+          ? `推理 ${inferenceEngine} / cli-hop ${dataplane}`
+          : `推理 ${inferenceEngine} / http hop`,
   )
 
   const credMode = testChatCredentialMode(vm)
@@ -1085,16 +1089,16 @@ export async function runVmTestChat(opts = {}) {
     grok
       ? '凭证 Grok OAuth · OpenAI Chat 入站'
       : codex
-      ? '凭证 Codex OAuth · OpenAI Responses 入站'
-      : `凭证 ${credMode}${
-          cliHop
-            ? cliLayout === 'identity'
-              ? ' · cli-hop CLI 官方提示词'
-              : ' · cli-hop 0注入'
-            : unofficial
-              ? ' · 非官方 inference 入站'
-              : ' · 官方 Claude Code 入站'
-        }`,
+        ? '凭证 Codex OAuth · OpenAI Responses 入站'
+        : `凭证 ${credMode}${
+            cliHop
+              ? cliLayout === 'identity'
+                ? ' · cli-hop CLI 官方提示词'
+                : ' · cli-hop 0注入'
+              : unofficial
+                ? ' · 非官方 inference 入站'
+                : ' · 官方 Claude Code 入站'
+          }`,
   )
 
   if (!vm.proxy?.url && !vm.proxy?.host) {
@@ -1405,13 +1409,13 @@ export async function runVmTestChat(opts = {}) {
         ? 'openai_responses'
         : grok
           ? 'openai_chat'
-        : cliHop
-          ? 'cli_hop_passthrough'
-          : unofficial
-            ? credMode === 'apikey'
-              ? 'unofficial_apikey'
-              : 'unofficial_setup_token'
-            : 'claude_code_official',
+          : cliHop
+            ? 'cli_hop_passthrough'
+            : unofficial
+              ? credMode === 'apikey'
+                ? 'unofficial_apikey'
+                : 'unofficial_setup_token'
+              : 'claude_code_official',
       rewritten: Array.isArray(inbound?.system) && inbound.system.length >= 4,
       thinking: inbound?.thinking?.type || null,
       hit_vm: result?.vm_id || null,

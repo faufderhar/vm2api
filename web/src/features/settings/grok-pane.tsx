@@ -54,7 +54,11 @@ function NumberField({
 
 const PROTOCOL_ROWS: { key: string; label: string; modes: string[] }[] = [
   { key: 'openai.responses', label: 'Responses', modes: ['native', 'reject'] },
-  { key: 'openai.chat', label: 'Chat Completions', modes: ['native', 'reject'] },
+  {
+    key: 'openai.chat',
+    label: 'Chat Completions',
+    modes: ['native', 'reject'],
+  },
   {
     key: 'anthropic.messages',
     label: 'Claude Messages',
@@ -124,7 +128,10 @@ export function GrokPane({
       >
         <div className='divide-y'>
           <div className='space-y-1.5'>
-            <SettingRow label='提前刷新' desc='access token 到期前多少秒开始换票。'>
+            <SettingRow
+              label='提前刷新'
+              desc='access token 到期前多少秒开始换票。'
+            >
               <NumberField
                 id='grok-refresh-skew'
                 label='Grok 提前刷新秒数'
@@ -188,7 +195,9 @@ export function GrokPane({
               max={1000000}
               value={Number(quota.max_rpm ?? 0)}
               disabled={saving}
-              onCommit={(next) => update({ quota: { ...quota, max_rpm: next } })}
+              onCommit={(next) =>
+                update({ quota: { ...quota, max_rpm: next } })
+              }
             />
           </SettingRow>
           <SettingRow label='会话数' desc='0 表示不限制。'>

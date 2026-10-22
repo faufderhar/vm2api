@@ -655,9 +655,7 @@ export function createHealthProbeMonitor(opts = {}) {
 
   const probePlatform = async (platform, real, started) => {
     const vms = typeof opts.listTargets === 'function' ? opts.listTargets() || [] : []
-    const targets = selectHealthProbeTargets(vms, config, nowFn()).filter(
-      (vm) => healthSlotPlatform(vm) === platform,
-    )
+    const targets = selectHealthProbeTargets(vms, config, nowFn()).filter((vm) => healthSlotPlatform(vm) === platform)
     if (!targets.length) {
       // Every slot off-shift: a still-valid good reply keeps serving until it expires.
       const prev = snapshots[platform]

@@ -374,7 +374,8 @@ function blankDraft(): KeyLimitsDraft {
 }
 
 function groupOf(value: string | undefined): KeyGroupType {
-  if (value === 'anthropic' || value === 'openai' || value === 'xai') return value
+  if (value === 'anthropic' || value === 'openai' || value === 'xai')
+    return value
   return 'all'
 }
 

@@ -236,9 +236,7 @@ async fn dispatch(app: &App, envelope: Envelope) -> Result<Response, KernelFailu
     let status =
         StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let headers = copy_headers(response.headers());
-    let stream = response
-        .bytes_stream()
-        .map_err(|err| std::io::Error::other(err));
+    let stream = response.bytes_stream().map_err(std::io::Error::other);
     Ok((status, headers, Body::from_stream(stream)).into_response())
 }
 fn headers_for(app: &App, rt: &Runtime, envelope: &Envelope, token: &str) -> HeaderList {

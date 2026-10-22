@@ -192,25 +192,29 @@ export function GrokCredentialPanel({
     let timer = 0
     const sessionId = link.sessionId
     const schedule = (seconds: number) => {
-      timer = window.setTimeout(() => {
-        void pollOnce()
-      }, Math.max(1, seconds) * 1000)
+      timer = window.setTimeout(
+        () => {
+          void pollOnce()
+        },
+        Math.max(1, seconds) * 1000
+      )
     }
     async function pollOnce() {
       if (stopped) return
       try {
-        const data = await api<{ status?: string; interval_sec?: number } & CommitResult>(
-          `/api/panel/vms/${encodeURIComponent(vm.id)}/oauth/device-poll`,
-          {
-            method: 'POST',
-            body: JSON.stringify({ session_id: sessionId, flavor: 'grok' }),
-          }
-        )
+        const data = await api<
+          { status?: string; interval_sec?: number } & CommitResult
+        >(`/api/panel/vms/${encodeURIComponent(vm.id)}/oauth/device-poll`, {
+          method: 'POST',
+          body: JSON.stringify({ session_id: sessionId, flavor: 'grok' }),
+        })
         if (stopped) return
         if (data.status === 'authorized') {
           setLink(EMPTY_LINK)
           await Promise.all([
-            qc.invalidateQueries({ queryKey: dashboardQueryOptions().queryKey }),
+            qc.invalidateQueries({
+              queryKey: dashboardQueryOptions().queryKey,
+            }),
             qc.invalidateQueries({ queryKey: vmQueryOptions(vm.id).queryKey }),
           ])
           toast.success('已完成 xAI 授权')
@@ -303,7 +307,9 @@ export function GrokCredentialPanel({
             </p>
             <div className='rounded-md border px-3 py-2'>
               <p className='text-xs text-muted-foreground'>验证码</p>
-              <p className='font-mono text-lg tracking-[0.2em]'>{link.userCode}</p>
+              <p className='font-mono text-lg tracking-[0.2em]'>
+                {link.userCode}
+              </p>
             </div>
             <div className='flex flex-wrap items-center gap-2'>
               <Button
@@ -329,12 +335,15 @@ export function GrokCredentialPanel({
                 重新开始
               </Button>
             </div>
-            <Hint>打开授权页，输入上面的验证码。确认后这里会自动完成，不用粘贴回调。</Hint>
+            <Hint>
+              打开授权页，输入上面的验证码。确认后这里会自动完成，不用粘贴回调。
+            </Hint>
           </div>
         ) : (
           <div className='space-y-2'>
             <Hint>
-              使用 xAI 官方客户端发起设备码登录。不用填写授权地址、client id 或回调地址。
+              使用 xAI 官方客户端发起设备码登录。不用填写授权地址、client id
+              或回调地址。
             </Hint>
             <Button
               size='sm'

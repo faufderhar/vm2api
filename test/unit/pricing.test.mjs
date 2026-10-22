@@ -531,10 +531,7 @@ test('normalizeUsage is idempotent and Codex 100k/80k cached becomes 20k', () =>
 })
 
 test('Grok 4.7 list price doubles once the prompt reaches 200k tokens', () => {
-  const short = calculateCost(
-    { input_tokens: 100_000, output_tokens: 10_000, cache_read_tokens: 50_000 },
-    'grok-4.7',
-  )
+  const short = calculateCost({ input_tokens: 100_000, output_tokens: 10_000, cache_read_tokens: 50_000 }, 'grok-4.7')
   assert.equal(short.known, true)
   assert.equal(short.price_source, 'builtin')
   assert.equal(short.long_context, false)
