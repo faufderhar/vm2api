@@ -136,6 +136,18 @@ const LIMITATIONS = {
     'account failover stops after the first downstream business event; verified mode buffers to message_stop',
 }
 
+// Protocol routes also served without /v1; a backup restore pauses them like their /v1 twins.
+const UNVERSIONED_PROTOCOL_PATHS = new Set([
+  '/messages',
+  '/messages/count_tokens',
+  '/chat/completions',
+  '/completions',
+  '/responses',
+  '/alpha/search',
+  '/images/generations',
+  '/images/edits',
+])
+
 const cfg = loadConfig()
 if (!getPanelAdmin().password) {
   throw new Error('VM2API_ADMIN_PASSWORD must be set; insecure default panel credentials are disabled')
@@ -1081,10 +1093,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, telemetryInterceptResponse(p))
     }
 
-    if (
-      backupService.isRestoring &&
-      (p.startsWith('/v1/') || p === '/messages' || p === '/chat/completions' || p === '/responses')
-    ) {
+    if (backupService.isRestoring && (p.startsWith('/v1/') || UNVERSIONED_PROTOCOL_PATHS.has(p))) {
       return json(
         res,
         503,
@@ -1228,6 +1237,10 @@ const server = http.createServer(async (req, res) => {
 })
 
 server.on('upgrade', (req, socket, head) => {
+  if (backupService.isRestoring && /^\/(?:v1\/)?responses(?:\?|$)/.test(String(req.url || ''))) {
+    socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
+    return
+  }
   if (responsesWs.handleUpgrade(req, socket, head)) return
   if (clusterRoutes.handleUpgrade(req, socket, head)) return
   if (!slotShell.handleUpgrade(req, socket, head)) socket.destroy()

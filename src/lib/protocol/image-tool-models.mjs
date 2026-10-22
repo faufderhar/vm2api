@@ -20,6 +20,9 @@ export const IMAGE_TOOL_MODELS = Object.freeze([
   }),
 ])
 
+/** What the upstream generates with when a request names no image model. */
+export const DEFAULT_IMAGE_TOOL_MODEL = IMAGE_TOOL_MODELS.find((model) => model.upstream_default).id
+
 const CANONICAL = new Map()
 for (const model of IMAGE_TOOL_MODELS) {
   CANONICAL.set(model.id, model.id)

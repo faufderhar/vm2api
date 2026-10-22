@@ -2,6 +2,9 @@
 
 ## 未发布
 
+- API 密钥的额度、并发和 RPM 现在对 GPT（Codex）、Grok、生图（`/v1/images/*`）和 `/v1/alpha/search` 也生效。原来只有 Claude 和 API 直连会占密钥并发、累加美元额度和请求次数，其余平台的请求不计入，设了额度的密钥可以无限调用 GPT、Grok 和生图。生图按 `image_cost` 美元计入额度，Responses 带 `image_generation` 工具时模型费用加图像费用一起计入。客户端中途取消且没有用量的请求不计。**升级后 GPT / Grok 用量会开始消耗密钥额度**，额度设得偏小的密钥可能很快用完。
+- 生图请求不带 `model` 时按上游默认模型 `gpt-image-2.5-flare` 检查是否停用。原来不写 `model` 就跳过检查，管理员停用该模型后仍能生图。`/v1/images/*` 和 Responses `image_generation` 工具都已修复；写了网关不认识的模型 id 仍原样转发。
+- 备份恢复期间，不带 `/v1` 的 `/completions`、`/messages/count_tokens`、`/alpha/search`、`/images/generations`、`/images/edits` 和 Responses WebSocket 握手也返回 503，和 `/v1` 路径一致。原来这些请求会在数据库切换时继续处理。
 - 面板「从 GitHub 下载内核」现在校验每个文件的 sha256：`kin-kernel`、`cli-node`、`cc-node`、`kin-kernel-crag` 必须与 GitHub Release 为该附件记录的 `digest` 一致，不一致不安装（`*_digest_mismatch`）；Release 没有 `digest` 时直接拒绝（`*_digest_missing`），不再只看是不是 ELF 就替换。这能拦下下载途中被改动或截断的文件，但 Release 本身被换掉时 `digest` 也会跟着变，防不住上游账号被盗。
 - 调用方的 `x-kin-log` / `x-kin-debug` 只能调高日志级别，不能调低：原来带 `x-kin-log: off` 的请求不写日志，计费页和统计里就看不到这次调用。`x-kin-debug: 1` 仍可让单个请求保存入站请求体与响应。
 - 调用方重复使用同一个 `x-request-id` 时，后面的请求改用网关生成的新 ID 记录，响应头 `x-request-id` 也是这个新 ID。原来只有第一次请求留下日志，之后同 ID 的请求全部漏记（计费页看不到），debug 记录还会被后来的同 ID 请求覆盖。

@@ -801,6 +801,7 @@ test('real handleProtocol: one in-flight interrupt yields a single cancelled fin
       },
     },
     apiKeyStore: {
+      acquire: () => ({ ok: true }),
       recordUsage(_key, usage) {
         usageRecords.push(usage)
       },
@@ -857,6 +858,7 @@ test('real handleProtocol: interrupt after hop finish bills once without duplica
       },
     },
     apiKeyStore: {
+      acquire: () => ({ ok: true }),
       recordUsage(_key, usageRow) {
         usageRecords.push(usageRow)
       },
@@ -896,7 +898,10 @@ test('real handleProtocol: interrupt after hop finish bills once without duplica
     assert.equal(finishCalls[0].error_code, null)
     assert.equal(finishCalls[0].input_tokens, 12)
     assert.equal(finishCalls[0].output_tokens, 4)
-    assert.equal(usageRecords.length, 0)
+    // The completed hop is charged to the key exactly once; the later interrupt adds nothing.
+    assert.equal(usageRecords.length, 1)
+    assert.equal(usageRecords[0].input_tokens, 12)
+    assert.equal(usageRecords[0].output_tokens, 4)
     opened.ws.close()
   } finally {
     await live.close()

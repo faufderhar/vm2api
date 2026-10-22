@@ -43,7 +43,7 @@ import { handleGrokProtocol } from './handle-grok.mjs'
 import { isMultipartFormData, normalizeImageEditBody } from './image-edit-multipart.mjs'
 import { readRawBody } from '../http/respond.mjs'
 import { disjointOpenaiUsage } from './openai-usage.mjs'
-import { costColumnsFromUsage } from '../admin/pricing.mjs'
+import { costColumnsFromUsage, normalizeUsage } from '../admin/pricing.mjs'
 import { detectInboundPlatform } from './platform-detect.mjs'
 import { normalizeCodexRouting } from './codex-route.mjs'
 import { applyCodexInboundModelRewrite } from './codex-model-mapping.mjs'
@@ -214,6 +214,64 @@ export function createHandleProtocol(deps) {
         model,
         rateMultiplier,
         officialCost: priced.total_cost,
+      })
+    } catch {}
+  }
+
+  /**
+   * GPT, Grok, Images and search return before the Claude path's key gate. Hold the managed
+   * key's concurrency / RPM for the call and charge what it cost (image_cost included), priced
+   * the way the request log prices the row, so key quotas and windows apply to every platform.
+   */
+  async function withManagedKey(req, res, logBag, protocol, run) {
+    const managedKey = req.apiKeyRecord || null
+    if (!managedKey) return run()
+    const gate = apiKeyStore.acquire(managedKey)
+    if (!gate.ok) {
+      stats.errors++
+      logBag.error_code = gate.code
+      logBag.error_message = gate.message
+      return json(
+        res,
+        gate.status,
+        makeError({
+          type: gate.status === 429 ? ErrorType.RATE_LIMIT : ErrorType.PERMISSION,
+          code: gate.code,
+          message: gate.message,
+          status: gate.status,
+          details: gate.detail || undefined,
+        }).body,
+      )
+    }
+    try {
+      return await run()
+    } finally {
+      try {
+        apiKeyStore.release(managedKey)
+      } catch {}
+      // Reported usage is billed; so is a clean answer without usage (search). A refusal before
+      // any hop, an upstream error or a client cancel with nothing to show is not.
+      const answered =
+        res.headersSent && res.statusCode < 400 && !logBag.error_code && logBag.final_state !== 'cancelled'
+      if (answered || logBag.usage || logBag.image_usage) chargeManagedKey(managedKey, logBag, protocol)
+    }
+  }
+
+  function chargeManagedKey(managedKey, logBag, protocol) {
+    try {
+      const usage = normalizeUsage(disjointOpenaiUsage(logBag.usage || {}) || {})
+      const only = protocol === 'openai.images'
+      const image =
+        only || logBag.image_usage
+          ? { usage: logBag.image_usage || null, model: logBag.image_model || null, only }
+          : null
+      const model = logBag.upstream_model || logBag.model || null
+      const priced = costColumnsFromUsage(usage, model, image)
+      apiKeyStore.recordUsage(managedKey, usage, {
+        model,
+        rateMultiplier: deps.groupsRepo.rateMultiplier(managedKey.group_id ?? 1),
+        // Unpriced image usage has no known cost; never fall back to pricing it as a chat model.
+        officialCost: priced.total_cost ?? (image ? 0 : undefined),
       })
     } catch {}
   }
@@ -762,7 +820,38 @@ export function createHandleProtocol(deps) {
         })
       if (protocol === 'anthropic.messages') {
         const codex = normalizeCodexRouting(routing.codex)
-        return handleCodexProtocol({
+        return withManagedKey(req, res, logBag, protocol, () =>
+          handleCodexProtocol({
+            req,
+            res,
+            protocol,
+            ctx,
+            inbound,
+            logBag,
+            stats,
+            json,
+            writeSSEHeaders,
+            routing: {
+              ...routing,
+              codex: {
+                ...codex,
+                protocols: {
+                  ...codex.protocols,
+                  'anthropic.messages': { mode: 'convert', enabled: true },
+                },
+                convert: { ...codex.convert, anthropic_to_codex: true },
+              },
+            },
+            projectRoot: cfg.paths.project,
+            captureOutbound: logCtx.capture_outbound === true,
+            accountGate,
+            ops: deps.codexOps || {},
+            ...codexSticky,
+          }),
+        )
+      }
+      return withManagedKey(req, res, logBag, protocol, () =>
+        handleCodexProtocol({
           req,
           res,
           protocol,
@@ -772,74 +861,49 @@ export function createHandleProtocol(deps) {
           stats,
           json,
           writeSSEHeaders,
-          routing: {
-            ...routing,
-            codex: {
-              ...codex,
-              protocols: {
-                ...codex.protocols,
-                'anthropic.messages': { mode: 'convert', enabled: true },
-              },
-              convert: { ...codex.convert, anthropic_to_codex: true },
-            },
-          },
+          routing,
           projectRoot: cfg.paths.project,
           captureOutbound: logCtx.capture_outbound === true,
           accountGate,
           ops: deps.codexOps || {},
           ...codexSticky,
-        })
-      }
-      return handleCodexProtocol({
-        req,
-        res,
-        protocol,
-        ctx,
-        inbound,
-        logBag,
-        stats,
-        json,
-        writeSSEHeaders,
-        routing,
-        projectRoot: cfg.paths.project,
-        captureOutbound: logCtx.capture_outbound === true,
-        accountGate,
-        ops: deps.codexOps || {},
-        ...codexSticky,
-      })
+        }),
+      )
     }
     if (platform.platform === 'xai') {
-      return handleGrokProtocol({
-        req,
-        res,
-        protocol,
-        ctx,
-        inbound,
-        logBag,
-        stats,
-        json,
-        writeSSEHeaders,
-        routing: getRouting() || {},
-        cfg,
-        projectRoot: cfg.paths.project,
-        captureOutbound: logCtx.capture_outbound === true,
-        accountGate: (account) =>
-          applyProtocolIntercept({
-            req,
-            inbound,
-            body: ctx.body,
-            fp,
-            logBag,
-            requestId: logCtx.request_id,
-            res,
-            account,
-          }),
-        requestStartedAt: logCtx.t0,
-        ops: { requestId: logCtx.request_id, getAttemptsRepo },
-        stickyRouter,
-        sessions: accountQuota?.sessions || null,
-        body: ctx.body,
-      })
+      return withManagedKey(req, res, logBag, protocol, () =>
+        handleGrokProtocol({
+          req,
+          res,
+          protocol,
+          ctx,
+          inbound,
+          logBag,
+          stats,
+          json,
+          writeSSEHeaders,
+          routing: getRouting() || {},
+          cfg,
+          projectRoot: cfg.paths.project,
+          captureOutbound: logCtx.capture_outbound === true,
+          accountGate: (account) =>
+            applyProtocolIntercept({
+              req,
+              inbound,
+              body: ctx.body,
+              fp,
+              logBag,
+              requestId: logCtx.request_id,
+              res,
+              account,
+            }),
+          requestStartedAt: logCtx.t0,
+          ops: { requestId: logCtx.request_id, getAttemptsRepo },
+          stickyRouter,
+          sessions: accountQuota?.sessions || null,
+          body: ctx.body,
+        }),
+      )
     }
     if (protocol === 'openai.responses') {
       stats.errors++
@@ -1855,18 +1919,21 @@ export function createHandleProtocol(deps) {
     }
     logBag.model = typeof body?.model === 'string' ? body.model : null
     logBag.inbound_summary = summarizeBody(body)
-    return handleCodexSearch({
-      req,
-      res,
-      body,
-      logBag,
-      stats,
-      json,
-      routing: getRouting() || {},
-      projectRoot: cfg.paths.project,
-      stickyRouter,
-      ownerScope: ownerScopeFromRequest(req, apiKeyStore?.users),
-    })
+    return withManagedKey(req, res, logBag, protocol, () =>
+      handleCodexSearch({
+        req,
+        res,
+        body,
+        logBag,
+        stats,
+        json,
+        routing: getRouting() || {},
+        projectRoot: cfg.paths.project,
+        stickyRouter,
+        ops: deps.codexOps || {},
+        ownerScope: ownerScopeFromRequest(req, apiKeyStore?.users),
+      }),
+    )
   }
 
   /** Field names and image count only: Images bodies carry base64 uploads. */
@@ -1965,19 +2032,22 @@ export function createHandleProtocol(deps) {
     }
     logBag.model = typeof body?.model === 'string' ? body.model : null
     logBag.inbound_summary = summarizeImagesBody(body)
-    return handleCodexImages({
-      req,
-      res,
-      kind,
-      body,
-      logBag,
-      stats,
-      json,
-      routing: getRouting() || {},
-      projectRoot: cfg.paths.project,
-      stickyRouter,
-      ownerScope: ownerScopeFromRequest(req, apiKeyStore?.users),
-    })
+    return withManagedKey(req, res, logBag, protocol, () =>
+      handleCodexImages({
+        req,
+        res,
+        kind,
+        body,
+        logBag,
+        stats,
+        json,
+        routing: getRouting() || {},
+        projectRoot: cfg.paths.project,
+        stickyRouter,
+        ops: deps.codexOps || {},
+        ownerScope: ownerScopeFromRequest(req, apiKeyStore?.users),
+      }),
+    )
   }
 
   return {
