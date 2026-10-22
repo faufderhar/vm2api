@@ -75,13 +75,15 @@ export async function readGrokCliInfo(projectRoot, vm, { routing = {}, health = 
   const config = readJson(paths.configPath)
   const oauth = grokOauthConfig(routing)
   const resolved = oauth.ok ? oauth.config : {}
-  const version = String(config?.client_version || GROK_CLI_VERSION)
-  const proxy = publicProxyUrl(config?.proxy_url)
   const kernelHealth = config ? await health(projectRoot, vm.id).catch(() => ({ ok: false })) : null
+  // The kernel binary fixes the version; a running one reports it.
+  const version = String(kernelHealth?.clientVersion || GROK_CLI_VERSION)
+  const platform = config?.platform?.os && config?.platform?.arch ? config.platform : undefined
+  const proxy = publicProxyUrl(config?.proxy_url)
   return {
     product: GROK_CLI_IDENTIFIER,
     client_version: version,
-    user_agent: grokCliUserAgent(version),
+    user_agent: grokCliUserAgent(version, platform),
     billing_client_mode: GROK_BILLING_CLIENT_MODE,
     base_url: String(config?.base_url || grokBaseUrl(routing) || ''),
     agent_id: readText(paths.agentIdPath) || null,

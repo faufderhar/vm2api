@@ -128,3 +128,25 @@ test('a running kernel from an older binary is replaced even when its config did
   pids.push(replacement)
   assert.equal((await supervisor.grokKernelHealth(root, vm.id)).api, 2)
 })
+
+test('a slot keeps the client platform it started with; a new macOS-node slot reports macos', async (t) => {
+  const supervisor = await import('../../src/lib/transport/grok-kernel-supervisor.mjs')
+  const { grokPlatformInfo } = await import('../../src/lib/protocol/grok-client.mjs')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-grok-platform-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const onMac = () => true
+  const fresh = supervisor.writeGrokKernelConfig(root, { id: 'vm-new', node_id: 'mac-1' }, { nativeNode: onMac })
+  assert.deepEqual(fresh.platform, { os: 'macos', arch: 'aarch64' })
+  assert.deepEqual(JSON.parse(fs.readFileSync(fresh.configPath, 'utf8')).platform, { os: 'macos', arch: 'aarch64' })
+  // A slot that already sent requests (it has an agent id) keeps reporting this host.
+  const seasoned = supervisor.grokKernelPaths(root, 'vm-old')
+  fs.mkdirSync(seasoned.runDir, { recursive: true })
+  fs.writeFileSync(seasoned.agentIdPath, 'agent-1\n')
+  const old = supervisor.writeGrokKernelConfig(root, { id: 'vm-old', node_id: 'mac-1' }, { nativeNode: onMac })
+  assert.deepEqual(old.platform, grokPlatformInfo())
+  // Pinned: a later write never changes it.
+  const again = supervisor.writeGrokKernelConfig(root, { id: 'vm-new', node_id: 'mac-1' }, { nativeNode: () => false })
+  assert.deepEqual(again.platform, { os: 'macos', arch: 'aarch64' })
+  const config = JSON.parse(fs.readFileSync(again.configPath, 'utf8'))
+  assert.equal('client_version' in config, false)
+})

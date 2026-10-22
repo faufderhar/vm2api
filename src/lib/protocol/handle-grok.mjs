@@ -785,7 +785,10 @@ export async function handleGrokProtocol({
         const runHop = () => {
           const requestId = grokRequestId()
           const written = writeHopKernelConfig(projectRoot, vm, routing, ops)
+          // The log shows the User-Agent this slot's kernel really sends.
+          if (written?.platform) logBag.user_agent = grokCliUserAgent(undefined, written.platform)
           const headers = grokCliRequestHeaders({
+            platform: written?.platform,
             model: outbound.body?.model,
             sessionId: outboundSessionId,
             requestId,

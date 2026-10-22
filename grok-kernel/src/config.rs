@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-use crate::headers::CLIENT_VERSION;
+use crate::headers::PlatformInfo;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct OauthConfig {
@@ -37,13 +37,10 @@ pub struct Config {
     #[serde(default)]
     pub proxy_required: bool,
     pub base_url: String,
-    #[serde(default = "default_version")]
-    pub client_version: String,
     pub oauth: OauthConfig,
-}
-
-fn default_version() -> String {
-    CLIENT_VERSION.to_string()
+    /// The client platform this slot has always reported. Missing: this host's.
+    #[serde(default)]
+    pub platform: Option<PlatformInfo>,
 }
 
 impl Config {
@@ -88,7 +85,7 @@ mod tests {
             proxy_url: proxy_url.to_string(),
             proxy_required,
             base_url: "https://cli-chat-proxy.grok.com".to_string(),
-            client_version: CLIENT_VERSION.to_string(),
+            platform: None,
             oauth: OauthConfig {
                 token_url: String::new(),
                 client_id: "client".to_string(),

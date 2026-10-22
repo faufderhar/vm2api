@@ -32,7 +32,9 @@ test('a slot with no proxy is marked proxy_required and the config has no token'
   assert.equal(config.proxy_url, '')
   assert.equal(config.proxy_required, true)
   assert.equal(config.base_url, 'https://cli-chat-proxy.grok.com')
-  assert.equal(config.client_version, '1.0.62')
+  // The kernel binary fixes the client version; the config only pins the platform.
+  assert.equal('client_version' in config, false)
+  assert.ok(config.platform.os && config.platform.arch)
   assert.equal(JSON.stringify(config).includes('access_token'), false)
   assert.ok(written.agentId)
   assert.equal(fs.readFileSync(written.agentIdPath, 'utf8').trim(), written.agentId)

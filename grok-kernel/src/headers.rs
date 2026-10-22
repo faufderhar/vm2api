@@ -29,7 +29,7 @@ pub const NOT_ON_INFERENCE: &[&str] = &[
     "x-grok-experiments",
 ];
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 pub struct PlatformInfo {
     pub os: String,
     pub arch: String,
@@ -41,6 +41,14 @@ impl PlatformInfo {
         Self {
             os: normalize_os(std::env::consts::OS),
             arch: normalize_arch(std::env::consts::ARCH),
+        }
+    }
+
+    /// The same buckets for a platform Node pinned for the slot.
+    pub fn normalized(&self) -> Self {
+        Self {
+            os: normalize_os(&self.os),
+            arch: normalize_arch(&self.arch),
         }
     }
 }

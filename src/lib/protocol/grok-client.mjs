@@ -41,11 +41,12 @@ export function grokCliRequestHeaders({
   requestId = '',
   agentId = '',
   version = GROK_CLI_VERSION,
+  platform = grokPlatformInfo(),
 } = {}) {
   const session = String(sessionId ?? '')
   return {
     'content-type': 'application/json',
-    'user-agent': grokCliUserAgent(version),
+    'user-agent': grokCliUserAgent(version, platform || grokPlatformInfo()),
     'x-grok-client-version': version,
     'x-grok-client-identifier': GROK_CLI_IDENTIFIER,
     'x-grok-conv-id': session,

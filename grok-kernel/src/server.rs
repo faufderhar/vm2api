@@ -199,7 +199,13 @@ async fn health(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
         );
     }
     // `api` 2: /internal/oauth. Node replaces a running kernel that reports less.
-    Json(json!({ "ok": true, "hot_reload": true, "api": 2 })).into_response()
+    Json(json!({
+        "ok": true,
+        "hot_reload": true,
+        "api": 2,
+        "client_version": crate::headers::CLIENT_VERSION,
+    }))
+    .into_response()
 }
 async fn forward(
     State(app): State<Arc<App>>,
@@ -358,10 +364,18 @@ async fn dispatch(app: &App, envelope: Envelope) -> Result<Response, KernelFailu
     let stream = response.bytes_stream().map_err(std::io::Error::other);
     Ok((status, headers, Body::from_stream(stream)).into_response())
 }
+/// The slot's pinned client platform, or this host's when Node did not pin one.
+fn platform_of(app: &App, rt: &Runtime) -> PlatformInfo {
+    rt.config
+        .platform
+        .as_ref()
+        .map(PlatformInfo::normalized)
+        .unwrap_or_else(|| app.platform.clone())
+}
 fn headers_for(app: &App, rt: &Runtime, envelope: &Envelope, token: &str) -> HeaderList {
     match envelope.purpose.as_str() {
-        "models" => models_headers(token, &app.platform),
-        "billing" => billing_headers(token, &app.platform),
+        "models" => models_headers(token, &platform_of(app, rt)),
+        "billing" => billing_headers(token, &platform_of(app, rt)),
         _ => {
             let request_id = if envelope.request_id.is_empty() {
                 Uuid::new_v4().to_string()
@@ -382,7 +396,7 @@ fn headers_for(app: &App, rt: &Runtime, envelope: &Envelope, token: &str) -> Hea
                     agent_id,
                     ..InferenceHeaderInput::default()
                 },
-                &app.platform,
+                &platform_of(app, rt),
             )
         }
     }
@@ -644,6 +658,37 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
     #[test]
+    fn a_pinned_platform_is_the_user_agent() {
+        let dir = std::env::temp_dir().join(format!("grok-kernel-ua-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("grok-kernel.json");
+        let mut text: Value =
+            serde_json::from_str(&config_text(&dir, "socks5h://10.0.0.1:1080")).unwrap();
+        text["platform"] = json!({ "os": "darwin", "arch": "arm64" });
+        std::fs::write(&path, text.to_string()).unwrap();
+        let host = PlatformInfo {
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+        };
+        let app = App::watching(&path, host).unwrap();
+        let envelope: Envelope =
+            serde_json::from_str(r#"{"purpose":"inference","path":"/v1/responses"}"#).unwrap();
+        let headers = headers_for(&app, &app.runtime(), &envelope, "t");
+        assert_eq!(
+            headers.get("user-agent"),
+            Some("grok-shell/1.0.62 (macos; aarch64)")
+        );
+        // Without a pin the kernel reports its own host.
+        text.as_object_mut().unwrap().remove("platform");
+        std::fs::write(&path, text.to_string()).unwrap();
+        let headers = headers_for(&app, &app.runtime(), &envelope, "t");
+        assert_eq!(
+            headers.get("user-agent"),
+            Some("grok-shell/1.0.62 (linux; x86_64)")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
     fn failure_codes_are_stable() {
         assert_eq!(
             failure_from_code("refresh_rejected".into()).status,
@@ -679,7 +724,7 @@ mod tests {
             proxy_url: String::new(),
             proxy_required: true,
             base_url: "https://cli-chat-proxy.grok.com".to_string(),
-            client_version: "1.0.62".to_string(),
+            platform: None,
             oauth: crate::config::OauthConfig {
                 token_url: String::new(),
                 client_id: "client".to_string(),

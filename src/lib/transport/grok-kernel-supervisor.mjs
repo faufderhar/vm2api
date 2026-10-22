@@ -18,6 +18,8 @@ import {
 } from '../protocol/grok-route.mjs'
 import { assertProxyAllowed } from '../vm/proxy-policy.mjs'
 import { writeJsonIfChanged } from '../vm/vm-file.mjs'
+import { isNativeNodeVm } from '../cluster/placement.mjs'
+import { grokPlatformInfo } from '../protocol/grok-client.mjs'
 
 /** Kernel features Node relies on: 2 = /internal/oauth. An older running kernel is replaced. */
 export const GROK_KERNEL_API = 2
@@ -63,6 +65,7 @@ export function grokKernelPaths(projectRoot, vmId) {
     tokenPath: path.join(runDir, 'grok-kernel.token'),
     stampPath: path.join(runDir, 'grok-kernel.stamp'),
     pidPath: path.join(runDir, 'grok-kernel.pid'),
+    platformPath: path.join(runDir, 'grok-platform.json'),
     agentIdPath: path.join(runDir, 'grok-agent-id'),
     credentialPath: path.join(projectRoot, 'vms', vmId, 'grok-credentials.json'),
     refreshLockPath: path.join(runDir, 'grok-refresh.lock'),
@@ -80,6 +83,27 @@ function readOrCreateSecret(file) {
   return secret
 }
 
+/**
+ * The client platform a slot reports in its User-Agent, fixed at first use and kept.
+ * A slot that already has an agent id has been reporting this host's platform: keep
+ * that, so its User-Agent never changes. A new slot on a macOS node (Apple Silicon only)
+ * starts as macos/aarch64; every other new slot reports this host.
+ */
+function pinnedPlatform(paths, vm, { nativeNode = isNativeNodeVm } = {}) {
+  try {
+    const stored = JSON.parse(fs.readFileSync(paths.platformPath, 'utf8'))
+    if (stored?.os && stored?.arch) return { os: String(stored.os), arch: String(stored.arch) }
+  } catch {}
+  const seasoned = fs.existsSync(paths.agentIdPath)
+  let mac = false
+  try {
+    mac = !seasoned && nativeNode(vm)
+  } catch {}
+  const platform = mac ? grokPlatformInfo('darwin', 'arm64') : grokPlatformInfo()
+  fs.writeFileSync(paths.platformPath, `${JSON.stringify(platform)}\n`, { mode: 0o600 })
+  return platform
+}
+
 function configStamp(config) {
   return crypto
     .createHash('sha256')
@@ -89,13 +113,17 @@ function configStamp(config) {
         proxy_required: config.proxy_required,
         base_url: config.base_url,
         oauth: config.oauth,
-        client_version: config.client_version,
+        platform: config.platform,
       }),
     )
     .digest('hex')
 }
 
-export function writeGrokKernelConfig(projectRoot, vm, { proxyUrl = '', proxyRequired = true, routing = {} } = {}) {
+export function writeGrokKernelConfig(
+  projectRoot,
+  vm,
+  { proxyUrl = '', proxyRequired = true, routing = {}, nativeNode } = {},
+) {
   if (!projectRoot || !vm?.id) return null
   const proxy = String(proxyUrl || '')
   if (proxy) assertProxyAllowed({ url: proxy })
@@ -104,6 +132,8 @@ export function writeGrokKernelConfig(projectRoot, vm, { proxyUrl = '', proxyReq
   fs.mkdirSync(paths.runDir, { recursive: true })
   const oauth = grokOauthConfig(routing)
   const resolved = oauth.ok ? oauth.config : {}
+  // Before the agent id is created: its absence is what marks a new slot.
+  const platform = pinnedPlatform(paths, vm, nativeNode ? { nativeNode } : {})
   const agentId = readOrCreateSecret(paths.agentIdPath)
   const config = {
     socket_path: paths.socketPath,
@@ -114,7 +144,7 @@ export function writeGrokKernelConfig(projectRoot, vm, { proxyUrl = '', proxyReq
     proxy_url: proxy,
     proxy_required: proxyRequired !== false,
     base_url: grokBaseUrl(routing),
-    client_version: '1.0.62',
+    platform,
     oauth: {
       token_url: String(resolved.token_url || ''),
       client_id: String(resolved.client_id || GROK_OAUTH_CLIENT_ID),
@@ -126,7 +156,7 @@ export function writeGrokKernelConfig(projectRoot, vm, { proxyUrl = '', proxyReq
   // Called on every hop. Same bytes leave the file alone; a change lands in one rename,
   // so the kernel never reads half a config when it reloads.
   writeJsonIfChanged(paths.configPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 })
-  return { ...paths, agentId, stamp: configStamp(config) }
+  return { ...paths, agentId, platform, stamp: configStamp(config) }
 }
 
 export function grokKernelInFlight(vmId) {
@@ -294,6 +324,7 @@ export function grokKernelHealth(projectRoot, vmId, { timeoutMs = 500 } = {}) {
             status: res.statusCode,
             hotReload: parsed?.hot_reload === true,
             api: Number(parsed?.api) || 1,
+            clientVersion: typeof parsed?.client_version === 'string' ? parsed.client_version : null,
           })
         })
         res.on('error', () => resolve({ ok: false, reason: 'health_error' }))
