@@ -26,7 +26,6 @@ import {
 
 type Props = {
   pol: ModelPolicy
-  claudePool?: boolean
   grokPool?: boolean
   onCatalogMode: (mode: CatalogMode) => void
   onDefaults: (patch: Partial<PolicyDefaults>) => void
@@ -34,7 +33,6 @@ type Props = {
 
 export function ModelAdvanced({
   pol,
-  claudePool = true,
   grokPool = false,
   onCatalogMode,
   onDefaults,
@@ -77,7 +75,7 @@ export function ModelAdvanced({
             </Select>
           )}
         </Row>
-        {claudePool && !grokPool ? (
+        {!grokPool ? (
           <Row label='过滤 1M beta'>
             <div className='flex items-center gap-2'>
               <Switch

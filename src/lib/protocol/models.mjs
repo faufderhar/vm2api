@@ -15,7 +15,7 @@ import {
 } from './model-policy.mjs'
 import { hasClaudeCode1mSuffix, stripClaudeCode1mSuffix } from './context-1m.mjs'
 import { isGptSeriesId } from './gpt-ids.mjs'
-import { listGptPolicyModels } from './gpt-model-policy.mjs'
+import { listGptPolicyModels, listImageToolModels } from './gpt-model-policy.mjs'
 import { listGrokPolicyModels } from './grok-model-policy.mjs'
 
 const FAMILY_ALIASES = new Map([
@@ -77,6 +77,26 @@ function listGrokPublicModels() {
   }
 }
 
+/** Enabled GPT image models, listed like OpenAI's own /v1/models so clients can find them. */
+function listImagePublicModels() {
+  try {
+    return listImageToolModels()
+      .filter((m) => m.enabled)
+      .map((m) => ({
+        id: m.id,
+        object: 'model',
+        type: 'model',
+        display_name: m.display_name,
+        owned_by: 'openai',
+        family: 'gpt-image',
+        enabled: true,
+        source: 'gpt-model-policy',
+      }))
+  } catch {
+    return []
+  }
+}
+
 /**
  * Local catalog for GET /v1/models and boot. Does not touch workers.
  * groupType is the key's group_type: openai lists GPT, xai lists Grok, anthropic lists Claude, all lists every family.
@@ -87,7 +107,7 @@ export function gatewayModelCatalog({ groupType = 'all' } = {}) {
     loadModelPolicy()
   } catch {}
   const group = String(groupType || 'all')
-  const gpt = group === 'anthropic' || group === 'xai' ? [] : listGptPublicModels()
+  const gpt = group === 'anthropic' || group === 'xai' ? [] : [...listGptPublicModels(), ...listImagePublicModels()]
   const grok = group === 'anthropic' || group === 'openai' ? [] : listGrokPublicModels()
   const claude = group === 'openai' || group === 'xai' ? [] : listOfficialModels()
   return {

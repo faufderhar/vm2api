@@ -20,7 +20,10 @@ import {
   pricingQueryOptions,
 } from '@/features/models/queries'
 import { EntryStrip } from './entry-strip'
+import { ImageToolSection } from './image-tool-section'
 import { ModelAdvanced } from './model-advanced'
+import { mappingTargets } from './model-mapping'
+import { ModelMappingCard } from './model-mapping-card'
 import { ModelRow } from './model-row'
 import { resetConfirmText, syncConfirmText } from './page-messages'
 import {
@@ -228,6 +231,14 @@ export function ModelsPage() {
     setExpanded((cur) => (cur === id ? null : id))
   }
 
+  function setImageTool(id: string, on: boolean) {
+    setDraft((prev) => {
+      const next = cloneJson(prev)
+      next.image_tools = { ...(next.image_tools || {}), [id]: { enabled: on } }
+      return next
+    })
+  }
+
   function setPass1m(id: string, mode: Pass1mMode) {
     patchModel(id, (rec) => applyPassContext1m(rec, mode))
   }
@@ -265,6 +276,12 @@ export function ModelsPage() {
 
   const claudePool = catalogPlatform === 'anthropic'
   const grokPool = catalogPlatform === 'xai'
+  // Model mapping and image tools are GPT pool features; Claude and Grok have neither.
+  const gptPool = catalogPlatform === 'openai'
+  const imageTools = q.data?.image_tools || []
+  // Mapping targets follow the saved policy: the server validates against it.
+  const gptTargets = gptPool ? mappingTargets(q.data?.models || []) : []
+  const imageIds = imageTools.flatMap((m) => [m.id, ...m.snapshots])
   const poolHint = claudePool
     ? 'Claude 号池。同一会话只占一个 VM session 窗口，不和 GPT、Grok 混调度。'
     : grokPool
@@ -445,6 +462,10 @@ export function ModelsPage() {
                 </div>
               </section>
 
+              {gptPool ? (
+                <ModelMappingCard targets={gptTargets} imageIds={imageIds} />
+              ) : null}
+
               {dirty ? (
                 <p
                   role='status'
@@ -567,8 +588,7 @@ export function ModelsPage() {
                       pol={draft}
                       pricing={pricingQ.data?.policy?.[m.id]}
                       open={expanded === m.id}
-                      showBeta={claudePool}
-                      grokPool={grokPool}
+                      platform={catalogPlatform}
                       onToggleOpen={() => requestExpand(m.id)}
                       onToggleEnabled={(on) =>
                         patchModel(m.id, (rec) => {
@@ -583,13 +603,21 @@ export function ModelsPage() {
                 </div>
               )}
 
-              <ModelAdvanced
-                pol={draft}
-                claudePool={claudePool}
-                grokPool={grokPool}
-                onCatalogMode={setCatalog}
-                onDefaults={patchDefaults}
-              />
+              {gptPool ? (
+                <ImageToolSection
+                  models={imageTools}
+                  enabled={draft.image_tools}
+                  pricing={pricingQ.data?.policy}
+                  onToggle={setImageTool}
+                />
+              ) : (
+                <ModelAdvanced
+                  pol={draft}
+                  grokPool={grokPool}
+                  onCatalogMode={setCatalog}
+                  onDefaults={patchDefaults}
+                />
+              )}
             </div>
           </QueryGate>
         </TabsContent>

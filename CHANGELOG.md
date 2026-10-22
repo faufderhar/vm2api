@@ -47,6 +47,23 @@
 - 同一平台有多个账号时，调度等级、负载或分数接近的情况下，按用量窗口的 7 天重置时间比较，时间更早的账号优先。没有这个时间的仍按原来的槽位顺序。粘性会话和手动等级不变。
 - 安装脚本和容器入口不再保留公开默认密码 `123456`：密码为空或仍是这个值时生成随机密码，并只打印一次；已经改过的密码不动。登录按来源地址限流。主密钥只有本机回环地址能进管理面板。没配数据库密钥时会生成仅本机可读的 `data/db.secret`，之后写入的凭据列加密保存。`/health` 不再返回探针详情和内核信息，`/v1/meta` 必须带密钥且不返回邮箱。代理拒绝云元数据和链路本地地址，本机 `127.0.0.1` 仍可用。内核空令牌直接拒绝。默认日志改为 `normal`。
 
+## 1.3.217 — 2026-10-23
+
+- 新增 `POST /v1/images/generations`、`/v1/images/edits`（edits 支持 multipart）：经槽位直连 Codex Images 接口，与 `/v1/alpha/search` 同一做法，不经内核；Free 槽不接生图，`x-codex-image-turn-id` 固定同一轮编辑的槽，槽位按密钥属主过滤。（#685）
+- 图像模型 `gpt-image-2.5-flare` / `gpt-image-2.5-sunburst` 可在面板分别启停；停用后 Images 请求与 Responses `image_generation` 工具在本地 400，启用的列入 `/v1/models`。（#685）
+- 生图单独计价：迁移 `042` 给 `usage_logs` 加 `image_*` 列，`image_cost` 计入总费用；用量拆分不自洽时整行未定价。（#685）
+- OpenAI 模型页：`codex.model_mappings` 可增删改（`codex-auto-review` 置顶，目标限已启用 GPT 对话模型，拒绝 `claude-*` 别名）；「同步 GPT」保存上下文窗口、推理与服务档位；去掉 Thinking / budget / 1M beta / cache TTL 等 Claude 专有控件。（#685）
+
+已部署机升级：更新 Node 控制面与 `web/dist` 后重启一次，启动时自动执行迁移 `042`（只加列）。无新依赖，不必 `wrap-cli/sync`、不必 `fetch:payload`、不必重建槽。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.3.216 — 2026-10-22
+
+- GPT（Codex）槽调度按密钥属主收窄，与 Claude 池一致：租户密钥不再落到平台或其他租户的 GPT 槽，平台密钥也不进租户 GPT 槽。
+- API 直连（category=`api`）仅管理员：租户不能在面板创建或把密钥改为 `api`；推理入口在 api-kernel hop 拒绝租户已有 `api` 密钥（`api_backend_forbidden` / 403）。
+- 删除 VM/槽位仅管理员：租户不能删除自建槽；面板删槽按钮对租户隐藏。
+- **破坏性**：租户若仍持有 category=`api` 的密钥，调用平台 API 上游将收到 403；租户不能再自行删除槽位，需联系管理员。
+- `/v1/usage` 在 Codex 路径上读取用量窗口（与 Messages 属主解析一致）。
+
 ## 1.3.215 — 2026-10-22
 
 - `/v1/usage` 与 `/v1/messages/count_tokens` 传入 `apiKeyStore`，与 Messages 一致解析密钥属主角色；面板会话无 `apiKeyRecord` 时按会话角色收窄作用域（admin/super → 平台池，user → 仅本人 VM），避免租户 peek 平台账号用量或 admin 托管密钥误报 503。（#658，#677）

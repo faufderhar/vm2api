@@ -94,10 +94,6 @@ export function countUserCreatedVms(vms, userId) {
   return (vms || []).filter((vm) => vmOwnerId(vm) === owner && vmOriginOf(vm) === VM_ORIGIN.userCreated).length
 }
 
-export function canUserDeleteVm(vm, userId) {
-  return vmOwnerId(vm) === normalizeOwnerId(userId) && vmOriginOf(vm) === VM_ORIGIN.userCreated
-}
-
 export function canBindProxyToVm(proxy, vm, { role } = {}) {
   const pOwner = proxyOwnerId(proxy)
   const vOwner = vmOwnerId(vm)
