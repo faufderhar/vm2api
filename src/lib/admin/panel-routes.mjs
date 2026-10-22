@@ -237,7 +237,7 @@ import { raiseDockerSlotMemory } from '../vm/docker-slot-memory.mjs'
 import { RUNTIME_KVM } from '../vm/runtime-kind.mjs'
 import { hostProxyUrlForVm, slotHost } from '../vm/slot-host.mjs'
 import { syncIpv6ProxyEgress } from '../vm/proxy-policy-runtime.mjs'
-import { proxyBlockedReason } from '../vm/proxy-policy.mjs'
+import { proxyResolvedBlockReason } from '../vm/proxy-policy.mjs'
 import { writeSlotSeedFiles } from '../vm/slot-seed.mjs'
 import {
   egressEnabled,
@@ -728,7 +728,8 @@ export function createPanelHandler(ctx) {
   async function probeVmExitGeo(vm) {
     const proxy = vm?.proxy || null
     if (!hasBoundExit(proxy)) return { ok: false, code: 'proxy_required', error: '槽位未绑定出口' }
-    const blocked = proxyBlockedReason(proxy)
+    // A name can resolve to loopback; check what the lookup would actually connect to.
+    const blocked = await proxyResolvedBlockReason(proxy)
     if (blocked) return { ok: false, code: blocked, error: blocked }
     if (!isLocalEgressProxy(proxy)) {
       const url = boundProxyUrl(proxy)

@@ -305,6 +305,7 @@ export class UsageLogsRepo {
     this._vmOwner = db.prepare('SELECT owner_user_id FROM vms WHERE id = ?')
     this._listDebug = db.prepare('SELECT record_json FROM request_log_debug ORDER BY ts DESC LIMIT ?')
     this._getByRequestId = db.prepare('SELECT * FROM usage_logs WHERE request_id = ?')
+    this._hasRequestId = db.prepare('SELECT 1 AS ok FROM usage_logs WHERE request_id = ? LIMIT 1')
     // OCTET_LENGTH counts encoded bytes and lets SQLite read TEXT size from metadata without loading each body.
     this._debugBytes = db.prepare('SELECT COALESCE(SUM(OCTET_LENGTH(record_json)), 0) AS n FROM request_log_debug')
     this._debugCount = db.prepare('SELECT COUNT(*) AS n FROM request_log_debug')
@@ -341,6 +342,10 @@ export class UsageLogsRepo {
     if (!requestId) return null
     const row = this._getByRequestId.get(requestId)
     return row ? enrichLogRow(fromRow(row)) : null
+  }
+
+  hasRequestId(requestId) {
+    return !!requestId && !!this._hasRequestId.get(String(requestId))
   }
 
   insertSummary(rec) {

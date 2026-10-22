@@ -107,6 +107,35 @@ test('link-local, metadata, loopback and private proxies are refused unless opte
   }
 })
 
+test('IPv6 spellings of an IPv4 address are judged by that IPv4 address', () => {
+  // URL parsing turns ::ffff:127.0.0.1 into ::ffff:7f00:1 before the policy sees it.
+  for (const host of [
+    '::ffff:127.0.0.1',
+    '::ffff:7f00:1',
+    '[::ffff:a9fe:a9fe]',
+    '::ffff:0:a9fe:a9fe',
+    '::127.0.0.1',
+    '64:ff9b::a9fe:a9fe',
+    '::ffff:6464:64c8',
+    '0:0:0:0:0:ffff:a00:1',
+  ]) {
+    assert.equal(proxyBlockedReason({ host, port: 1080 }, true), 'proxy_host_blocked', host)
+  }
+  assert.equal(proxyBlockedReason({ url: 'socks5://[::ffff:7f00:1]:1080' }, true), 'proxy_host_blocked')
+  assert.equal(proxyBlockedReason({ host: '::ffff:8.8.8.8', port: 1080 }, true), null)
+  assert.equal(proxyBlockedReason({ host: '64:ff9b::808:808', port: 1080 }, true), null)
+  assert.equal(proxyBlockedReason({ host: '2001:4860:4860::8888', port: 1080 }, true), null)
+})
+
+test('shorthand IPv4 that the resolver reads as an address is judged as that address', () => {
+  for (const host of ['127.1', '2130706433', '0x7f.1', '0177.0.0.1', '0x7f000001', '169.254.43518', '0.0.0.1']) {
+    assert.equal(proxyBlockedReason({ host, port: 1080 }, true), 'proxy_host_blocked', host)
+  }
+  for (const host of ['8.8.8.8', '0x08.0x08.0x08.0x08', 'deadbeef', 'proxy.example.com']) {
+    assert.equal(proxyBlockedReason({ host, port: 1080 }, true), null, host)
+  }
+})
+
 test('IPv6 policy survives reload and preserves binding and health instead of reallocating', async (t) => {
   const pool = makePool(t)
   const {
