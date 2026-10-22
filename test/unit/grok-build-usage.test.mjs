@@ -240,3 +240,20 @@ test('Grok usage sync follows the Claude usage-window interval', () => {
     staleMs: 120_000,
   })
 })
+
+test('a refresh token the kernel saw rejected marks the slot for a new login', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'grok-build-'))
+  writeGrokVm(root, 'dead')
+  upsertGrokAccount(root, 'dead', { access_token: 'access-1', refresh_token: 'refresh-1', expires_at: Date.now() - 1 })
+  const forward = async () => ({
+    statusCode: 401,
+    kernelError: true,
+    async *[Symbol.asyncIterator]() {
+      yield Buffer.from(JSON.stringify({ error: { code: 'refresh_rejected', message: 'Grok token refresh failed' } }))
+    },
+  })
+  const result = await queryGrokBuildUsage({ projectRoot: root, vmId: 'dead', proxyUrl: '', forward, force: true })
+  assert.equal(result.ok, false)
+  assert.equal(result.error, 'upstream_auth')
+  assert.equal(getVm(root, 'dead').grok.auth_error.code, 'oauth_refresh_rejected')
+})

@@ -293,8 +293,10 @@ async fn prepare_token(app: &App, rt: &Runtime, force: bool) -> Result<String, K
             "Grok access token expired",
         ));
     }
+    // Requests that queue here re-read the file inside refresh_account, so one
+    // refresh serves all of them.
     let _guard = app.refresh.lock().await;
-    match oauth::refresh_account(&rt.client, &rt.config).await {
+    match oauth::refresh_account(&rt.client, &rt.config, &account.access_token).await {
         Ok(refreshed) => Ok(refreshed.access_token),
         Err(_) if !force && !account.access_token.is_empty() => Ok(account.access_token),
         Err(code) => Err(KernelFailure::new(

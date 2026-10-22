@@ -6,7 +6,12 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { grokRoutingOf } from '../protocol/grok-route.mjs'
 import { refreshGrokAccessToken } from './grok-oauth.mjs'
-import { patchGrokBag, persistGrokCredentialState, readGrokAccount, upsertGrokAccount } from '../vm/grok-slot.mjs'
+import {
+  persistGrokCredentialState,
+  persistGrokRefreshRejected,
+  readGrokAccount,
+  upsertGrokAccount,
+} from '../vm/grok-slot.mjs'
 
 const LOCK_STALE_MS = 60_000
 const LOCK_WAIT_MS = 15_000
@@ -97,14 +102,14 @@ async function refreshLocked({ projectRoot, vmId, routing, proxyUrl, force, fetc
       return ok(next, true)
     }
     if (res.error === 'refresh_rejected') {
-      patchGrokBag(projectRoot, vmId, (bag) => ({
-        ...bag,
-        auth_error: { code: 'oauth_refresh_rejected', message: 'xAI 拒绝了 refresh_token，请重新登录', at: now },
-      }))
+      persistGrokRefreshRejected(projectRoot, vmId, now)
       return { ok: false, code: 'grok_refresh_rejected', status: res.status }
     }
     if (!force && tokenUsable(account, now)) return ok(account, false)
-    const passthrough = res.error === 'grok_oauth_not_configured' || res.error === 'grok_oauth_discovery_failed' || res.error === 'proxy_required'
+    const passthrough =
+      res.error === 'grok_oauth_not_configured' ||
+      res.error === 'grok_oauth_discovery_failed' ||
+      res.error === 'proxy_required'
     return { ok: false, code: passthrough ? res.error : 'grok_refresh_failed', status: res.status }
   })
 }

@@ -8,7 +8,7 @@
  * Claude-style 5h / 7d windows.
  */
 import { isLocalEgressProxy } from '../vm/egress.mjs'
-import { persistGrokBuildUsage } from '../vm/grok-slot.mjs'
+import { persistGrokBuildUsage, persistGrokRefreshRejected } from '../vm/grok-slot.mjs'
 import { hostProxyUrlForVm } from '../vm/slot-host.mjs'
 import { getVm } from '../vm/vm-registry.mjs'
 import { isGrokVm } from '../vm/vm-kind.mjs'
@@ -166,6 +166,7 @@ async function fetchGrokBuildDocument({ projectRoot, vm, query = '', forward }) 
   if (response?.kernelError) {
     const code = String(payload?.error?.code || 'kernel_error')
     if (/credential|token|refresh|unauthorized/i.test(code)) {
+      if (code === 'refresh_rejected') persistGrokRefreshRejected(projectRoot, vm.id)
       return fail('upstream_auth', 'Grok Build 账单需要重新登录', 401)
     }
     return fail('fetch_failed', 'Grok 出站内核没有返回账单', 502)

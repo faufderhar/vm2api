@@ -23,7 +23,7 @@ import { callGrokKernel, grokKernelEnvelope } from '../transport/grok-kernel-cli
 import { ensureGrokKernel, trackGrokKernel, writeGrokKernelConfig } from '../transport/grok-kernel-supervisor.mjs'
 import { hostProxyUrlForVm } from '../vm/slot-host.mjs'
 import { isLocalEgressProxy } from '../vm/egress.mjs'
-import { persistGrokRateLimit } from '../vm/grok-slot.mjs'
+import { persistGrokRateLimit, persistGrokRefreshRejected } from '../vm/grok-slot.mjs'
 import { scopeAccountFromVm } from './jev-intercept.mjs'
 import {
   grokSlotAllowsModel,
@@ -450,6 +450,11 @@ async function admitGrokCandidate(projectRoot, req, opts, { deadline, signal }) 
 }
 
 function ingestGrokHop(projectRoot, vm, result, now = Date.now()) {
+  // The kernel refreshes on its own; a rejected refresh token must mark the slot like Node's refresher does.
+  if (result?.kernelError && result.body?.error?.code === 'refresh_rejected') {
+    persistGrokRefreshRejected(projectRoot, vm.id, now)
+    return
+  }
   if (Number(result?.status) === 429 && !result.kernelError) {
     persistGrokRateLimit(projectRoot, vm.id, {
       until: parkUntilFromHeaders(result.headers || {}, now),

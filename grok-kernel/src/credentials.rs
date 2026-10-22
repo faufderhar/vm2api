@@ -73,9 +73,8 @@ pub fn write_tokens(
     if !id_token.is_empty() {
         row.insert("id_token".to_string(), json!(id_token));
     }
-    if let Some(expires) = expires_at_ms {
-        row.insert("expires_at".to_string(), json!(expires));
-    }
+    // No expiry in the token response clears the old one, same as the Node writer.
+    row.insert("expires_at".to_string(), json!(expires_at_ms));
     row.insert("updated_at".to_string(), json!(iso_now()));
     let rendered = serde_json::to_string_pretty(&doc).map_err(|err| err.to_string())? + "\n";
     atomic_write(path, rendered.as_bytes())

@@ -157,6 +157,14 @@ export function patchGrokBag(projectRoot, vmId, fn) {
   return vm
 }
 
+/** The refresh token is dead: keep the slot out of the pool until it logs in again. */
+export function persistGrokRefreshRejected(projectRoot, vmId, at = Date.now()) {
+  return patchGrokBag(projectRoot, vmId, (bag) => ({
+    ...bag,
+    auth_error: { code: 'oauth_refresh_rejected', message: 'xAI 拒绝了 refresh_token，请重新登录', at },
+  }))
+}
+
 export function persistGrokCredentialState(projectRoot, vmId, account, extra = {}) {
   return patchGrokBag(projectRoot, vmId, (bag) => ({ ...grokBagFromAccount(account, bag), ...extra }))
 }

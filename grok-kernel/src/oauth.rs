@@ -23,12 +23,28 @@ pub fn token_needs_refresh(account: &Account, skew_sec: u64, now_ms: i64) -> boo
     expires.saturating_sub(now_ms) <= (skew_sec as i64).saturating_mul(1000)
 }
 
+/// Refresh the slot token. `seen` is the access token the caller read before it
+/// waited for the lock (or the one upstream just rejected). When the file already
+/// holds a different, fresh token, another request or Node refreshed it meanwhile:
+/// use that one and leave the refresh token alone.
 pub async fn refresh_account(
     client: &reqwest::Client,
     config: &Config,
+    seen: &str,
 ) -> Result<RefreshedToken, String> {
     let _lock = credentials::acquire_refresh_lock(&config.refresh_lock_path).await?;
     let account = credentials::read_account(&config.credentials_path)?;
+    if !account.access_token.is_empty()
+        && account.access_token != seen
+        && !token_needs_refresh(&account, config.oauth.refresh_skew_sec, now_ms())
+    {
+        return Ok(RefreshedToken {
+            access_token: account.access_token,
+            refresh_token: account.refresh_token,
+            id_token: account.id_token,
+            expires_at_ms: account.expires_at_ms,
+        });
+    }
     if account.refresh_token.is_empty() {
         return Err("grok_token_expired".to_string());
     }
@@ -75,11 +91,7 @@ pub async fn refresh_account(
             next
         }
     };
-    let expires_at_ms = payload
-        .get("expires_in")
-        .and_then(|value| value.as_i64())
-        .filter(|secs| *secs > 0)
-        .map(|secs| now_ms() + secs.saturating_mul(1000));
+    let expires_at_ms = expires_at_from(&payload, now_ms());
     credentials::write_tokens(
         &config.credentials_path,
         &access_token,
@@ -140,6 +152,22 @@ fn allowed_oauth_url(value: &str) -> bool {
     url.scheme() == "https" && (host == "x.ai" || host.ends_with(".x.ai"))
 }
 
+/// `expires_in` as an integer, a float, or a numeric string. None when it is
+/// missing: the stored expiry is then cleared, as Node does, instead of keeping the
+/// old one and refreshing again on every request.
+fn expires_at_from(payload: &Value, now: i64) -> Option<i64> {
+    let value = payload.get("expires_in")?;
+    let secs = value.as_f64().or_else(|| {
+        value
+            .as_str()
+            .and_then(|text| text.trim().parse::<f64>().ok())
+    })?;
+    if !secs.is_finite() || secs <= 0.0 {
+        return None;
+    }
+    Some(now.saturating_add((secs * 1000.0) as i64))
+}
+
 fn text(payload: &Value, key: &str) -> String {
     payload
         .get(key)
@@ -158,7 +186,64 @@ pub fn now_ms() -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::allowed_oauth_url;
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn expires_in_accepts_numbers_and_strings() {
+        assert_eq!(
+            expires_at_from(&json!({"expires_in": 3600}), 1_000),
+            Some(3_601_000)
+        );
+        assert_eq!(expires_at_from(&json!({"expires_in": 1.5}), 0), Some(1_500));
+        assert_eq!(
+            expires_at_from(&json!({"expires_in": "60"}), 0),
+            Some(60_000)
+        );
+        assert_eq!(expires_at_from(&json!({}), 0), None);
+        assert_eq!(expires_at_from(&json!({"expires_in": 0}), 0), None);
+        assert_eq!(expires_at_from(&json!({"expires_in": "soon"}), 0), None);
+    }
+
+    fn sample_config(dir: &std::path::Path) -> Config {
+        serde_json::from_value(json!({
+            "socket_path": dir.join("grok.sock"),
+            "credentials_path": dir.join("cred.json"),
+            "agent_id_path": dir.join("agent"),
+            "refresh_lock_path": dir.join("lock"),
+            "internal_token": "t",
+            "base_url": "https://cli-chat-proxy.grok.com",
+            // Never reached: a refresh in these tests would fail on this URL.
+            "oauth": { "token_url": "https://invalid.example/token", "client_id": "c" }
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_token_refreshed_while_waiting_is_reused() {
+        let dir = std::env::temp_dir().join(format!("grok-oauth-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = sample_config(&dir);
+        let fresh = now_ms() + 3_600_000;
+        credentials::write_tokens(
+            &config.credentials_path,
+            "new-at",
+            "new-rt",
+            "",
+            Some(fresh),
+        )
+        .unwrap();
+        let client = reqwest::Client::new();
+        let got = refresh_account(&client, &config, "old-at").await.unwrap();
+        assert_eq!(got.access_token, "new-at");
+        assert_eq!(got.refresh_token, "new-rt");
+        // The token the caller already holds is not reused: it goes to the token endpoint.
+        let err = refresh_account(&client, &config, "new-at")
+            .await
+            .unwrap_err();
+        assert_eq!(err, "grok_oauth_not_configured");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn oauth_token_url_rejects_loopback() {
