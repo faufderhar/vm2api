@@ -187,8 +187,9 @@ export VM2API_ADMIN_PASSWORD
 write_secret_file "$ADMIN_PASSWORD_FILE" "$password"
 env_set VM2API_ADMIN_PASSWORD "$password" "$ENVF"
 if [ -n "$password_generated" ]; then
-  echo "vm2api: generated VM2API_ADMIN_PASSWORD for ${VM2API_ADMIN_USER:-admin}: ${VM2API_ADMIN_PASSWORD}" >&2
-  echo "vm2api: this password is printed once. Change it after login." >&2
+  # Not printed: container logs are kept and often shipped elsewhere.
+  echo "vm2api: generated a panel password for ${VM2API_ADMIN_USER:-admin}; it is in ${ADMIN_PASSWORD_FILE}" >&2
+  echo "vm2api: compose mounts that as ./secrets/admin.password. Read it there, then change it after login." >&2
 fi
 
 api_key="${VM2API_API_KEY:-}"

@@ -24,3 +24,9 @@ test('docker entrypoint refreshes kin-api-kernel before Node starts', () => {
   assert.match(entry, /db\.secret/)
   assert.doesNotMatch(entry, /VM2API_DB_SECRET="\$\(rand_hex\)"/)
 })
+
+test('docker entrypoint never echoes the generated panel password', () => {
+  const entry = fs.readFileSync(path.join(root, 'scripts/docker-entrypoint.sh'), 'utf8')
+  const echoes = entry.split('\n').filter((line) => /^\s*(echo|printf)\b/.test(line))
+  for (const line of echoes) assert.doesNotMatch(line, /\$\{?(VM2API_ADMIN_PASSWORD|password)\b/, line)
+})
