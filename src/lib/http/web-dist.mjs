@@ -58,6 +58,31 @@ function cacheControl(rel, ext) {
   return 'public, max-age=86400'
 }
 
+// The console is a Vite bundle: no inline or remote script, never framed. connect-src stays
+// open because a panel may point at a saved cross-origin API base (PANEL_CORS_ORIGINS).
+export const PANEL_CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob:",
+  "font-src 'self' data:",
+  "connect-src 'self' https: http: wss: ws:",
+  "worker-src 'self' blob:",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join('; ')
+
+function securityHeaders(ext) {
+  const headers = { 'x-content-type-options': 'nosniff', 'referrer-policy': 'same-origin' }
+  if (ext === '.html') {
+    headers['content-security-policy'] = PANEL_CSP
+    headers['x-frame-options'] = 'DENY'
+  }
+  return headers
+}
+
 export function tryServeWebDist(res, projectRoot, pathname) {
   const root = distRoot(projectRoot)
   try {
@@ -76,6 +101,7 @@ export function tryServeWebDist(res, projectRoot, pathname) {
   res.writeHead(200, {
     'content-type': MIME[ext] || 'application/octet-stream',
     'cache-control': cacheControl(rel, ext),
+    ...securityHeaders(ext),
   })
   res.end(fs.readFileSync(file))
   return true

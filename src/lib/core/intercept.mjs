@@ -41,11 +41,19 @@ export function applyIntercept(rules, phase, ctx) {
   return { ...ctx, body, headers }
 }
 
+const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+
+/**
+ * Copy-on-write along the dotted path: objects shared with the caller's body are cloned
+ * before they change, and a path through __proto__ / constructor / prototype is ignored.
+ */
 function setPath(obj, path, value) {
-  const parts = path.split('.')
+  const parts = String(path).split('.')
+  if (parts.some((part) => UNSAFE_KEYS.has(part))) return
   let cur = obj
   for (let i = 0; i < parts.length - 1; i++) {
-    if (cur[parts[i]] == null || typeof cur[parts[i]] !== 'object') cur[parts[i]] = {}
+    const next = cur[parts[i]]
+    cur[parts[i]] = next != null && typeof next === 'object' ? (Array.isArray(next) ? [...next] : { ...next }) : {}
     cur = cur[parts[i]]
   }
   cur[parts[parts.length - 1]] = value

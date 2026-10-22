@@ -1252,3 +1252,18 @@ test('repriceRange re-prices image usage from the stored JSON and keeps actual_c
   assert.ok(Math.abs(rows.log_img_only.total_cost - 0.0321) < 1e-9)
   assert.equal(rows.log_img_only.actual_cost, 5)
 })
+
+test('the logged client address ignores a forwarded header without a trusted proxy', () => {
+  const store = tmpStore('normal')
+  const previous = process.env.TRUST_PROXY
+  delete process.env.TRUST_PROXY
+  try {
+    const ctx = store.start(
+      { method: 'POST', headers: { 'x-forwarded-for': '6.6.6.6' }, socket: { remoteAddress: '198.51.100.4' } },
+      { pathName: '/v1/messages' },
+    )
+    assert.equal(ctx.ip, '198.51.100.4')
+  } finally {
+    if (previous != null) process.env.TRUST_PROXY = previous
+  }
+})

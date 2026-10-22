@@ -18,7 +18,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { redactSecrets } from '../core/security.mjs'
+import { redactSecrets, requestClientAddress } from '../core/security.mjs'
 import { resolveStoreDb } from '../db/database.mjs'
 import { UsageLogsRepo } from '../db/repos/usage-logs-repo.mjs'
 import { classifyRequestError, resolveMutedErrorClasses } from './error-class.mjs'
@@ -76,11 +76,7 @@ function dayKey(d = new Date()) {
 }
 
 function safeIp(req) {
-  const xf = String(req.headers?.['x-forwarded-for'] || '')
-    .split(',')[0]
-    .trim()
-  const raw = xf || req.socket?.remoteAddress || ''
-  return String(raw).slice(0, 45)
+  return requestClientAddress(req).slice(0, 45)
 }
 
 function summarizeBody(body) {

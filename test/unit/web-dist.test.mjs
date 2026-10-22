@@ -86,3 +86,22 @@ test('serves the documented /cc entry as the console index', () => {
   assert.equal(tryServeWebDist(mockRes(), root, '/cc%'), false)
   assert.equal(tryServeWebDist(mockRes(), root, '/cc%ZZ'), false)
 })
+
+test('the console page cannot be framed or run inline or remote script', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vm2api-web-csp-'))
+  fs.mkdirSync(path.join(root, 'web', 'dist', 'assets'), { recursive: true })
+  fs.writeFileSync(path.join(root, 'web', 'dist', 'index.html'), '<!doctype html>')
+  fs.writeFileSync(path.join(root, 'web', 'dist', 'assets', 'app.js'), '1')
+  const html = mockRes()
+  tryServeWebDist(html, root, '/cc')
+  const csp = html.headers['content-security-policy']
+  assert.match(csp, /script-src 'self'(;|$)/)
+  assert.match(csp, /frame-ancestors 'none'/)
+  assert.match(csp, /object-src 'none'/)
+  assert.equal(html.headers['x-frame-options'], 'DENY')
+  assert.equal(html.headers['x-content-type-options'], 'nosniff')
+  const js = mockRes()
+  tryServeWebDist(js, root, '/assets/app.js')
+  assert.equal(js.headers['x-content-type-options'], 'nosniff')
+  assert.equal(js.headers['content-security-policy'], undefined)
+})
