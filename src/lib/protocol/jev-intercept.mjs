@@ -377,11 +377,19 @@ export function builtinHardRules() {
   }))
 }
 
+let builtinSources = null
+
+/** Shipped rules are reviewed by hand. Only operator input goes through the backtracking check. */
+function isBuiltinSource(text) {
+  builtinSources ||= new Set(HARD_POLICY_RULES.map((rule) => rule.source))
+  return builtinSources.has(text)
+}
+
 function cleanPattern(source) {
   const text = String(source || '').trim()
   if (!text || text.length > PATTERN_LEN) return ''
-  // (a+)+ and ((a+)+)+ can hang the event loop. Drop them like a syntax error.
-  if (hasNestedQuantifier(text)) return ''
+  // (a+)+ and (a|aa)+ can hang the event loop. Drop them like a syntax error.
+  if (!isBuiltinSource(text) && hasNestedQuantifier(text)) return ''
   try {
     new RegExp(text, 'i')
   } catch {
@@ -390,9 +398,74 @@ function cleanPattern(source) {
   return text
 }
 
+/** Problem text for one panel rule, or '' when it is usable. */
+function patternProblem(source) {
+  try {
+    new RegExp(source, 'i')
+  } catch {
+    return `无效正则: ${source.slice(0, 80)}`
+  }
+  if (!isBuiltinSource(source) && hasNestedQuantifier(source)) {
+    return `正则可能回溯过慢（重复的组里又有重复或可重叠的分支）: ${source.slice(0, 80)}`
+  }
+  return ''
+}
+
+/** Group flags after `(`: `?:`, `?=`, `?!`, `?<=`, `?<!`, `?<name>`. */
+function groupBodyStart(text, open) {
+  if (text[open + 1] !== '?') return open + 1
+  const flag = /^\?(?::|=|!|<=|<!|<[A-Za-z_$][\w$]*>)/.exec(text.slice(open + 1))
+  return flag ? open + 1 + flag[0].length : open + 1
+}
+
+/** Top-level `|` branches of a group body. */
+function topLevelBranches(body) {
+  const branches = []
+  let depth = 0
+  let insideClass = false
+  let from = 0
+  for (let index = 0; index < body.length; index += 1) {
+    const char = body[index]
+    if (char === '\\') {
+      index += 1
+      continue
+    }
+    if (insideClass) {
+      if (char === ']') insideClass = false
+      continue
+    }
+    if (char === '[') insideClass = true
+    else if (char === '(') depth += 1
+    else if (char === ')') depth -= 1
+    else if (char === '|' && depth === 0) {
+      branches.push(body.slice(from, index))
+      from = index + 1
+    }
+  }
+  branches.push(body.slice(from))
+  return branches
+}
+
+/** First character a branch must match, lowercased, or '' when it is a class, group, or empty. */
+function branchLead(branch) {
+  const char = branch[0]
+  if (!char || '.[(^$'.includes(char)) return ''
+  if (char !== '\\') return char.toLowerCase()
+  const escaped = branch[1] || ''
+  return /[A-Za-z0-9]/.test(escaped) ? '' : escaped
+}
+
+/** A repeated group whose branches can start on the same character backtracks like (a|aa)+. */
+function overlappingBranches(body) {
+  const branches = topLevelBranches(body)
+  if (branches.length < 2) return false
+  const leads = branches.map(branchLead)
+  return leads.includes('') || new Set(leads).size !== leads.length
+}
+
 /**
- * A quantifier inside a group that is itself repeated backtracks exponentially.
- * `?` right after `(` starts a group flag (`(?:`, `(?=`) and is not a repeat.
+ * A quantifier inside a group that is itself repeated backtracks exponentially, and so do
+ * repeated branches that can match the same text. `?` right after `(` is a group flag.
  */
 function hasNestedQuantifier(text) {
   if (/(\[[^\]]*\]|\\[dDwWsS])[*+?]{2,}/.test(text)) return true
@@ -414,17 +487,17 @@ function hasNestedQuantifier(text) {
       continue
     }
     if (char === '(') {
-      groups.push(false)
+      groups.push({ quantified: false, body: groupBodyStart(text, index) })
       continue
     }
     if (char === ')' && groups.length) {
       const repeated = /[*+{]/.test(text[index + 1] || '')
-      const innerQuantifier = groups.pop()
-      if (repeated && innerQuantifier) return true
-      if ((repeated || innerQuantifier) && groups.length) groups[groups.length - 1] = true
+      const group = groups.pop()
+      if (repeated && (group.quantified || overlappingBranches(text.slice(group.body, index)))) return true
+      if ((repeated || group.quantified) && groups.length) groups[groups.length - 1].quantified = true
       continue
     }
-    if (/[*+{]/.test(char) && groups.length && text[index - 1] !== '(') groups[groups.length - 1] = true
+    if (/[*+{]/.test(char) && groups.length && text[index - 1] !== '(') groups[groups.length - 1].quantified = true
   }
   return false
 }
@@ -900,10 +973,9 @@ export function validateJevPatch(body = {}) {
           problems.push(`单条 pattern 最长 ${PATTERN_LEN}`)
           break
         }
-        try {
-          new RegExp(source, 'i')
-        } catch {
-          problems.push(`无效正则: ${source.slice(0, 80)}`)
+        const problem = patternProblem(source)
+        if (problem) {
+          problems.push(problem)
           break
         }
       }
@@ -969,10 +1041,9 @@ export function validateJevPatch(body = {}) {
             problems.push(`单条规则最长 ${PATTERN_LEN}`)
             break
           }
-          try {
-            new RegExp(source, 'i')
-          } catch {
-            problems.push(`无效正则: ${source.slice(0, 80)}`)
+          const problem = patternProblem(source)
+          if (problem) {
+            problems.push(problem)
             break
           }
         }

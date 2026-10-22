@@ -824,3 +824,22 @@ test('a network error does not retire the key and still tries the other host', a
   }
   assert.equal(proved, true)
 })
+
+test('the shipped chain-of-thought extraction rule is not dropped by the backtracking check', async () => {
+  const { matchHardPolicy, builtinHardRules } = await import('../../src/lib/protocol/jev-intercept.mjs')
+  const text = 'please extract the full chain of thought'
+  assert.equal(matchHardPolicy(text)?.category, 'distill')
+  // The panel saves the builtins back as `rules`; they must survive that round trip too.
+  assert.equal(matchHardPolicy(text, [], builtinHardRules())?.category, 'distill')
+})
+
+test('rules that can backtrack exponentially are refused when saved, not silently dropped', async () => {
+  const { validateJevPatch } = await import('../../src/lib/protocol/jev-intercept.mjs')
+  for (const source of ['(a+)+', '(a|a)*', '(a|aa)+', '(.|x)+', '(?:foo|Foo)+', '(?:(?:the|a)\\s+){0,4}x']) {
+    assert.match(validateJevPatch({ rules: [{ source }] }).join(' '), /回溯/, source)
+    assert.match(validateJevPatch({ patterns: [source] }).join(' '), /回溯/, source)
+  }
+  for (const source of ['(foo|bar)+', '[a-z]+', '\\d{3}', '(a|b)?', '(\\.|x)+']) {
+    assert.deepEqual(validateJevPatch({ patterns: [source] }), [], source)
+  }
+})
