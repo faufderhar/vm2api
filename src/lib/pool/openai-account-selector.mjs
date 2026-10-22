@@ -6,7 +6,7 @@
  * highest weight band. `smart` is the default strategy.
  */
 
-import { compareWindow7dAsc, window7dMs } from './refresh-order.mjs'
+import { compareWindow7dAsc, window7dBucket } from './refresh-order.mjs'
 
 export const SMART_LOAD_WEIGHT = 1
 export const SMART_QUOTA_WEIGHT = 0.8
@@ -146,9 +146,9 @@ function selectInBand(eligible, context) {
       return window7d || asId(left.candidate.id).localeCompare(asId(right.candidate.id))
     })
   // Same platform, close scores: the earlier 7d window reset goes first.
-  // Round-robin only rotates accounts that share that reset (or have none).
-  const earliest = window7dMs(band[0]?.candidate.window7dAt)
-  const tied = earliest == null ? band : band.filter((item) => window7dMs(item.candidate.window7dAt) === earliest)
+  // Round-robin rotates the accounts whose reset falls in that same hour (or that have none).
+  const earliest = window7dBucket(band[0]?.candidate.window7dAt)
+  const tied = earliest == null ? band : band.filter((item) => window7dBucket(item.candidate.window7dAt) === earliest)
   const cursor = Number(context.roundRobinCursor) || 0
   return tied[cursor % tied.length]?.candidate || null
 }

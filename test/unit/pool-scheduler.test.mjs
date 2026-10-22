@@ -2854,3 +2854,19 @@ test('a resting slot that cannot serve the model does not promise a Retry-After'
   assert.equal(selected.ok, false)
   assert.equal(selected.retry_after_ms, null)
 })
+
+test('peek ranks the earlier 7d reset before the least recently used account', () => {
+  const peek = (candidates) => PoolScheduler.prototype.peekRank.call({}, candidates)
+  const base = { priority: 1, loadRatio: 0 }
+  const picked = peek([
+    { ...base, accountId: 'idle-longest', lastUsedAt: 1_000, window7dAt: '2026-10-20T00:00:00.000Z' },
+    { ...base, accountId: 'resets-sooner', lastUsedAt: 9_000, window7dAt: '2026-10-02T00:00:00.000Z' },
+  ])
+  assert.equal(picked.accountId, 'resets-sooner')
+  // Same hour: least recently used still decides.
+  const sameHour = peek([
+    { ...base, accountId: 'recent', lastUsedAt: 9_000, window7dAt: '2026-10-02T00:10:00.000Z' },
+    { ...base, accountId: 'older', lastUsedAt: 1_000, window7dAt: '2026-10-02T00:50:00.000Z' },
+  ])
+  assert.equal(sameHour.accountId, 'older')
+})

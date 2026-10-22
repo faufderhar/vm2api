@@ -1347,8 +1347,10 @@ export class PoolScheduler extends EventEmitter {
     pool = pool.filter((candidate) => candidate.loadRatio === minLoad)
     pool.sort(
       (left, right) =>
-        left.lastUsedAt - right.lastUsedAt ||
+        // Same priority and load: the earlier 7d reset first. lastUsedAt almost never ties,
+        // so after it this tie-break would never run.
         compareWindow7dAsc(left.window7dAt, right.window7dAt) ||
+        left.lastUsedAt - right.lastUsedAt ||
         left.accountId.localeCompare(right.accountId),
     )
     return { ...pool[0], selectionReason: pool.length === 1 ? 'priority-load' : 'peek' }

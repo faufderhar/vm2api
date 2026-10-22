@@ -81,6 +81,14 @@ test('close scores on one platform prefer the earlier 7d window reset', () => {
   assert.equal(second.candidate.id, 'b')
 })
 
+test('7d resets in the same hour still rotate', () => {
+  const left = account('a', { quotaRemainingRank: 8_000, window7dAt: '2026-10-01T00:05:00.000Z' })
+  const right = account('b', { quotaRemainingRank: 8_100, window7dAt: '2026-10-01T00:40:00.000Z' })
+  const first = selectOpenAIAccount([left, right], { strategy: 'smart', roundRobinCursor: 0 })
+  const second = selectOpenAIAccount([left, right], { strategy: 'smart', roundRobinCursor: 1 })
+  assert.notEqual(first.candidate.id, second.candidate.id)
+})
+
 test('concurrency and request interval block before scoring', () => {
   const now = 1_000_000
   const busy = account('busy', { inFlight: 2, concurrency: 2, quotaRemainingRank: 10_000 })
