@@ -476,6 +476,7 @@ export async function runGrokSlotHop({
   onLine,
   ops = {},
   headers = null,
+  kernelConfig = null,
 }) {
   const proxyUrl = String((ops.hostProxyUrlForVm || hostProxyUrlForVm)(vm) || '')
   if (!proxyUrl && !isLocalEgressProxy(vm?.proxy)) {
@@ -487,11 +488,14 @@ export async function runGrokSlotHop({
   }
   const localExit = isLocalEgressProxy(vm?.proxy)
   const onNode = !!vm?.node_id
-  const written = (ops.writeGrokKernelConfig || writeGrokKernelConfig)(projectRoot, vm, {
-    proxyUrl: localExit && !onNode ? '' : proxyUrl,
-    proxyRequired: !(localExit && !onNode),
-    routing,
-  })
+  // handleGrokProtocol already wrote it for this hop to read the agent id.
+  const written =
+    kernelConfig ||
+    (ops.writeGrokKernelConfig || writeGrokKernelConfig)(projectRoot, vm, {
+      proxyUrl: localExit && !onNode ? '' : proxyUrl,
+      proxyRequired: !(localExit && !onNode),
+      routing,
+    })
   if (!ops.callGrokKernel) {
     const ready = await (ops.ensureGrokKernel || ensureGrokKernel)({ projectRoot, vmId: vm.id })
     if (!ready?.ok) {
@@ -760,6 +764,7 @@ export async function handleGrokProtocol({
             onLine,
             ops,
             headers,
+            kernelConfig: written,
           })
         }
         const recordAttempt = (startedAt, result) =>
