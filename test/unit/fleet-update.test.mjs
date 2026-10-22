@@ -83,6 +83,37 @@ test('degraded worker without OAuth still counts as up', () => {
   assert.equal(isWorkerProcessUp({ code: 'worker_unavailable' }), false)
 })
 
+test('fleet telemetry skips db rows whose container is absent on this host', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-fleet-skip-'))
+  writeSlot(root, 'vm-07')
+  const report = await runFleetUpdate(root, {
+    action: 'telemetry',
+    telemetryFn: async () => ({ ok: false, error: 'Error: No such container: kin-07' }),
+  })
+  assert.equal(report.total, 1)
+  assert.equal(report.ok_count, 1)
+  assert.equal(report.skipped_count, 1)
+  assert.equal(report.failed_count, 0)
+  assert.equal(report.items[0].skipped, true)
+  assert.equal(report.items[0].skip_reason, 'container_unavailable')
+  assert.equal(report.items[0].telemetry.skipped, true)
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('fleet telemetry still fails when a present container refresh errors', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-fleet-hard-'))
+  writeSlot(root, 'vm-08')
+  const report = await runFleetUpdate(root, {
+    action: 'telemetry',
+    telemetryFn: async () => ({ ok: false, error: 'docker exec failed: permission denied' }),
+  })
+  assert.equal(report.failed_count, 1)
+  assert.equal(report.ok_count, 0)
+  assert.equal(report.items[0].skipped, undefined)
+  assert.equal(report.items[0].code, 'telemetry_update_failed')
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
 test('fleet telemetry uses injected telemetryFn with options object', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-fleet-tel-'))
   writeSlot(root, 'vm-01', { node_id: 'node-a' })

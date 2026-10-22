@@ -208,7 +208,7 @@ export function stripIllegalCacheControlFields(body) {
   }
   return out
 }
-/** Drop caller markers, including nested tool results, before owned breakpoints are placed. */
+/** Drop caller cache_control so Node can restamp last + penultimate user. */
 export function removeCacheControlFields(body) {
   if (!body || typeof body !== 'object') return body
   const out = { ...body }
@@ -217,13 +217,15 @@ export function removeCacheControlFields(body) {
     if (!node || typeof node !== 'object') return node
     const next = { ...node }
     delete next.cache_control
-    if (Array.isArray(next.content)) next.content = next.content.map(clearNode)
     return next
   }
   if (Array.isArray(out.tools)) out.tools = out.tools.map(clearNode)
   if (Array.isArray(out.system)) out.system = out.system.map(clearNode)
   if (Array.isArray(out.messages)) {
-    out.messages = out.messages.map(clearNode)
+    out.messages = out.messages.map((message) => {
+      if (!Array.isArray(message?.content)) return message
+      return { ...message, content: message.content.map(clearNode) }
+    })
   }
   return out
 }

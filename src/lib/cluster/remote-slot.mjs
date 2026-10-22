@@ -33,6 +33,7 @@ import { isCodexVm, isHeadlessSlotVm, PLATFORMS, platformDescriptor } from '../v
 import { proxyBlockedReason } from '../vm/proxy-policy.mjs'
 import { isKvmRuntime, runtimeKind } from '../vm/runtime-kind.mjs'
 import { slotMemory, slotDockerCpus, memoryMiB, normalizeVmConfig, VM_CONFIG_DEFAULTS } from '../vm/machine-spec.mjs'
+import { logTelemetryContainerSkip, telemetryContainerSkip } from '../vm/docker-container.mjs'
 import { slotExecArgv, slotExecCmd } from '../vm/slot-exec.mjs'
 import {
   containerName,
@@ -1208,6 +1209,11 @@ export async function restartRemoteServices(vm, projectRoot, { telemetryEnabled 
     const remoteDir = remoteSlotDir(session.host, vm.id)
     const slotDir = path.join(projectRoot, 'vms', vm.id)
     const name = vm.runtime?.container || containerName(vm.id)
+    const slotInfo = await inspectContainerOrNull(session.docker, name)
+    if (!slotInfo) {
+      logTelemetryContainerSkip('fleet', vm.id, name)
+      return telemetryContainerSkip(name)
+    }
     const migration = await migrateRemoteServiceContainers(vm, projectRoot)
     if (!migration.ok) return migration
     await pushSlotFiles(vm, slotDir, ['run', 'seed'], session)

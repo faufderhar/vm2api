@@ -101,8 +101,7 @@ test('API classifier backend preserves contract, rejects model substitution and 
   assert.equal(wire.max_tokens, 64)
   assert.deepEqual(wire.thinking, { type: 'disabled' })
   assert.equal(wire.temperature, 0)
-  assert.match(wire.system[0].text, /^x-anthropic-billing-header:.*cc_version=.*cc_entrypoint=.*cch=/)
-  assert.deepEqual(wire.system.slice(1), input.system)
+  assert.deepEqual(wire.system, input.system)
   for (const [kind, status, code] of [
     ['http', 400, 'bad_classifier'],
     ['sse', 503, 'classifier_busy'],

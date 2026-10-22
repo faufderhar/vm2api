@@ -770,11 +770,8 @@ export function clampEnabledThinkingBudget(body = {}) {
 
 function adaptiveOnlyThinking(thinking) {
   const display = thinking && typeof thinking === 'object' ? thinking.display : undefined
-  return {
-    type: 'adaptive',
-    ...(display != null && String(display).trim() !== '' ? { display } : {}),
-    ...(thinking?.block_binding != null ? { block_binding: thinking.block_binding } : {}),
-  }
+  if (display != null && String(display).trim() !== '') return { type: 'adaptive', display }
+  return { type: 'adaptive' }
 }
 
 export function normalizeThinkingByPolicy(body = {}) {

@@ -62,19 +62,6 @@ Go worker JSON 透传，不必因人设重建 worker。
 
 全部非官方协议（Messages / Chat / Completions / Responses）回包 usage 按「没有被网关改写的 system、没有注入 tools」显示：藏网关注入的 persona system 块与 server tools，保留用户 prompt 与用户自己的 tools，抹掉因 persona 产生的官方 cache。官方 CC 不遮罩。
 
-## OMP 工具图片尾置（cli-hop）
-
-请求头 `x-kin-tool-result-images: tail` 显式启用，默认关闭；不改变 classifier 或非 cli-hop 请求。
-只把 `tool_result.content[]` 的图片提到消息尾部，以原 `tool_use_id` 标注来源；工具调用、结果 ID、文字、错误标志留在原位，用户直接上传的图片和文档不搬动。
-OMP 的 `[image omitted: provider image limit]` 与被抽走的纯图片结果都归一化为空结果，不恢复已淘汰的图片。
-
-先在稳定 user 内容打缓存断点，再追加工具图片。Node schema 填充和 cli-node 最终合并均保留这个断点，使用面板显式的 `1h/5m`；图片及其来源说明不打点，Environment 仍按所选模板放置。
-三档内置提示词共用这项处理，不会因启用图片尾置而切换 persona。图片尾部每次仍计入输入，不能保证总费用下降或上游永不重建缓存。
-尾置模式的 `cache_prefix.scope=cached_prefix` 只比较截至上次消息断点的前缀，不把未缓存图片的淘汰误报成历史改写；实际工具文字变化仍会报告。
-
-历史含签名 thinking / redacted_thinking 时，必须显式提供 `thinking.block_binding.prefix_mismatch_behavior: "drop_block"`，最终出站补相应 beta；否则请求准备阶段返回 HTTP 400、`tool_result_image_tail_binding`，不调用上游、不换号。上游可能丢弃不再匹配的历史 reasoning，不保证语义无损。
-同一会话应保持相同尾置模式。需要更新 Node 和 cli-node 后才生效；本地布局验证不等于真实上游图片理解、缓存命中或签名处理验证。
-
 ## thinking 与 max_tokens
 
 `max_tokens` **就是** thinking 预算（thinking + 可见输出共享）。调用方有值则不覆盖；缺失时 OAuth 默认 **128000**。绝对上限 128000。仅当超过模型 `max_tokens_cap` 时 `applyMaxTokensCap` 下调。
@@ -136,7 +123,9 @@ Rikka / 客户端 `search_web`、`scrape_web` **不是** Anthropic 自带搜索�
 3. 更早的型号仍逐块过滤：签名短于 24、空签名、dummy 签名删掉，合法签名块留下。`redacted_thinking` 不看 `data`，只在签名达到 24 字符时留。
 4. 保留路径（cli-hop 首跳，以及默认 HTTP hop）不走上面的拆链，只在 `stripInvalidThinkingBlocks` 的这一支里处理：`redacted_thinking` 不看 `data` 和签名，原样留。`thinking` 只有签名可用（非空、不少于 24、非 dummy）才留，空正文也留；缺失、空、短于 24、dummy 的删掉，不再补 `signature: ""`。不走保留路径时，`redacted_thinking` 仍按上面第 2、3 条删。当前没有按账号归属过滤签名的步骤。
 
-HTTP hop 与 cli-hop（`prepareCliHopBody`）共用内容预过滤，但缓存职责不同。cli-hop 首跳保留签名可用的 thinking 指纹，没有可用签名的删掉；签名修复重试才清除其余块。官方家族开启 `official_cc_passthrough` 时，Node 保留 system/tools/messages 的 caller marker、显式 TTL、缺失 TTL 和位置，不添点、不裁剪；超过四点、thinking marker、非法 TTL 或 5m（含缺失）后出现 1h，在调度前返回 `400 invalid_cache_control`。
+HTTP hop 与 cli-hop（`prepareCliHopBody`）共用内容预过滤，但缓存职责不同。cli-hop 首跳保留签名可用的 thinking 指纹，没有可用签名的删掉；签名修复重试才清除其余块。官方家族开启 `official_cc_passthrough` 时，cli-hop 走 `prepareOfficialPassthroughBody`：保留调用方真实 Claude Code 的 system/tools/messages、cache_control 位置与 TTL、`temperature`、`context_management`、`tool_choice` 和 thinking，不注入 billing/system、不重打断点、不改工具名；只把 `metadata.user_id` 重绑到槽位设备/账号，并使用调用方 session（`mode=passthrough`）。该模式面向官方客户端；内核 `persona_preset` 投影为 `zero`，避免再叠加完整官方 prompt。非官方请求仍走原 rewrite；`official_cc_passthrough` 对它们不生效。
+
+Codex hop 的 `codex.official_passthrough=true` 只对 `openai.responses` 的官方 Codex 客户端生效：保留 `instructions`、`input`、tools、reasoning、`prompt_cache_key`、`previous_response_id`、`conversation_id`/`session_id`、官方 metadata 和 sampling 字段，只清 API key/authorization/client_metadata；outbound session 使用 `passthrough`。OpenAI 兼容客户端的 Responses 归一化与 Chat/Completions 转换不变。
 
 关闭透传或非官方请求仍走 Node rewrite：清除 caller marker，生成最后消息及 `messages.length>=4` 时倒数第二 user 的点，TTL 用入站会话 pin 值。应用 persona 后，模板显式 TTL 保留，只补自产缺失 TTL；超额时优先删 tools、system 尾部的自产点。非法模板返回 request-scoped 400，零上游执行，不换号、不冷却。
 
