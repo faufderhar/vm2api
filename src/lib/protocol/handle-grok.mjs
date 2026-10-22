@@ -22,7 +22,7 @@ import { extractOpenaiUsage, openaiAnthropicUsageFromExtract, disjointOpenaiUsag
 import { callGrokKernel, grokKernelEnvelope } from '../transport/grok-kernel-client.mjs'
 import { ensureGrokKernel, trackGrokKernel, writeGrokKernelConfig } from '../transport/grok-kernel-supervisor.mjs'
 import { hostProxyUrlForVm } from '../vm/slot-host.mjs'
-import { isLocalEgressProxy } from '../vm/egress.mjs'
+import { grokKernelExit } from '../oauth/grok-kernel-oauth.mjs'
 import { persistGrokRateLimit, persistGrokRefreshRejected } from '../vm/grok-slot.mjs'
 import { scopeAccountFromVm } from './jev-intercept.mjs'
 import {
@@ -466,6 +466,17 @@ function ingestGrokHop(projectRoot, vm, result, now = Date.now()) {
   if (result?.ok && Number.isFinite(bagUntil) && bagUntil > 0) persistGrokRateLimit(projectRoot, vm.id, { until: null })
 }
 
+/** Kernel config for this slot's exit, or null when it has none (or the exit is refused). */
+function writeHopKernelConfig(projectRoot, vm, routing, ops = {}) {
+  const exit = grokKernelExit(vm, { hostProxyUrl: ops.hostProxyUrlForVm || hostProxyUrlForVm })
+  if (!exit) return null
+  try {
+    return (ops.writeGrokKernelConfig || writeGrokKernelConfig)(projectRoot, vm, { ...exit, routing })
+  } catch {
+    return null
+  }
+}
+
 export async function runGrokSlotHop({
   projectRoot,
   vm,
@@ -478,24 +489,15 @@ export async function runGrokSlotHop({
   headers = null,
   kernelConfig = null,
 }) {
-  const proxyUrl = String((ops.hostProxyUrlForVm || hostProxyUrlForVm)(vm) || '')
-  if (!proxyUrl && !isLocalEgressProxy(vm?.proxy)) {
+  // handleGrokProtocol already wrote it for this hop to read the agent id.
+  const written = kernelConfig || writeHopKernelConfig(projectRoot, vm, routing, ops)
+  if (!written) {
     return {
       ok: false,
       status: 503,
       body: { error: { type: 'api_error', code: 'grok_proxy_required', message: 'Grok 槽位没有可用的 SOCKS5 出口' } },
     }
   }
-  const localExit = isLocalEgressProxy(vm?.proxy)
-  const onNode = !!vm?.node_id
-  // handleGrokProtocol already wrote it for this hop to read the agent id.
-  const written =
-    kernelConfig ||
-    (ops.writeGrokKernelConfig || writeGrokKernelConfig)(projectRoot, vm, {
-      proxyUrl: localExit && !onNode ? '' : proxyUrl,
-      proxyRequired: !(localExit && !onNode),
-      routing,
-    })
   if (!ops.callGrokKernel) {
     const ready = await (ops.ensureGrokKernel || ensureGrokKernel)({ projectRoot, vmId: vm.id })
     if (!ready?.ok) {
@@ -736,12 +738,7 @@ export async function handleGrokProtocol({
         }
         const runHop = () => {
           const requestId = grokRequestId()
-          const localExit = isLocalEgressProxy(vm?.proxy)
-          const written = (ops.writeGrokKernelConfig || writeGrokKernelConfig)(projectRoot, vm, {
-            proxyUrl: localExit && !vm?.node_id ? '' : String((ops.hostProxyUrlForVm || hostProxyUrlForVm)(vm) || ''),
-            proxyRequired: !(localExit && !vm?.node_id),
-            routing,
-          })
+          const written = writeHopKernelConfig(projectRoot, vm, routing, ops)
           const headers = grokCliRequestHeaders({
             model: outbound.body?.model,
             sessionId: outboundSessionId,

@@ -12,11 +12,15 @@ import path from 'node:path'
 import {
   GROK_OAUTH_CLIENT_ID,
   GROK_OAUTH_DISCOVERY_URL,
+  GROK_OAUTH_SCOPE,
   grokBaseUrl,
   grokOauthConfig,
 } from '../protocol/grok-route.mjs'
 import { assertProxyAllowed } from '../vm/proxy-policy.mjs'
 import { writeJsonIfChanged } from '../vm/vm-file.mjs'
+
+/** Kernel features Node relies on: 2 = /internal/oauth. An older running kernel is replaced. */
+export const GROK_KERNEL_API = 2
 
 const starts = new Map()
 const sockets = new Map()
@@ -115,6 +119,7 @@ export function writeGrokKernelConfig(projectRoot, vm, { proxyUrl = '', proxyReq
       token_url: String(resolved.token_url || ''),
       client_id: String(resolved.client_id || GROK_OAUTH_CLIENT_ID),
       discovery_url: GROK_OAUTH_DISCOVERY_URL,
+      scope: String(resolved.scope || GROK_OAUTH_SCOPE),
       refresh_skew_sec: Number(resolved.refresh_skew_sec) || 300,
     },
   }
@@ -280,11 +285,16 @@ export function grokKernelHealth(projectRoot, vmId, { timeoutMs = 500 } = {}) {
           if (body.length < 4096) body += chunk
         })
         res.on('end', () => {
-          let hotReload = false
+          let parsed = null
           try {
-            hotReload = JSON.parse(body)?.hot_reload === true
+            parsed = JSON.parse(body)
           } catch {}
-          resolve({ ok: res.statusCode === 200, status: res.statusCode, hotReload })
+          resolve({
+            ok: res.statusCode === 200,
+            status: res.statusCode,
+            hotReload: parsed?.hot_reload === true,
+            api: Number(parsed?.api) || 1,
+          })
         })
         res.on('error', () => resolve({ ok: false, reason: 'health_error' }))
       },
@@ -315,21 +325,23 @@ export async function ensureGrokKernel({ projectRoot, vmId, timeoutMs = 8000 } =
     stamped = fs.readFileSync(paths.stampPath, 'utf8').trim()
   } catch {}
   const quickMs = Math.min(800, Math.max(200, Number(timeoutMs) || 800))
-  if (wanted && stamped && wanted !== stamped) {
-    const running = await waitForHealth(projectRoot, vmId, quickMs)
-    if (running.ok && running.health?.hotReload) {
+  const configChanged = !!(wanted && stamped && wanted !== stamped)
+  const running = await waitForHealth(projectRoot, vmId, quickMs)
+  // A kernel from an older binary (left running across an upgrade) lacks endpoints Node calls.
+  const outdated = running.ok && (running.health?.api || 1) < GROK_KERNEL_API
+  if (running.ok && !configChanged && !outdated) return { ok: true, reused: true }
+  if (running.ok) {
+    if (!outdated && running.health?.hotReload) {
       // The kernel re-reads grok-kernel.json on its next request. Nothing to restart.
       fs.writeFileSync(paths.stampPath, `${wanted}\n`, { mode: 0o600 })
       return { ok: true, reused: true }
     }
     // An older kernel only reads its config at start. Restart it when no other
     // request is streaming through it; the next quiet moment picks the change up.
-    if (running.ok && grokKernelInFlight(vmId) > 1) return { ok: true, reused: true, stale: true }
+    if (grokKernelInFlight(vmId) > 1) return { ok: true, reused: true, stale: true }
     const gone = await recycle(vmId, paths)
     if (!gone) return { ok: false, reason: 'recycle_timeout' }
   }
-  const live = await waitForHealth(projectRoot, vmId, quickMs)
-  if (live.ok) return { ok: true, reused: true }
   const current = starts.get(vmId)
   if (current && !childHasExited(current)) return waitForHealth(projectRoot, vmId, timeoutMs)
   try {

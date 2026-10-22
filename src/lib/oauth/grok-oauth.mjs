@@ -2,29 +2,23 @@
  * xAI OAuth. Default login is the device-code flow used by the Grok CLI:
  * public client id, scope, and endpoints from OIDC discovery. No redirect URI.
  * Authorization-code + PKCE remains only when an operator set authorize_url and redirect_uri.
- * Token calls leave through the slot exit. A SOCKS5 URL is used as-is.
- * An empty URL is the slot's own route (本机出口) and is fetched directly.
- * null means the slot has no exit.
+ *
+ * Node keeps the login sessions; every auth.x.ai request goes through `transport`,
+ * which in production is the slot's kin-grok-kernel (grok-kernel-oauth.mjs). The
+ * kernel does discovery, picks the endpoints and adds client_id, from the slot exit.
  */
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import {
-  GROK_OAUTH_DEVICE_GRANT,
-  GROK_OAUTH_DISCOVERY_URL,
-  grokOauthConfig,
-  isGrokOauthEndpoint,
-} from '../protocol/grok-route.mjs'
+import { GROK_OAUTH_DEVICE_GRANT, grokOauthConfig } from '../protocol/grok-route.mjs'
 import { atomicWriteJson } from '../vm/vm-file.mjs'
 
 export const GROK_OAUTH_SESSION_TTL_MS = 10 * 60 * 1000
-const DISCOVERY_TTL_MS = 10 * 60 * 1000
 const DEVICE_POLL_FLOOR_SEC = 5
 const DEVICE_POLL_CAP_SEC = 30 * 60
 
 const sessions = new Map()
 const deviceSessions = new Map()
-let discoveryCache = null
 const DEVICE_LOCK_STALE_MS = 15_000
 const DEVICE_LOCK_WAIT_MS = 5_000
 
@@ -104,9 +98,6 @@ async function withDeviceFileLock(projectRoot, fn) {
 function storedDeviceSession(session) {
   return {
     deviceCode: session.deviceCode,
-    tokenUrl: session.tokenUrl,
-    clientId: session.clientId,
-    proxyUrl: session.proxyUrl,
     vmId: session.vmId,
     interval: session.interval,
     createdAt: session.createdAt,
@@ -118,12 +109,9 @@ function hydrateDeviceSession(row) {
   if (!row || typeof row !== 'object') return null
   const expiresAt = Number(row.expiresAt)
   if (!Number.isFinite(expiresAt) || Date.now() > expiresAt) return null
-  if (!isGrokOauthEndpoint(row.tokenUrl) || !row.deviceCode || !row.vmId) return null
+  if (!row.deviceCode || !row.vmId) return null
   return {
     deviceCode: String(row.deviceCode),
-    tokenUrl: String(row.tokenUrl),
-    clientId: String(row.clientId || ''),
-    proxyUrl: row.proxyUrl ? String(row.proxyUrl) : '',
     vmId: String(row.vmId),
     interval: Number(row.interval) || DEVICE_POLL_FLOOR_SEC,
     createdAt: Number(row.createdAt) || Date.now(),
@@ -195,79 +183,25 @@ function requirePkceConfig(routing) {
   return config
 }
 
-function isXaiHttps(value) {
-  try {
-    const url = new URL(String(value || ''))
-    const host = url.hostname.toLowerCase()
-    return url.protocol === 'https:' && (host === 'x.ai' || host.endsWith('.x.ai'))
-  } catch {
-    return false
-  }
-}
-
-/** null means no exit was resolved. '' is 本机出口 and must not be treated as unbound. */
-function egressMissing(proxyUrl, fetchImpl) {
-  return proxyUrl == null && !fetchImpl
-}
-
-async function readJson(res) {
-  if (res && res.body && typeof res.body === 'object' && !res.body.pipe) return res.body
-  if (typeof res?.json === 'function') {
-    try {
-      return await res.json()
-    } catch {
-      return null
-    }
-  }
-  if (typeof res?.text === 'function') {
-    const text = await res.text()
-    try {
-      return text ? JSON.parse(text) : null
-    } catch {
-      return null
-    }
-  }
-  return null
-}
-
-async function fetchWithProxy(proxyUrl, timeoutMs) {
-  const { makeProxyFetch } = await import('../transport/proxy-fetch.mjs')
-  return makeProxyFetch(proxyUrl, timeoutMs)
-}
-
 /**
- * OIDC discovery. Cached for 10 minutes. Rejects any endpoint that is not https on x.ai.
+ * One auth.x.ai call. `{ status, payload }`, or `{ status: 0, payload: null, error }`
+ * when no request left (no exit, kernel down, timeout, endpoint not allowed).
  */
-export async function discoverGrokOauth({ proxyUrl, fetchImpl, timeoutMs, force = false } = {}) {
-  if (!force && discoveryCache && Date.now() - discoveryCache.at < DISCOVERY_TTL_MS) {
-    return {
-      ok: true,
-      device_authorization_endpoint: discoveryCache.deviceUrl,
-      token_endpoint: discoveryCache.tokenUrl,
-    }
-  }
-  if (egressMissing(proxyUrl, fetchImpl)) return { ok: false, error: 'proxy_required' }
-  const fetchFn = fetchImpl || (await fetchWithProxy(proxyUrl, timeoutMs))
-  if (!fetchFn) return { ok: false, error: 'proxy_required' }
-  let res
+async function oauthCall(transport, request) {
+  if (typeof transport !== 'function') return { status: 0, payload: null, error: 'proxy_required' }
   try {
-    res = await fetchFn(GROK_OAUTH_DISCOVERY_URL, { method: 'GET', headers: { accept: 'application/json' } })
-  } catch (e) {
-    const aborted = e?.name === 'AbortError' || /aborted/i.test(String(e?.message || e))
-    return { ok: false, error: aborted ? 'timeout' : 'discovery_failed' }
+    const res = (await transport(request)) || {}
+    if (res.error) return { status: 0, payload: null, error: String(res.error) }
+    return { status: Number(res.status) || 0, payload: res.payload ?? null }
+  } catch (error) {
+    return { status: 0, payload: null, error: error?.code || 'oauth_transport' }
   }
-  const payload = await readJson(res)
-  const status = Number(res?.status) || 0
-  if (status !== 200) return { ok: false, error: 'discovery_failed', status }
-  const deviceUrl = String(payload?.device_authorization_endpoint || '').trim()
-  const tokenUrl = String(payload?.token_endpoint || '').trim()
-  if (!isXaiHttps(deviceUrl) || !isXaiHttps(tokenUrl)) return { ok: false, error: 'discovery_invalid' }
-  discoveryCache = { at: Date.now(), deviceUrl, tokenUrl }
-  return { ok: true, device_authorization_endpoint: deviceUrl, token_endpoint: tokenUrl }
 }
 
-export function resetGrokOauthDiscovery() {
-  discoveryCache = null
+function transportFailure(error) {
+  if (error === 'proxy_required') return error
+  if (error === 'grok_oauth_not_configured' || error === 'grok_oauth_discovery_failed') return error
+  return error === 'timeout' ? 'timeout' : 'fetch_failed'
 }
 
 /** Accepts the full callback URL, a `?code=&state=` query, `code#state`, or a bare code. */
@@ -339,27 +273,23 @@ export function generateGrokAuthUrl({ routing, vmId, proxyUrl } = {}) {
 /**
  * Start a device-code login. The device_code stays on the server; the panel only gets the user code.
  */
-export async function startGrokDeviceLogin({ routing, vmId, proxyUrl, fetchImpl, timeoutMs, projectRoot } = {}) {
+export async function startGrokDeviceLogin({ routing, vmId, transport, projectRoot } = {}) {
   sweepExpired()
   if (!vmId) throw fail('vm_required', 'vm_id required (先创建虚拟机)')
-  if (egressMissing(proxyUrl, fetchImpl)) {
-    throw fail('proxy_required', '虚拟机未绑定 SOCKS5，请先分配代理再开始授权', { status: 503 })
+  requireConfig(routing)
+  const res = await oauthCall(transport, { action: 'device_authorize' })
+  if (res.error) {
+    const code = transportFailure(res.error)
+    if (code === 'proxy_required') {
+      throw fail('proxy_required', '虚拟机未绑定 SOCKS5，请先分配代理再开始授权', { status: 503 })
+    }
+    if (code === 'grok_oauth_discovery_failed') {
+      throw fail('grok_oauth_discovery_failed', '读不到 xAI 授权地址，请检查槽位代理能否访问 auth.x.ai', {
+        status: 502,
+      })
+    }
+    throw fail(code, 'xAI 设备码请求失败，请检查槽位代理后重试', { status: 502 })
   }
-  const config = requireConfig(routing)
-  const discovered = await discoverGrokOauth({ proxyUrl, fetchImpl, timeoutMs })
-  if (!discovered.ok) {
-    throw fail('grok_oauth_discovery_failed', '读不到 xAI 授权地址，请检查槽位代理能否访问 auth.x.ai', {
-      status: 502,
-    })
-  }
-  const res = await postToken({
-    tokenUrl: discovered.device_authorization_endpoint,
-    form: { client_id: config.client_id, scope: config.scope },
-    proxyUrl,
-    fetchImpl,
-    timeoutMs,
-  })
-  if (res.error) throw fail(res.error, 'xAI 设备码请求失败，请检查槽位代理后重试', { status: 502 })
   if ((res.status || 0) >= 400) {
     throw fail('device_code_failed', `xAI 设备码请求失败 (HTTP ${res.status})`, {
       status: 502,
@@ -383,9 +313,6 @@ export async function startGrokDeviceLogin({ routing, vmId, proxyUrl, fetchImpl,
   const sessionId = crypto.randomBytes(16).toString('hex')
   await rememberDeviceSession(projectRoot, sessionId, {
     deviceCode,
-    tokenUrl: config.token_url || discovered.token_endpoint,
-    clientId: config.client_id,
-    proxyUrl: proxyUrl ? String(proxyUrl) : '',
     vmId: String(vmId),
     interval,
     createdAt,
@@ -406,29 +333,22 @@ export async function startGrokDeviceLogin({ routing, vmId, proxyUrl, fetchImpl,
 }
 
 /** One device-code poll. Pending is not an error; the panel calls this again. */
-export async function pollGrokDeviceLogin({ sessionId, vmId, proxyUrl, fetchImpl, timeoutMs, projectRoot } = {}) {
+export async function pollGrokDeviceLogin({ sessionId, vmId, transport, projectRoot } = {}) {
   sweepExpired()
   const session = await loadDeviceSession(projectRoot, sessionId)
   if (!session) return { ok: false, error: 'session_expired', status: 'expired' }
   if (vmId && session.vmId !== String(vmId)) return { ok: false, error: 'session_vm_mismatch', status: 'failed' }
-  if (!isGrokOauthEndpoint(session.tokenUrl)) {
-    await forgetDeviceSession(projectRoot, sessionId)
-    return { ok: false, error: 'grok_oauth_not_configured', status: 'failed' }
-  }
-  const px = proxyUrl ?? session.proxyUrl
-  if (egressMissing(px, fetchImpl)) return { ok: false, error: 'proxy_required', status: 'failed' }
-  const res = await postToken({
-    tokenUrl: session.tokenUrl,
-    form: {
-      grant_type: GROK_OAUTH_DEVICE_GRANT,
-      device_code: session.deviceCode,
-      client_id: session.clientId,
-    },
-    proxyUrl: px,
-    fetchImpl,
-    timeoutMs,
+  const res = await oauthCall(transport, {
+    action: 'token',
+    form: { grant_type: GROK_OAUTH_DEVICE_GRANT, device_code: session.deviceCode },
   })
-  if (res.error) return { ok: false, error: res.error, status: 'pending', interval_sec: session.interval }
+  if (res.error) {
+    const code = transportFailure(res.error)
+    if (code === 'proxy_required' || code === 'grok_oauth_not_configured') {
+      return { ok: false, error: code, status: 'failed' }
+    }
+    return { ok: false, error: code, status: 'pending', interval_sec: session.interval }
+  }
   const oauthError = String(res.payload?.error || '')
   if (oauthError === 'authorization_pending') {
     return { ok: false, error: 'authorization_pending', status: 'pending', interval_sec: session.interval }
@@ -465,24 +385,6 @@ export async function pollGrokDeviceLogin({ sessionId, vmId, proxyUrl, fetchImpl
   return { ok: true, status: 'authorized', ...tok, flavor: 'grok', source: 'grok-device' }
 }
 
-async function postToken({ tokenUrl, form, proxyUrl, fetchImpl, timeoutMs }) {
-  if (!isGrokOauthEndpoint(tokenUrl)) {
-    return { status: 0, payload: null, error: 'grok_oauth_not_configured' }
-  }
-  const fetchFn = fetchImpl || (await fetchWithProxy(proxyUrl, timeoutMs))
-  try {
-    const res = await fetchFn(tokenUrl, {
-      method: 'POST',
-      headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
-      body: String(new URLSearchParams(form)),
-    })
-    return { status: Number(res?.status) || 0, payload: await readJson(res) }
-  } catch (e) {
-    const aborted = e?.name === 'AbortError' || /aborted/i.test(String(e?.message || e))
-    return { status: 0, payload: null, error: aborted ? 'timeout' : 'fetch_failed' }
-  }
-}
-
 function tokenResult(payload, { fallbackRefresh = '' } = {}) {
   const access = String(payload?.access_token || '').trim()
   const expiresIn = Number(payload?.expires_in)
@@ -495,7 +397,7 @@ function tokenResult(payload, { fallbackRefresh = '' } = {}) {
   }
 }
 
-export async function exchangeGrokAuthCode({ sessionId, code, vmId, proxyUrl, fetchImpl, timeoutMs } = {}) {
+export async function exchangeGrokAuthCode({ sessionId, code, vmId, transport } = {}) {
   sweepExpired()
   const session = sessions.get(sessionId)
   if (!session || Date.now() - session.createdAt > GROK_OAUTH_SESSION_TTL_MS) {
@@ -507,22 +409,20 @@ export async function exchangeGrokAuthCode({ sessionId, code, vmId, proxyUrl, fe
   if (parsed.error) throw fail('authorize_denied', `xAI 授权被拒绝：${parsed.error}`)
   if (!parsed.code) throw fail('code_required', '请粘贴 xAI 回调 URL 或授权码')
   if (parsed.state && parsed.state !== session.state) throw fail('state_mismatch', '回调 state 与授权会话不匹配')
-  const px = proxyUrl ?? session.proxyUrl
-  if (egressMissing(px, fetchImpl)) throw fail('proxy_required', '虚拟机未绑定 SOCKS5，无法换票')
-  const res = await postToken({
-    tokenUrl: session.tokenUrl,
+  const res = await oauthCall(transport, {
+    action: 'token',
     form: {
       grant_type: 'authorization_code',
       code: parsed.code,
       redirect_uri: session.redirectUri,
-      client_id: session.clientId,
       code_verifier: session.codeVerifier,
     },
-    proxyUrl: px,
-    fetchImpl,
-    timeoutMs,
   })
-  if (res.error) throw fail(res.error, 'xAI 换票请求失败，请检查槽位代理后重试')
+  if (res.error) {
+    const failure = transportFailure(res.error)
+    if (failure === 'proxy_required') throw fail('proxy_required', '虚拟机未绑定 SOCKS5，无法换票')
+    throw fail(failure, 'xAI 换票请求失败，请检查槽位代理后重试')
+  }
   if (res.status === 400 || res.status === 401 || res.status === 403) {
     throw fail('exchange_rejected', 'xAI 拒绝了授权码，请重新生成授权链接', { upstream_status: res.status })
   }
@@ -535,30 +435,24 @@ export async function exchangeGrokAuthCode({ sessionId, code, vmId, proxyUrl, fe
 }
 
 /**
- * Refresh with the configured client. Never throws; returns { ok, ... } like refreshCodexAccessToken.
+ * Turn an imported refresh token into an access token before it is saved. Never throws.
+ * The slot's stored token is refreshed by the kernel itself (grok-token.mjs), not here.
  * `refresh_rejected` means the grant is dead and the slot needs a new login.
  */
-export async function refreshGrokAccessToken({ routing, refreshToken, proxyUrl, fetchImpl, timeoutMs } = {}) {
+export async function refreshGrokAccessToken({ routing, refreshToken, transport } = {}) {
   const rt = String(refreshToken || '').trim()
   if (!rt) return { ok: false, error: 'missing_refresh_token' }
   const resolved = grokOauthConfig(routing)
   if (!resolved.ok) return { ok: false, error: 'grok_oauth_not_configured', missing: resolved.missing }
-  if (egressMissing(proxyUrl, fetchImpl)) return { ok: false, error: 'proxy_required' }
-  const config = resolved.config
-  let tokenUrl = config.token_url
-  if (!tokenUrl) {
-    const discovered = await discoverGrokOauth({ proxyUrl, fetchImpl, timeoutMs })
-    if (!discovered.ok) {
-      return {
-        ok: false,
-        error: discovered.error === 'proxy_required' ? 'proxy_required' : 'grok_oauth_discovery_failed',
-      }
-    }
-    tokenUrl = discovered.token_endpoint
+  const res = await oauthCall(transport, { action: 'token', form: { grant_type: 'refresh_token', refresh_token: rt } })
+  if (res.error) {
+    const failure = transportFailure(res.error)
+    const passthrough =
+      failure === 'proxy_required' ||
+      failure === 'grok_oauth_not_configured' ||
+      failure === 'grok_oauth_discovery_failed'
+    return { ok: false, error: passthrough ? failure : failure === 'timeout' ? 'timeout' : 'fetch_failed' }
   }
-  const form = { grant_type: 'refresh_token', refresh_token: rt, client_id: config.client_id }
-  const res = await postToken({ tokenUrl, form, proxyUrl, fetchImpl, timeoutMs })
-  if (res.error) return { ok: false, error: res.error }
   const oauthError = String(res.payload?.error || '')
   if (res.status === 401 || res.status === 403 || oauthError === 'invalid_grant') {
     return { ok: false, error: 'refresh_rejected', status: res.status }
@@ -598,5 +492,4 @@ export function grokIdentityFromTokens({ id_token, access_token } = {}) {
 export function resetGrokAuthUrlSessions() {
   sessions.clear()
   deviceSessions.clear()
-  resetGrokOauthDiscovery()
 }

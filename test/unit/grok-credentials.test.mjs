@@ -28,7 +28,7 @@ import {
   summarizeGrokSlot,
   upsertGrokAccount,
 } from '../../src/lib/vm/grok-slot.mjs'
-import { ensureGrokAccessToken, resetGrokTokenInflight } from '../../src/lib/oauth/grok-token.mjs'
+import { ensureGrokAccessToken } from '../../src/lib/oauth/grok-token.mjs'
 
 const OAUTH = {
   authorize_url: 'https://auth.x.ai/oauth2/authorize',
@@ -42,10 +42,6 @@ const routing = { grok: { enabled: true, oauth: OAUTH } }
 function jwt(claims) {
   const enc = (o) => Buffer.from(JSON.stringify(o)).toString('base64url')
   return `${enc({ alg: 'none' })}.${enc(claims)}.sig`
-}
-
-function tokenResponse(status, body) {
-  return { status, json: async () => body }
 }
 
 function tempProject(vm = {}) {
@@ -125,7 +121,18 @@ test('callback parsing accepts url, query, code#state and bare code', () => {
   assert.equal(parseGrokOAuthCallback('http://x.test/cb?error=access_denied').error, 'access_denied')
 })
 
-test('exchange verifies state and vm, posts PKCE verifier, single use', async () => {
+/** A stand-in for the slot kernel's /internal/oauth: records requests and answers in order. */
+function kernelTransport(answers) {
+  const calls = []
+  const transport = async (request) => {
+    calls.push(request)
+    const next = typeof answers === 'function' ? answers(request, calls.length) : answers.shift()
+    return next
+  }
+  return { transport, calls }
+}
+
+test('exchange verifies state and vm, sends the PKCE verifier through the kernel, single use', async () => {
   resetGrokAuthUrlSessions()
   const out = generateGrokAuthUrl({ routing, vmId: 'vm-g1', proxyUrl: 'socks5h://127.0.0.1:1080' })
   const state = new URL(out.auth_url).searchParams.get('state')
@@ -137,118 +144,92 @@ test('exchange verifies state and vm, posts PKCE verifier, single use', async ()
   await assert.rejects(exchangeGrokAuthCode({ sessionId: out.session_id, code: 'x', vmId: 'vm-other' }), {
     code: 'session_vm_mismatch',
   })
-  let posted
-  const fetchImpl = async (url, init) => {
-    posted = { url, body: new URLSearchParams(init.body), headers: init.headers }
-    return tokenResponse(200, { access_token: 'at-1', refresh_token: 'rt-1', expires_in: 3600 })
-  }
+  const { transport, calls } = kernelTransport([
+    { status: 200, payload: { access_token: 'at-1', refresh_token: 'rt-1', expires_in: 3600 } },
+  ])
   const tok = await exchangeGrokAuthCode({
     sessionId: out.session_id,
     code: `http://127.0.0.1:56121/callback?code=the-code&state=${state}`,
     vmId: 'vm-g1',
-    fetchImpl,
+    transport,
   })
-  assert.equal(posted.url, OAUTH.token_url)
-  assert.equal(posted.body.get('grant_type'), 'authorization_code')
-  assert.equal(posted.body.get('code'), 'the-code')
-  const verifier = posted.body.get('code_verifier')
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].action, 'token')
+  assert.equal(calls[0].form.grant_type, 'authorization_code')
+  assert.equal(calls[0].form.code, 'the-code')
+  // client_id and the endpoint are the kernel's; Node does not choose them.
+  assert.equal('client_id' in calls[0].form, false)
+  const verifier = calls[0].form.code_verifier
   assert.equal(crypto.createHash('sha256').update(verifier).digest('base64url'), challenge)
-  assert.equal(posted.headers['user-agent'], undefined)
   assert.equal(tok.access_token, 'at-1')
   assert.ok(tok.expires_at > Date.now())
   await assert.rejects(exchangeGrokAuthCode({ sessionId: out.session_id, code: 'x' }), { code: 'session_expired' })
 })
 
-test('refresh maps invalid_grant to refresh_rejected and keeps the old refresh token', async () => {
+test('refresh-token import maps invalid_grant to refresh_rejected and keeps the old refresh token', async () => {
   const rejected = await refreshGrokAccessToken({
     routing,
     refreshToken: 'rt',
-    fetchImpl: async () => tokenResponse(400, { error: 'invalid_grant' }),
+    transport: kernelTransport([{ status: 400, payload: { error: 'invalid_grant' } }]).transport,
   })
   assert.equal(rejected.error, 'refresh_rejected')
-  const fine = await refreshGrokAccessToken({
-    routing,
-    refreshToken: 'rt',
-    fetchImpl: async () => tokenResponse(200, { access_token: 'at-2', expires_in: 60 }),
-  })
+  const { transport, calls } = kernelTransport([{ status: 200, payload: { access_token: 'at-2', expires_in: 60 } }])
+  const fine = await refreshGrokAccessToken({ routing, refreshToken: 'rt', transport })
   assert.equal(fine.ok, true)
   assert.equal(fine.refresh_token, 'rt')
+  assert.deepEqual(calls[0], { action: 'token', form: { grant_type: 'refresh_token', refresh_token: 'rt' } })
   assert.equal((await refreshGrokAccessToken({ routing: {}, refreshToken: 'rt' })).error, 'proxy_required')
+  const noExit = kernelTransport([{ status: 0, error: 'proxy_required' }]).transport
+  assert.equal(
+    (await refreshGrokAccessToken({ routing, refreshToken: 'rt', transport: noExit })).error,
+    'proxy_required',
+  )
 })
 
-test('device login uses discovery and never returns the device code', async () => {
+const DEVICE_START = {
+  status: 200,
+  payload: {
+    device_code: 'secret-device',
+    user_code: 'ABCD-EFGH',
+    verification_uri: 'https://auth.x.ai/device',
+    expires_in: 600,
+    interval: 5,
+  },
+}
+
+test('device login goes through the kernel and never returns the device code', async () => {
   resetGrokAuthUrlSessions()
-  const calls = []
-  const fetchImpl = async (url, init) => {
-    calls.push({ url, body: init.body ? new URLSearchParams(init.body) : null })
-    if (String(url).includes('openid-configuration')) {
-      return tokenResponse(200, {
-        device_authorization_endpoint: 'https://auth.x.ai/oauth2/device',
-        token_endpoint: 'https://auth.x.ai/oauth2/token',
-      })
-    }
-    if (!calls.at(-1).body?.get('grant_type')) {
-      return tokenResponse(200, {
-        device_code: 'secret-device',
-        user_code: 'ABCD-EFGH',
-        verification_uri: 'https://auth.x.ai/device',
-        expires_in: 600,
-        interval: 5,
-      })
-    }
-    if (calls.filter((call) => call.body?.get('grant_type')).length === 1) {
-      return tokenResponse(400, { error: 'authorization_pending' })
-    }
-    return tokenResponse(200, { access_token: 'at-device', refresh_token: 'rt-device', expires_in: 60 })
-  }
-  const started = await startGrokDeviceLogin({ routing: {}, vmId: 'vm-g1', fetchImpl })
+  const { transport, calls } = kernelTransport([
+    DEVICE_START,
+    { status: 400, payload: { error: 'authorization_pending' } },
+    { status: 200, payload: { access_token: 'at-device', refresh_token: 'rt-device', expires_in: 60 } },
+  ])
+  const started = await startGrokDeviceLogin({ routing: {}, vmId: 'vm-g1', transport })
   assert.equal(started.flow, 'device')
   assert.equal(started.user_code, 'ABCD-EFGH')
   assert.equal(JSON.stringify(started).includes('secret-device'), false)
-  assert.equal(calls[1].body.get('client_id'), 'b1a00492-073a-47ea-816f-4c329264a828')
-  const pending = await pollGrokDeviceLogin({ sessionId: started.session_id, vmId: 'vm-g1', fetchImpl })
+  assert.deepEqual(calls[0], { action: 'device_authorize' })
+  const pending = await pollGrokDeviceLogin({ sessionId: started.session_id, vmId: 'vm-g1', transport })
   assert.equal(pending.status, 'pending')
-  const done = await pollGrokDeviceLogin({ sessionId: started.session_id, vmId: 'vm-g1', fetchImpl })
+  const done = await pollGrokDeviceLogin({ sessionId: started.session_id, vmId: 'vm-g1', transport })
   assert.equal(done.ok, true)
   assert.equal(done.access_token, 'at-device')
   assert.equal(done.source, 'grok-device')
-  const grant = calls.find((call) => call.body?.get('grant_type') === 'urn:ietf:params:oauth:grant-type:device_code')
-  assert.equal(grant.body.get('device_code'), 'secret-device')
-  assert.equal(grant.url, 'https://auth.x.ai/oauth2/token')
+  assert.deepEqual(calls[2], {
+    action: 'token',
+    form: { grant_type: 'urn:ietf:params:oauth:grant-type:device_code', device_code: 'secret-device' },
+  })
 })
 
 test('device login reloads the device code after the in-memory map is cleared', async () => {
   resetGrokAuthUrlSessions()
   const root = tempProject()
   try {
-    let polls = 0
-    const fetchImpl = async (url, init) => {
-      if (String(url).includes('openid-configuration')) {
-        return tokenResponse(200, {
-          device_authorization_endpoint: 'https://auth.x.ai/oauth2/device',
-          token_endpoint: 'https://auth.x.ai/oauth2/token',
-        })
-      }
-      const body = init?.body ? new URLSearchParams(init.body) : null
-      if (!body?.get('grant_type')) {
-        return tokenResponse(200, {
-          device_code: 'secret-device',
-          user_code: 'ABCD-EFGH',
-          verification_uri: 'https://auth.x.ai/device',
-          expires_in: 600,
-          interval: 5,
-        })
-      }
-      polls += 1
-      assert.equal(body.get('device_code'), 'secret-device')
-      return tokenResponse(200, { access_token: 'at-disk', refresh_token: 'rt-disk', expires_in: 60 })
-    }
-    const started = await startGrokDeviceLogin({
-      routing: {},
-      vmId: 'vm-g1',
-      fetchImpl,
-      projectRoot: root,
-    })
+    const { transport, calls } = kernelTransport([
+      DEVICE_START,
+      { status: 200, payload: { access_token: 'at-disk', refresh_token: 'rt-disk', expires_in: 60 } },
+    ])
+    const started = await startGrokDeviceLogin({ routing: {}, vmId: 'vm-g1', transport, projectRoot: root })
     const file = path.join(root, 'data', 'run', 'grok-device-sessions.json')
     assert.equal(fs.statSync(file).mode & 0o777, 0o600)
     assert.match(fs.readFileSync(file, 'utf8'), /secret-device/)
@@ -257,10 +238,10 @@ test('device login reloads the device code after the in-memory map is cleared', 
     const done = await pollGrokDeviceLogin({
       sessionId: started.session_id,
       vmId: 'vm-g1',
-      fetchImpl,
+      transport,
       projectRoot: root,
     })
-    assert.equal(polls, 1)
+    assert.equal(calls[1].form.device_code, 'secret-device')
     assert.equal(done.ok, true)
     assert.equal(done.access_token, 'at-disk')
     assert.equal(fs.readFileSync(file, 'utf8').includes('secret-device'), false)
@@ -270,46 +251,26 @@ test('device login reloads the device code after the in-memory map is cleared', 
   }
 })
 
-test('empty proxy url is the slot route, not an unbound SOCKS5', async () => {
+test('device login reports a slot without an exit and keeps polling through a kernel hiccup', async () => {
   resetGrokAuthUrlSessions()
-  const started = await startGrokDeviceLogin({
-    routing: {},
-    vmId: 'vm-g1',
-    proxyUrl: '',
-    fetchImpl: async (url, init) => {
-      if (String(url).includes('openid-configuration')) {
-        return tokenResponse(200, {
-          device_authorization_endpoint: 'https://auth.x.ai/oauth2/device',
-          token_endpoint: 'https://auth.x.ai/oauth2/token',
-        })
-      }
-      assert.equal(init.body.includes('grant_type'), false)
-      return tokenResponse(200, {
-        device_code: 'secret-device',
-        user_code: 'WXYZ-1234',
-        verification_uri: 'https://auth.x.ai/device',
-        expires_in: 600,
-        interval: 5,
-      })
-    },
-  })
-  assert.equal(started.user_code, 'WXYZ-1234')
-  const polled = await pollGrokDeviceLogin({
-    sessionId: started.session_id,
-    vmId: 'vm-g1',
-    proxyUrl: '',
-    fetchImpl: async () =>
-      tokenResponse(200, { access_token: 'at-direct', refresh_token: 'rt-direct', expires_in: 60 }),
-  })
-  assert.equal(polled.ok, true)
-  assert.equal(polled.access_token, 'at-direct')
-  const refreshed = await refreshGrokAccessToken({
-    routing: {},
-    refreshToken: 'rt',
-    proxyUrl: '',
-    fetchImpl: async () => tokenResponse(200, { access_token: 'at-2', expires_in: 60 }),
-  })
-  assert.equal(refreshed.ok, true)
+  await assert.rejects(
+    startGrokDeviceLogin({
+      routing: {},
+      vmId: 'vm-g1',
+      transport: kernelTransport([{ status: 0, error: 'proxy_required' }]).transport,
+    }),
+    { code: 'proxy_required' },
+  )
+  const { transport } = kernelTransport([
+    DEVICE_START,
+    { status: 0, error: 'grok_kernel_unavailable' },
+    { status: 200, payload: { access_token: 'at-late', expires_in: 60 } },
+  ])
+  const started = await startGrokDeviceLogin({ routing: {}, vmId: 'vm-g1', transport })
+  const hiccup = await pollGrokDeviceLogin({ sessionId: started.session_id, vmId: 'vm-g1', transport })
+  assert.equal(hiccup.status, 'pending')
+  const done = await pollGrokDeviceLogin({ sessionId: started.session_id, vmId: 'vm-g1', transport })
+  assert.equal(done.access_token, 'at-late')
 })
 
 test('identity is decoded from id_token claims', () => {
@@ -365,52 +326,61 @@ test('summary exposes the access token tier claim without the token', () => {
   assert.equal(summarizeGrokSlot(root, vm).token_tier, null)
 })
 
-test('ensure token: fresh token skips refresh, concurrent callers share one refresh', async () => {
-  resetGrokTokenInflight()
+test('ensure token asks the slot kernel and records the new state; Node never posts the refresh token', async () => {
   const root = tempProject()
-  upsertGrokAccount(root, 'vm-g1', { access_token: 'old', refresh_token: 'rt', expires_at: Date.now() + 3600_000 })
-  let calls = 0
-  const fetchImpl = async () => {
-    calls += 1
-    await new Promise((r) => setTimeout(r, 20))
-    return tokenResponse(200, { access_token: `new-${calls}`, refresh_token: 'rt2', expires_in: 3600 })
-  }
-  const vm = { id: 'vm-g1' }
-  const fresh = await ensureGrokAccessToken({ projectRoot: root, vm, routing, fetchImpl })
-  assert.equal(fresh.access_token, 'old')
-  assert.equal(calls, 0)
-  upsertGrokAccount(root, 'vm-g1', { expires_at: Date.now() + 10_000 })
-  const all = await Promise.all(
-    Array.from({ length: 10 }, () => ensureGrokAccessToken({ projectRoot: root, vm, routing, fetchImpl })),
-  )
-  assert.equal(calls, 1)
-  for (const r of all) assert.equal(r.access_token, 'new-1')
-  assert.equal(readGrokAccount(root, 'vm-g1').refresh_token, 'rt2')
-  const forced = await ensureGrokAccessToken({ projectRoot: root, vm, routing, fetchImpl, force: true })
-  assert.equal(forced.access_token, 'new-2')
+  upsertGrokAccount(root, 'vm-g1', { access_token: 'old', refresh_token: 'rt', expires_at: Date.now() + 10_000 })
+  const { transport, calls } = kernelTransport(async () => {
+    // The kernel writes the file itself; this stands in for that write.
+    upsertGrokAccount(root, 'vm-g1', { access_token: 'new', refresh_token: 'rt2', expires_at: Date.now() + 3600_000 })
+    return { status: 200, payload: { ok: true, refreshed: true, expires_at: Date.now() + 3600_000 } }
+  })
+  const forced = await ensureGrokAccessToken({
+    projectRoot: root,
+    vm: { id: 'vm-g1' },
+    routing,
+    force: true,
+    transport,
+  })
+  assert.deepEqual(calls, [{ action: 'refresh', force: true }])
+  assert.equal(forced.ok, true)
+  assert.equal(forced.refreshed, true)
+  assert.equal(forced.account.access_token, 'new')
+  assert.equal('access_token' in forced, false)
+  const vm = JSON.parse(fs.readFileSync(path.join(root, 'vms', 'vm-g1.json'), 'utf8'))
+  assert.equal(vm.grok.auth_error, null)
+  assert.ok(vm.grok.last_refresh_at)
 })
 
-test('ensure token: rejected refresh records auth_error; transient failure keeps a live token', async () => {
-  resetGrokTokenInflight()
+test('ensure token: rejected refresh records auth_error; a transient failure is reported, not recorded', async () => {
   const root = tempProject()
   upsertGrokAccount(root, 'vm-g1', { access_token: 'old', refresh_token: 'rt', expires_at: Date.now() + 10_000 })
   const transient = await ensureGrokAccessToken({
     projectRoot: root,
     vm: { id: 'vm-g1' },
     routing,
-    fetchImpl: async () => tokenResponse(503, {}),
+    transport: kernelTransport([{ status: 0, error: 'refresh_failed' }]).transport,
   })
-  assert.equal(transient.ok, true)
-  assert.equal(transient.access_token, 'old')
+  assert.equal(transient.code, 'grok_refresh_failed')
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'vms', 'vm-g1.json'), 'utf8')).grok.auth_error, undefined)
   const dead = await ensureGrokAccessToken({
     projectRoot: root,
     vm: { id: 'vm-g1' },
     routing,
     force: true,
-    fetchImpl: async () => tokenResponse(400, { error: 'invalid_grant' }),
+    transport: kernelTransport([{ status: 0, error: 'refresh_rejected' }]).transport,
   })
   assert.equal(dead.code, 'grok_refresh_rejected')
   const vm = JSON.parse(fs.readFileSync(path.join(root, 'vms', 'vm-g1.json'), 'utf8'))
   assert.equal(vm.grok.auth_error.code, 'oauth_refresh_rejected')
-  assert.equal(fs.existsSync(path.join(root, 'vms', 'vm-g1', 'run', 'grok-refresh.lock')), false)
+})
+
+test('last refresh shows a kernel refresh recorded only in the credential file', () => {
+  const root = tempProject()
+  upsertGrokAccount(root, 'vm-g1', { access_token: 'at', refresh_token: 'rt' })
+  const file = grokCredentialPath(root, 'vm-g1')
+  const doc = JSON.parse(fs.readFileSync(file, 'utf8'))
+  doc.accounts[0].updated_at = '1798761600' // the kernel writes epoch seconds
+  fs.writeFileSync(file, JSON.stringify(doc))
+  const vm = { id: 'vm-g1', grok: { last_refresh_at: '2026-01-01T00:00:00.000Z' } }
+  assert.equal(summarizeGrokSlot(root, vm).last_refresh_at, '2027-01-01T00:00:00.000Z')
 })

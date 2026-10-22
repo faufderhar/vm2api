@@ -144,6 +144,16 @@ pub struct Envelope {
     #[serde(default)]
     pub agent_id: String,
 }
+/// `POST /internal/oauth`. Every auth.x.ai call for a slot leaves through this
+/// kernel, so login, polling and refresh share its client and exit.
+#[derive(Debug, Deserialize)]
+pub struct OauthEnvelope {
+    pub action: String,
+    #[serde(default)]
+    pub form: serde_json::Map<String, Value>,
+    #[serde(default)]
+    pub force: bool,
+}
 pub fn build_client(config: &Config) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder()
         .use_rustls_tls()
@@ -173,6 +183,7 @@ pub async fn serve(app: Arc<App>) -> Result<(), String> {
     let router = Router::new()
         .route("/internal/health", get(health))
         .route("/internal/forward", post(forward))
+        .route("/internal/oauth", post(oauth_route))
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .with_state(app);
     axum::serve(listener, router)
@@ -187,7 +198,8 @@ async fn health(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
             "internal token rejected",
         );
     }
-    Json(json!({ "ok": true, "hot_reload": true })).into_response()
+    // `api` 2: /internal/oauth. Node replaces a running kernel that reports less.
+    Json(json!({ "ok": true, "hot_reload": true, "api": 2 })).into_response()
 }
 async fn forward(
     State(app): State<Arc<App>>,
@@ -206,6 +218,112 @@ async fn forward(
         Err(failure) => kernel_error(failure.status, &failure.code, &failure.message),
     }
 }
+async fn oauth_route(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(envelope): Json<OauthEnvelope>,
+) -> Response {
+    if !token_ok(&app, &headers) {
+        return kernel_error(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "internal token rejected",
+        );
+    }
+    match oauth_dispatch(&app, envelope).await {
+        Ok(body) => Json(body).into_response(),
+        Err(failure) => kernel_error(failure.status, &failure.code, &failure.message),
+    }
+}
+async fn oauth_dispatch(app: &App, envelope: OauthEnvelope) -> Result<Value, KernelFailure> {
+    let rt = app.runtime();
+    if !rt.config.dial_allowed() {
+        return Err(failure_from_code("proxy_required".to_string()));
+    }
+    let reply = |result: Result<oauth::OauthReply, String>| {
+        result
+            .map(|reply| json!({ "status": reply.status, "body": reply.body }))
+            .map_err(failure_from_code)
+    };
+    match envelope.action.as_str() {
+        "device_authorize" => reply(oauth::device_authorize(&rt.client, &rt.config).await),
+        "token" => reply(oauth::token_grant(&rt.client, &rt.config, &envelope.form).await),
+        "refresh" => refresh_slot(app, &rt, envelope.force).await,
+        _ => Err(failure_from_code("bad_action".to_string())),
+    }
+}
+/// The slot's own token, refreshed when stale or when `force` is set. The token
+/// itself is not returned; Node reads the credential file for the new state.
+async fn refresh_slot(app: &App, rt: &Runtime, force: bool) -> Result<Value, KernelFailure> {
+    let before = credentials::read_account(&rt.config.credentials_path)
+        .map_err(failure_from_code)?
+        .access_token;
+    let token = prepare_token(app, rt, force, None).await?;
+    let after =
+        credentials::read_account(&rt.config.credentials_path).map_err(failure_from_code)?;
+    Ok(json!({
+        "ok": true,
+        "refreshed": token != before,
+        "expires_at": after.expires_at_ms,
+    }))
+}
+/// Stable error codes and statuses. 401 means the slot needs a new login; 503 is
+/// worth a retry later; anything unexpected is reported as one internal code.
+fn failure_from_code(code: String) -> KernelFailure {
+    let (status, code, message) = match code.as_str() {
+        "refresh_rejected" => (
+            StatusCode::UNAUTHORIZED,
+            "refresh_rejected",
+            "xAI rejected the refresh token",
+        ),
+        "grok_no_credential" => (
+            StatusCode::UNAUTHORIZED,
+            "grok_no_credential",
+            "Grok slot has no credential",
+        ),
+        "grok_token_expired" => (
+            StatusCode::UNAUTHORIZED,
+            "grok_token_expired",
+            "Grok access token expired",
+        ),
+        "proxy_required" => (
+            StatusCode::BAD_REQUEST,
+            "proxy_required",
+            "Grok slot has no exit",
+        ),
+        "bad_grant" => (
+            StatusCode::BAD_REQUEST,
+            "bad_grant",
+            "grant type not allowed",
+        ),
+        "bad_action" => (
+            StatusCode::BAD_REQUEST,
+            "bad_action",
+            "oauth action not allowed",
+        ),
+        "grok_oauth_not_configured" => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "grok_oauth_not_configured",
+            "xAI OAuth endpoint is not allowed",
+        ),
+        "grok_oauth_discovery_failed" => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "grok_oauth_discovery_failed",
+            "xAI OAuth discovery failed",
+        ),
+        "refresh_failed" | "refresh_empty" | "grok_refresh_busy" | "oauth_transport" => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            code.as_str(),
+            "xAI OAuth is not reachable right now",
+        ),
+        _ => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "kernel_internal",
+            "Grok kernel internal error",
+        ),
+    };
+    KernelFailure::new(status, code.to_string(), message)
+}
 async fn dispatch(app: &App, envelope: Envelope) -> Result<Response, KernelFailure> {
     let _ = envelope.stream;
     let rt = app.runtime();
@@ -219,13 +337,14 @@ async fn dispatch(app: &App, envelope: Envelope) -> Result<Response, KernelFailu
     }
     let method = normalize_method(&envelope)?;
     validate_target(&envelope, &method)?;
-    let token = prepare_token(app, &rt, false).await?;
+    let token = prepare_token(app, &rt, false, None).await?;
     let headers = headers_for(app, &rt, &envelope, &token);
     let url = upstream_url(&rt.config.base_url, &envelope.path, &envelope.query);
     let mut response = send(&rt, &method, &url, &headers, envelope.body.clone()).await?;
     if response.status() == StatusCode::UNAUTHORIZED {
         let _ = response.bytes().await;
-        match prepare_token(app, &rt, true).await {
+        // Name the token upstream rejected: a newer one in the file is used as is.
+        match prepare_token(app, &rt, true, Some(&token)).await {
             Ok(fresh) => {
                 let headers = headers_for(app, &rt, &envelope, &fresh);
                 response = send(&rt, &method, &url, &headers, envelope.body.clone()).await?;
@@ -268,14 +387,16 @@ fn headers_for(app: &App, rt: &Runtime, envelope: &Envelope, token: &str) -> Hea
         }
     }
 }
-async fn prepare_token(app: &App, rt: &Runtime, force: bool) -> Result<String, KernelFailure> {
-    let account = credentials::read_account(&rt.config.credentials_path).map_err(|code| {
-        KernelFailure::new(
-            StatusCode::UNAUTHORIZED,
-            code,
-            "Grok slot has no credential",
-        )
-    })?;
+/// A bearer for one upstream call. `rejected` is the token upstream just answered
+/// 401 for; when the file already holds a different fresh one, that one is used.
+async fn prepare_token(
+    app: &App,
+    rt: &Runtime,
+    force: bool,
+    rejected: Option<&str>,
+) -> Result<String, KernelFailure> {
+    let account =
+        credentials::read_account(&rt.config.credentials_path).map_err(failure_from_code)?;
     let stale =
         force || token_needs_refresh(&account, rt.config.oauth.refresh_skew_sec, oauth::now_ms());
     if !stale {
@@ -285,23 +406,16 @@ async fn prepare_token(app: &App, rt: &Runtime, force: bool) -> Result<String, K
         if !account.access_token.is_empty() && !force {
             return Ok(account.access_token);
         }
-        return Err(KernelFailure::new(
-            StatusCode::UNAUTHORIZED,
-            "grok_token_expired",
-            "Grok access token expired",
-        ));
+        return Err(failure_from_code("grok_token_expired".to_string()));
     }
     // Requests that queue here re-read the file inside refresh_account, so one
     // refresh serves all of them.
     let _guard = app.refresh.lock().await;
-    match oauth::refresh_account(&rt.client, &rt.config, &account.access_token).await {
+    let seen = rejected.unwrap_or(&account.access_token);
+    match oauth::refresh_account(&rt.client, &rt.config, seen).await {
         Ok(refreshed) => Ok(refreshed.access_token),
         Err(_) if !force && !account.access_token.is_empty() => Ok(account.access_token),
-        Err(code) => Err(KernelFailure::new(
-            StatusCode::UNAUTHORIZED,
-            code,
-            "Grok token refresh failed",
-        )),
+        Err(code) => Err(failure_from_code(code)),
     }
 }
 async fn send(
@@ -504,6 +618,43 @@ mod tests {
         assert_eq!(app.runtime().config.proxy_url, "socks5h://10.0.0.2:1080");
         let _ = std::fs::remove_dir_all(&dir);
     }
+    #[tokio::test]
+    async fn a_401_uses_a_newer_token_already_in_the_file() {
+        let dir = std::env::temp_dir().join(format!("grok-kernel-401-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("grok-kernel.json");
+        // token_url is not allowed: any refresh attempt would fail with grok_oauth_not_configured.
+        let mut text: Value =
+            serde_json::from_str(&config_text(&dir, "socks5h://10.0.0.1:1080")).unwrap();
+        text["oauth"]["token_url"] = json!("https://invalid.example/token");
+        std::fs::write(&path, text.to_string()).unwrap();
+        let app = App::watching(&path, PlatformInfo::current()).unwrap();
+        let rt = app.runtime();
+        let fresh = oauth::now_ms() + 3_600_000;
+        credentials::write_tokens(&rt.config.credentials_path, "t2", "rt", "", Some(fresh))
+            .unwrap();
+        let token = prepare_token(&app, &rt, true, Some("t1")).await.unwrap();
+        assert_eq!(token, "t2");
+        // The token upstream rejected is the one in the file: that one must be refreshed.
+        let failure = prepare_token(&app, &rt, true, Some("t2"))
+            .await
+            .unwrap_err();
+        assert_eq!(failure.code, "grok_oauth_not_configured");
+        assert_eq!(failure.status, StatusCode::SERVICE_UNAVAILABLE);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn failure_codes_are_stable() {
+        assert_eq!(
+            failure_from_code("refresh_rejected".into()).status,
+            StatusCode::UNAUTHORIZED
+        );
+        let transient = failure_from_code("refresh_failed".into());
+        assert_eq!(transient.status, StatusCode::SERVICE_UNAVAILABLE);
+        let odd = failure_from_code("Permission denied (os error 13)".into());
+        assert_eq!(odd.code, "kernel_internal");
+        assert_eq!(odd.status, StatusCode::SERVICE_UNAVAILABLE);
+    }
     #[test]
     fn envelope_body_keeps_client_key_order() {
         let envelope: Envelope = serde_json::from_str(
@@ -533,6 +684,7 @@ mod tests {
                 token_url: String::new(),
                 client_id: "client".to_string(),
                 discovery_url: "https://auth.x.ai/.well-known/openid-configuration".to_string(),
+                scope: String::new(),
                 refresh_skew_sec: 300,
             },
         };

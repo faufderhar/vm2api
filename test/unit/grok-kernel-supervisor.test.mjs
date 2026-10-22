@@ -6,17 +6,19 @@ import os from 'node:os'
 import path from 'node:path'
 
 // A stand-in kernel: serves /internal/health on the configured socket. A `<config>.hot`
-// file makes it report hot_reload like the current binary; without it, it is an old one.
+// file present at start makes it the current binary (hot_reload, api 2); without it, an old one.
 const FAKE_KERNEL = `#!/usr/bin/env node
 const fs = require('node:fs')
 const http = require('node:http')
 const configPath = process.argv[2]
 const config = JSON.parse(fs.readFileSync(configPath, 'utf8'))
+// Decided at start, like a real binary.
+const current = fs.existsSync(configPath + '.hot')
 try { fs.unlinkSync(config.socket_path) } catch {}
 http.createServer((req, res) => {
   if (req.headers['x-kin-internal-token'] !== config.internal_token) { res.writeHead(401); return res.end() }
   res.setHeader('content-type', 'application/json')
-  res.end(JSON.stringify({ ok: true, hot_reload: fs.existsSync(configPath + '.hot') }))
+  res.end(JSON.stringify(current ? { ok: true, hot_reload: true, api: 2 } : { ok: true }))
 }).listen(config.socket_path)
 process.on('SIGTERM', () => process.exit(0))
 `
@@ -104,4 +106,25 @@ test('the kernel config is not rewritten when nothing changed', async (t) => {
   await new Promise((resolve) => setTimeout(resolve, 20))
   supervisor.writeGrokKernelConfig(root, vm, { proxyUrl: 'socks5h://203.0.113.1:1080' })
   assert.equal(fs.statSync(paths.configPath).mtimeMs, before.mtimeMs)
+})
+
+test('a running kernel from an older binary is replaced even when its config did not change', async (t) => {
+  const { root, bin, vm, supervisor, pids } = await setup(t)
+  const paths = supervisor.writeGrokKernelConfig(root, vm, { proxyUrl: 'socks5h://203.0.113.1:1080' })
+  const stamp = supervisor.writeGrokKernelConfig(root, vm, { proxyUrl: 'socks5h://203.0.113.1:1080' }).stamp
+  const old = spawn(process.execPath, [bin, paths.configPath], { stdio: 'ignore', detached: true })
+  old.unref()
+  pids.push(old.pid)
+  fs.writeFileSync(paths.pidPath, `${old.pid}\n`)
+  fs.writeFileSync(paths.stampPath, `${stamp}\n`)
+  for (let i = 0; i < 40 && !(await supervisor.grokKernelHealth(root, vm.id)).ok; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  // The replacement is the current binary.
+  fs.writeFileSync(`${paths.configPath}.hot`, '')
+  assert.equal((await supervisor.ensureGrokKernel({ projectRoot: root, vmId: vm.id })).ok, true)
+  assert.equal(alive(old.pid), false)
+  const replacement = Number(fs.readFileSync(paths.pidPath, 'utf8'))
+  pids.push(replacement)
+  assert.equal((await supervisor.grokKernelHealth(root, vm.id)).api, 2)
 })

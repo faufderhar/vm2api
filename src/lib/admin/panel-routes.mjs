@@ -44,6 +44,7 @@ import {
   startGrokDeviceLogin,
 } from '../oauth/grok-oauth.mjs'
 import { ensureGrokAccessToken } from '../oauth/grok-token.mjs'
+import { grokKernelOauthTransport } from '../oauth/grok-kernel-oauth.mjs'
 import {
   completeClaudeSetupToken,
   readSetupTokenSession,
@@ -4512,7 +4513,11 @@ export function createPanelHandler(ctx) {
               const tok = await refreshGrokAccessToken({
                 routing: ctx.routingConfig,
                 refreshToken: account.refresh_token,
-                proxyUrl: slotProxy.proxyUrl,
+                transport: grokKernelOauthTransport({
+                  projectRoot: cfg.paths.project,
+                  vm: existing,
+                  routing: ctx.routingConfig,
+                }),
               })
               if (!tok.ok) {
                 const status = tok.error === 'grok_oauth_not_configured' ? 503 : 502
@@ -4709,7 +4714,11 @@ export function createPanelHandler(ctx) {
             const generated = await startGrokDeviceLogin({
               routing: ctx.routingConfig,
               vmId: id,
-              proxyUrl: slotProxy.proxyUrl,
+              transport: grokKernelOauthTransport({
+                projectRoot: cfg.paths.project,
+                vm: existing,
+                routing: ctx.routingConfig,
+              }),
               projectRoot: cfg.paths.project,
             })
             const px = existing.proxy || {}
@@ -4797,7 +4806,11 @@ export function createPanelHandler(ctx) {
         const polled = await pollGrokDeviceLogin({
           sessionId: body.session_id || body.sessionId,
           vmId: id,
-          proxyUrl: slotProxy.proxyUrl,
+          transport: grokKernelOauthTransport({
+            projectRoot: cfg.paths.project,
+            vm: existing,
+            routing: ctx.routingConfig,
+          }),
           projectRoot: cfg.paths.project,
         })
         if (polled.status === 'pending') {
@@ -4882,7 +4895,11 @@ export function createPanelHandler(ctx) {
             const oauth = await exchangeGrokAuthCode({
               sessionId: body.session_id || body.sessionId,
               code: body.code || body.auth_code || body.callback || body.callback_url,
-              proxyUrl: slotProxy.proxyUrl,
+              transport: grokKernelOauthTransport({
+                projectRoot: cfg.paths.project,
+                vm: existing,
+                routing: ctx.routingConfig,
+              }),
               vmId: id,
             })
             const committed = await commitImportedGrokVm({
@@ -5191,25 +5208,22 @@ export function createPanelHandler(ctx) {
           return json(res, 200, panel.ok({ ok: true, refreshed: true, platform: 'openai' }))
         }
         if (isGrokVm(vm)) {
-          const proxyUrl = hostProxyUrlForVm(vm)
-          if (!proxyUrl) {
-            return json(res, 503, {
-              ok: false,
-              error: { code: 'grok_proxy_required', message: 'Grok 槽没有出口，不能刷新' },
-            })
-          }
+          // The slot kernel refreshes through the slot's own exit; local egress has an empty URL.
           const tok = await ensureGrokAccessToken({
             projectRoot: cfg.paths.project,
             vm,
             routing: ctx.routingConfig,
-            proxyUrl,
             force: true,
           })
           if (!tok.ok) {
-            const status = tok.code === 'grok_oauth_not_configured' ? 503 : 502
+            const noExit = tok.code === 'proxy_required'
+            const status = tok.code === 'grok_oauth_not_configured' || noExit ? 503 : 502
             return json(res, status, {
               ok: false,
-              error: { code: tok.code || 'refresh_failed', message: 'Grok OAuth 刷新失败，请重新导入' },
+              error: {
+                code: noExit ? 'grok_proxy_required' : tok.code || 'refresh_failed',
+                message: noExit ? 'Grok 槽没有出口，不能刷新' : 'Grok OAuth 刷新失败，请重新导入',
+              },
             })
           }
           return json(res, 200, panel.ok({ ok: true, refreshed: !!tok.refreshed, platform: 'xai' }))

@@ -162,7 +162,6 @@ test('query stores Grok Build billing and keeps the last good sample after a fai
   const first = await queryGrokBuildUsage({
     projectRoot: root,
     vmId: 'heavy',
-    proxyUrl: '',
     forward,
     now,
   })
@@ -179,7 +178,6 @@ test('query stores Grok Build billing and keeps the last good sample after a fai
   const skipped = await queryGrokBuildUsage({
     projectRoot: root,
     vmId: 'heavy',
-    proxyUrl: '',
     forward,
     now: now + 60_000,
   })
@@ -195,7 +193,6 @@ test('query stores Grok Build billing and keeps the last good sample after a fai
   const failed = await queryGrokBuildUsage({
     projectRoot: root,
     vmId: 'heavy',
-    proxyUrl: '',
     forward: failedForward,
     force: true,
     now: now + 120_000,
@@ -233,12 +230,37 @@ test('the panel row keeps Grok Build usage for the usage window', () => {
   assert.equal(row.grok_build.credit_usage_percent, 13)
 })
 
-test('Grok usage sync follows the Claude usage-window interval', () => {
-  assert.deepEqual(grokUsageProbeTiming({}), { intervalMs: 60_000, staleMs: 300_000 })
+test('Grok usage sync ticks with Claude but reads billing at most every 30 minutes', () => {
+  assert.deepEqual(grokUsageProbeTiming({}), { intervalMs: 60_000, staleMs: 30 * 60_000 })
   assert.deepEqual(grokUsageProbeTiming({ interval_sec: 90, stale_sec: 120 }), {
     intervalMs: 90_000,
-    staleMs: 120_000,
+    staleMs: 30 * 60_000,
   })
+  assert.equal(grokUsageProbeTiming({ stale_sec: 3600 }).staleMs, 3_600_000)
+})
+
+test('a failed billing read waits five minutes instead of one monitor tick', () => {
+  const now = Date.parse('2026-10-22T10:00:00.000Z')
+  const failed = { ok: false, error: 'upstream_error', probed_at: '2026-10-22T09:58:00.000Z' }
+  assert.equal(grokBuildUsageFresh(failed, now, 30 * 60_000), true)
+  assert.equal(grokBuildUsageFresh({ ...failed, probed_at: '2026-10-22T09:54:00.000Z' }, now, 30 * 60_000), false)
+})
+
+test('a slot whose refresh token was rejected is not polled for billing', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'grok-build-'))
+  writeGrokVm(root, 'dead')
+  const file = path.join(root, 'vms', 'dead.json')
+  const vm = JSON.parse(fs.readFileSync(file, 'utf8'))
+  vm.grok.auth_error = { code: 'oauth_refresh_rejected' }
+  fs.writeFileSync(file, JSON.stringify(vm))
+  let calls = 0
+  const forward = async () => {
+    calls += 1
+    throw new Error('must not be called')
+  }
+  const result = await queryGrokBuildUsage({ projectRoot: root, vmId: 'dead', forward })
+  assert.equal(result.error, 'upstream_auth')
+  assert.equal(calls, 0)
 })
 
 test('a refresh token the kernel saw rejected marks the slot for a new login', async () => {
@@ -252,7 +274,7 @@ test('a refresh token the kernel saw rejected marks the slot for a new login', a
       yield Buffer.from(JSON.stringify({ error: { code: 'refresh_rejected', message: 'Grok token refresh failed' } }))
     },
   })
-  const result = await queryGrokBuildUsage({ projectRoot: root, vmId: 'dead', proxyUrl: '', forward, force: true })
+  const result = await queryGrokBuildUsage({ projectRoot: root, vmId: 'dead', forward, force: true })
   assert.equal(result.ok, false)
   assert.equal(result.error, 'upstream_auth')
   assert.equal(getVm(root, 'dead').grok.auth_error.code, 'oauth_refresh_rejected')

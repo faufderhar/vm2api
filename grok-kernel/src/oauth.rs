@@ -1,9 +1,33 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use serde_json::Value;
+use serde::Serialize;
+use serde_json::{Map, Value};
 
 use crate::config::Config;
 use crate::credentials::{self, Account};
+
+/// One OAuth call bounded on its own; the client only has a connect timeout.
+const OAUTH_TIMEOUT: Duration = Duration::from_secs(30);
+
+pub const DEVICE_CODE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
+/// Grants Node may ask for. Refreshing the slot's own token goes through `refresh_account`.
+const TOKEN_GRANTS: &[&str] = &[DEVICE_CODE_GRANT, "authorization_code", "refresh_token"];
+/// Form fields in the order they are sent. client_id is always last and always ours.
+const TOKEN_FIELDS: &[&str] = &[
+    "grant_type",
+    "device_code",
+    "code",
+    "redirect_uri",
+    "code_verifier",
+    "refresh_token",
+];
+
+/// Raw status and JSON body of an auth.x.ai call, for Node to interpret.
+#[derive(Clone, Debug)]
+pub struct OauthReply {
+    pub status: u16,
+    pub body: Value,
+}
 
 #[derive(Clone, Debug)]
 pub struct RefreshedToken {
@@ -49,26 +73,27 @@ pub async fn refresh_account(
         return Err("grok_token_expired".to_string());
     }
     let token_url = resolve_token_url(client, config).await?;
-    let response = client
-        .post(&token_url)
-        .form(&[
+    let reply = post_form(
+        client,
+        &token_url,
+        &[
             ("grant_type", "refresh_token"),
             ("refresh_token", account.refresh_token.as_str()),
             ("client_id", config.oauth.client_id.as_str()),
-        ])
-        .send()
-        .await
-        .map_err(|err| format!("refresh_failed:{err}"))?;
-    let status = response.status();
-    let payload: Value = response.json().await.unwrap_or(Value::Null);
+        ],
+    )
+    .await
+    // A stable code: transport detail must not reach logs or API clients.
+    .map_err(|_| "refresh_failed".to_string())?;
+    let payload = reply.body;
     let oauth_error = payload
         .get("error")
         .and_then(|value| value.as_str())
         .unwrap_or("");
-    if status.as_u16() == 401 || status.as_u16() == 403 || oauth_error == "invalid_grant" {
+    if reply.status == 401 || reply.status == 403 || oauth_error == "invalid_grant" {
         return Err("refresh_rejected".to_string());
     }
-    if !status.is_success() {
+    if !(200..300).contains(&reply.status) {
         return Err("refresh_failed".to_string());
     }
     let access_token = text(&payload, "access_token");
@@ -107,6 +132,101 @@ pub async fn refresh_account(
     })
 }
 
+/// Device code start: POST client_id and scope to the discovered device endpoint.
+pub async fn device_authorize(
+    client: &reqwest::Client,
+    config: &Config,
+) -> Result<OauthReply, String> {
+    let url = resolve_device_url(client, config).await?;
+    let mut form = vec![("client_id", config.oauth.client_id.as_str())];
+    if !config.oauth.scope.is_empty() {
+        form.push(("scope", config.oauth.scope.as_str()));
+    }
+    post_form(client, &url, &form).await
+}
+
+/// A token grant Node started (device code poll, PKCE exchange, refresh-token import).
+/// Only known grants and fields are forwarded; client_id comes from the kernel config.
+pub async fn token_grant(
+    client: &reqwest::Client,
+    config: &Config,
+    fields: &Map<String, Value>,
+) -> Result<OauthReply, String> {
+    let form = token_form(config, fields)?;
+    let url = resolve_token_url(client, config).await?;
+    post_form(client, &url, &form).await
+}
+
+/// The form for `token_grant`: known fields in a fixed order, then our client_id.
+fn token_form(
+    config: &Config,
+    fields: &Map<String, Value>,
+) -> Result<Vec<(&'static str, String)>, String> {
+    let grant = fields
+        .get("grant_type")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    if !TOKEN_GRANTS.contains(&grant) {
+        return Err("bad_grant".to_string());
+    }
+    let mut form: Vec<(&'static str, String)> = TOKEN_FIELDS
+        .iter()
+        .filter_map(|key| {
+            let value = fields.get(*key)?.as_str()?.trim();
+            (!value.is_empty()).then(|| (*key, value.to_string()))
+        })
+        .collect();
+    form.push(("client_id", config.oauth.client_id.clone()));
+    Ok(form)
+}
+
+async fn post_form<T: Serialize + ?Sized>(
+    client: &reqwest::Client,
+    url: &str,
+    form: &T,
+) -> Result<OauthReply, String> {
+    let response = client
+        .post(url)
+        .timeout(OAUTH_TIMEOUT)
+        .form(form)
+        .send()
+        .await
+        .map_err(|_| "oauth_transport".to_string())?;
+    let status = response.status().as_u16();
+    let body = response.json::<Value>().await.unwrap_or(Value::Null);
+    Ok(OauthReply { status, body })
+}
+
+async fn discovery_document(client: &reqwest::Client, config: &Config) -> Result<Value, String> {
+    let discovery = config.oauth.discovery_url.trim();
+    if discovery.is_empty() || !allowed_oauth_url(discovery) {
+        return Err("grok_oauth_discovery_failed".to_string());
+    }
+    let response = client
+        .get(discovery)
+        .timeout(OAUTH_TIMEOUT)
+        .header("accept", "application/json")
+        .send()
+        .await
+        .map_err(|_| "grok_oauth_discovery_failed".to_string())?;
+    if !response.status().is_success() {
+        return Err("grok_oauth_discovery_failed".to_string());
+    }
+    response
+        .json()
+        .await
+        .map_err(|_| "grok_oauth_discovery_failed".to_string())
+}
+
+/// Discovered endpoints must be https on x.ai; see allowed_oauth_url.
+fn discovered_endpoint(document: &Value, key: &str) -> Result<String, String> {
+    let url = text(document, key);
+    if !allowed_oauth_url(&url) {
+        return Err("grok_oauth_discovery_failed".to_string());
+    }
+    Ok(url)
+}
+
 async fn resolve_token_url(client: &reqwest::Client, config: &Config) -> Result<String, String> {
     let configured = config.oauth.token_url.trim();
     if !configured.is_empty() {
@@ -115,28 +235,13 @@ async fn resolve_token_url(client: &reqwest::Client, config: &Config) -> Result<
         }
         return Ok(configured.to_string());
     }
-    let discovery = config.oauth.discovery_url.trim();
-    if discovery.is_empty() || !allowed_oauth_url(discovery) {
-        return Err("grok_oauth_discovery_failed".to_string());
-    }
-    let response = client
-        .get(discovery)
-        .header("accept", "application/json")
-        .send()
-        .await
-        .map_err(|_| "grok_oauth_discovery_failed".to_string())?;
-    if !response.status().is_success() {
-        return Err("grok_oauth_discovery_failed".to_string());
-    }
-    let payload: Value = response
-        .json()
-        .await
-        .map_err(|_| "grok_oauth_discovery_failed".to_string())?;
-    let token_url = text(&payload, "token_endpoint");
-    if !allowed_oauth_url(&token_url) {
-        return Err("grok_oauth_discovery_failed".to_string());
-    }
-    Ok(token_url)
+    let document = discovery_document(client, config).await?;
+    discovered_endpoint(&document, "token_endpoint")
+}
+
+async fn resolve_device_url(client: &reqwest::Client, config: &Config) -> Result<String, String> {
+    let document = discovery_document(client, config).await?;
+    discovered_endpoint(&document, "device_authorization_endpoint")
 }
 
 fn is_loopback_host(url: &reqwest::Url) -> bool {
@@ -233,6 +338,33 @@ mod tests {
             "oauth": { "token_url": "https://invalid.example/token", "client_id": "c" }
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn token_form_keeps_known_fields_in_order_and_our_client_id() {
+        let dir = std::env::temp_dir();
+        let config = sample_config(&dir);
+        let fields = json!({
+            "client_id": "someone-else",
+            "device_code": "dc",
+            "grant_type": DEVICE_CODE_GRANT,
+            "scope": "admin",
+            "extra": "x"
+        });
+        let form = token_form(&config, fields.as_object().unwrap()).unwrap();
+        assert_eq!(
+            form,
+            vec![
+                ("grant_type", DEVICE_CODE_GRANT.to_string()),
+                ("device_code", "dc".to_string()),
+                ("client_id", "c".to_string()),
+            ]
+        );
+        let bad = json!({ "grant_type": "client_credentials" });
+        assert_eq!(
+            token_form(&config, bad.as_object().unwrap()).unwrap_err(),
+            "bad_grant"
+        );
     }
 
     #[tokio::test]

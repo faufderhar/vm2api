@@ -33,7 +33,14 @@ export function grokKernelEnvelope({
 }
 
 /** `timeoutMs` bounds the wait for response headers, not how long a stream may run. */
-export function callGrokKernel({ projectRoot, vmId, envelope, signal, timeoutMs = 300_000 } = {}) {
+export function callGrokKernel({
+  projectRoot,
+  vmId,
+  envelope,
+  signal,
+  timeoutMs = 300_000,
+  endpoint = '/internal/forward',
+} = {}) {
   const { socketPath, tokenPath } = grokKernelPaths(projectRoot, vmId)
   let token = ''
   try {
@@ -46,7 +53,7 @@ export function callGrokKernel({ projectRoot, vmId, envelope, signal, timeoutMs 
       const req = http.request(
         {
           socketPath,
-          path: '/internal/forward',
+          path: endpoint,
           method: 'POST',
           headers: {
             'content-type': 'application/json',

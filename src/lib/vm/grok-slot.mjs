@@ -237,6 +237,25 @@ export function persistGrokBuildUsage(projectRoot, vmId, usage = {}) {
   })
 }
 
+/** ISO string, or epoch seconds as the kernel writes them. */
+function credentialUpdatedMs(value) {
+  const text = String(value ?? '').trim()
+  if (/^\d+$/.test(text)) {
+    const n = Number(text)
+    return n < 1e12 ? n * 1000 : n
+  }
+  const parsed = Date.parse(text)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+/** The kernel refreshes on its own and only touches the credential file; take the later of the two. */
+function lastRefreshAt(bag, account) {
+  const fromBag = credentialUpdatedMs(bag.last_refresh_at)
+  const fromFile = credentialUpdatedMs(account?.updated_at)
+  const latest = Math.max(fromBag ?? 0, fromFile ?? 0)
+  return latest > 0 ? new Date(latest).toISOString() : null
+}
+
 export function summarizeGrokSlot(projectRoot, vm = {}, now = Date.now()) {
   const account = projectRoot && vm?.id ? readGrokAccount(projectRoot, vm.id) : null
   const bag = vm.grok && typeof vm.grok === 'object' ? vm.grok : {}
@@ -255,7 +274,7 @@ export function summarizeGrokSlot(projectRoot, vm = {}, now = Date.now()) {
     auth_error: bag.auth_error || null,
     limited_until: limitedUntil,
     limited_reason: limitedUntil ? bag.limited_reason || null : null,
-    last_refresh_at: bag.last_refresh_at || null,
+    last_refresh_at: lastRefreshAt(bag, account),
     build_usage: publicGrokBuildUsage(bag),
     token_tier: grokTokenTier(account?.access_token),
   }

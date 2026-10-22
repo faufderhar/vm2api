@@ -13,6 +13,9 @@ pub struct OauthConfig {
     pub client_id: String,
     #[serde(default)]
     pub discovery_url: String,
+    /// Device code scope. Node writes the public Grok CLI scope.
+    #[serde(default)]
+    pub scope: String,
     #[serde(default = "default_skew")]
     pub refresh_skew_sec: u64,
 }
@@ -90,6 +93,7 @@ mod tests {
                 token_url: String::new(),
                 client_id: "client".to_string(),
                 discovery_url: "https://auth.x.ai/.well-known/openid-configuration".to_string(),
+                scope: String::new(),
                 refresh_skew_sec: 300,
             },
         }

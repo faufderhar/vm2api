@@ -57,7 +57,6 @@ import { resolveInferenceBackend } from './lib/pool/api-protocol.mjs'
 import { bootApiKernel, apiKernelPaths, apiKernelSnapshot } from './lib/transport/api-kernel-client.mjs'
 import { superviseApiKernel } from './lib/transport/api-kernel-client.mjs'
 import { createGrokRefreshMonitor } from './lib/oauth/grok-refresh-monitor.mjs'
-import { hostProxyUrlForVm } from './lib/vm/slot-host.mjs'
 import { probeGrokModels } from './lib/protocol/grok-models.mjs'
 import { PanelUserStore } from './lib/admin/panel-users.mjs'
 import { RequestLogStore } from './lib/admin/request-log.mjs'
@@ -573,7 +572,6 @@ grokRefreshMonitor = createGrokRefreshMonitor({
   listTargets: () => listVms(cfg.paths.project).map((vm) => getVm(cfg.paths.project, vm.id) || vm),
   getRouting: () => routingConfig,
   getUsageProbe: () => routingConfig.usage_probe,
-  proxyUrlFor: (vm) => hostProxyUrlForVm(vm),
 })
 notifyMonitor = createNotifyMonitor({
   config: routingConfig.notify,
