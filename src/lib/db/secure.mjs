@@ -14,9 +14,11 @@ import path from 'node:path'
 
 const PREFIX = 'enc:v1:'
 let persistedSecret
+// The data dir the server opened. `npm start` without KIN_DATA_DIR still has one.
+let bootDataDir = ''
 
 function dataDir() {
-  return process.env.KIN_DATA_DIR || process.env.VM2API_DATA_DIR || ''
+  return process.env.KIN_DATA_DIR || process.env.VM2API_DATA_DIR || bootDataDir
 }
 
 /** Key lives beside the data directory, not inside the file that it encrypts. */
@@ -75,10 +77,16 @@ function writeSecretFile(file, secret) {
  */
 export function ensureDbSecretFile(dir) {
   if (process.env.VM2API_DB_SECRET || process.env.KIN_DB_SECRET) return
+  if (dir) bootDataDir = String(dir)
   const next = dbSecretPath(dir)
   const previous = legacyDbSecretPath(dir)
   if (!next) return
-  if (readSecretFile(next)) return
+  const existing = readSecretFile(next)
+  if (existing) {
+    // Later reads must find this key even when no data-dir env is set.
+    persistedSecret = existing
+    return
+  }
   const legacy = readSecretFile(previous)
   const secret = legacy || crypto.randomBytes(32).toString('hex')
   writeSecretFile(next, secret)
