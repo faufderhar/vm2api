@@ -12,6 +12,10 @@ import {
 } from '../../src/lib/transport/codex-kernel-supervisor.mjs'
 import fs from 'node:fs'
 import os from 'node:os'
+import { registerPlatformEgressEndpoint } from '../../src/lib/vm/proxy-policy.mjs'
+
+// Fixtures bind slots to a 127.0.0.1 SOCKS, which production blocks by default.
+process.env.VM2API_ALLOW_PRIVATE_PROXY = '1'
 
 const PROXY_ENV_KEYS = [
   'HTTPS_PROXY',
@@ -175,7 +179,9 @@ test('local egress hands the kernel the deployment proxy and fails closed on it'
   assert.equal(cfg.proxy_required, true)
 })
 test('a node slot on local egress keeps the node forwarder instead of this host proxy', (t) => {
-  setEnv(t, { HTTPS_PROXY: 'http://proxy.test:8443' })
+  // Production policy: only the registered node forwarder may sit on loopback.
+  setEnv(t, { HTTPS_PROXY: 'http://proxy.test:8443', VM2API_ALLOW_PRIVATE_PROXY: '' })
+  t.after(registerPlatformEgressEndpoint('127.0.0.1', 19001))
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-'))
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   const written = writeCodexKernelConfig(
