@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- 面板「从 GitHub 下载内核」现在校验每个文件的 sha256：`kin-kernel`、`cli-node`、`cc-node`、`kin-kernel-crag` 必须与 GitHub Release 为该附件记录的 `digest` 一致，不一致不安装（`*_digest_mismatch`）；Release 没有 `digest` 时直接拒绝（`*_digest_missing`），不再只看是不是 ELF 就替换。这能拦下下载途中被改动或截断的文件，但 Release 本身被换掉时 `digest` 也会跟着变，防不住上游账号被盗。
 - 调用方的 `x-kin-log` / `x-kin-debug` 只能调高日志级别，不能调低：原来带 `x-kin-log: off` 的请求不写日志，计费页和统计里就看不到这次调用。`x-kin-debug: 1` 仍可让单个请求保存入站请求体与响应。
 - 调用方重复使用同一个 `x-request-id` 时，后面的请求改用网关生成的新 ID 记录，响应头 `x-request-id` 也是这个新 ID。原来只有第一次请求留下日志，之后同 ID 的请求全部漏记（计费页看不到），debug 记录还会被后来的同 ID 请求覆盖。
 - 代理地址的本机/内网/元数据拦截补上几种写法：IPv4 映射的 IPv6（`::ffff:127.0.0.1`、`::ffff:a9fe:a9fe` 等，原来经 URL 规范化后一律放行）、IPv4 兼容和 NAT64 地址，以及 `127.1`、`2130706433`、`0x7f.1` 这类简写 IPv4。槽位出口的地理位置查询也按域名解析结果检查，不再只看字面地址。

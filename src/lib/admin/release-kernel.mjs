@@ -2,8 +2,10 @@
  * Download linux amd64 kin-kernel, cli-node, cc-node, and kin-kernel-crag from one GitHub Release.
  * Callers install both and sync slots; this module only fetches bytes.
  * Redirects stay on GitHub hosts so a release payload cannot point the
- * control plane at an internal URL.
+ * control plane at an internal URL. Every file must match the sha256 GitHub
+ * records for the asset (`digest`); a release without one is refused.
  */
+import crypto from 'node:crypto'
 import { inspectLinuxAmd64Elf } from '../vm/wrap-cli-runtime.mjs'
 import { GITHUB_REPO, githubApiHeaders, isReleaseTag, normalizeTag, normalizeVersion } from './release.mjs'
 
@@ -25,8 +27,35 @@ function coded(code, message) {
   return error
 }
 
+/** Error-code prefix for one release asset. */
+function codePrefix(name) {
+  if (name === CLI_NODE_RELEASE_ASSET) return 'cli_node'
+  if (name === CC_NODE_RELEASE_ASSET) return 'cc_node'
+  if (name === KERNEL_CRAG_RELEASE_ASSET) return 'crag'
+  return 'kernel'
+}
+
+/** GitHub's `digest` for a release asset, as lowercase hex; '' unless it is a sha256. */
+export function assetSha256(asset) {
+  const m = /^sha256:([0-9a-f]{64})$/i.exec(String(asset?.digest || '').trim())
+  return m ? m[1].toLowerCase() : ''
+}
+
+/** Bytes that do not hash to the digest GitHub recorded are not that release's file. */
+export function verifyAssetBytes(bytes, picked) {
+  const actual = crypto.createHash('sha256').update(bytes).digest('hex')
+  if (actual === picked.sha256) return { ok: true }
+  return {
+    ok: false,
+    code: `${codePrefix(picked.asset)}_digest_mismatch`,
+    error: `${picked.asset} 的 sha256 与 GitHub Release 记录不符（期望 ${picked.sha256}，实际 ${actual}），未安装`,
+  }
+}
+
 export function kernelReleaseHttpStatus(code) {
   if (code === 'github_http_404') return 404
+  // The release itself is bad or the bytes changed on the way: an upstream fault, not the caller's.
+  if (/_digest_(?:missing|mismatch)$/.test(String(code || ''))) return 502
   if (
     code === 'kernel_tag_invalid' ||
     code === 'kernel_asset_missing' ||
@@ -99,6 +128,14 @@ export function selectReleaseAsset(payload, { name, maxBytes, missingCode, tooLa
             : 'kernel_asset_url',
       error: `${name} 下载地址不是 GitHub Release`,
     }
+  const sha256 = assetSha256(asset)
+  if (!sha256) {
+    return {
+      ok: false,
+      code: `${codePrefix(name)}_digest_missing`,
+      error: `GitHub Release 没有给出 ${name} 的 sha256，无法校验，未下载`,
+    }
+  }
   return {
     ok: true,
     tag,
@@ -106,6 +143,7 @@ export function selectReleaseAsset(payload, { name, maxBytes, missingCode, tooLa
     asset: name,
     size: Number.isFinite(size) && size > 0 ? size : 0,
     url,
+    sha256,
   }
 }
 
@@ -280,6 +318,15 @@ export async function downloadReleaseKernel({ tag = '', fetchImpl = globalThis.f
       code: error?.code || 'kernel_download_failed',
       error: String(error?.message || error || 'release download failed').slice(0, 200),
     }
+  }
+  for (const [picked, bytes] of [
+    [kernel, kernelBytes],
+    [cliNode, cliBytes],
+    [ccNode, ccBytes],
+    [crag, cragBytes],
+  ]) {
+    const verified = verifyAssetBytes(bytes, picked)
+    if (!verified.ok) return verified
   }
   const kernelCheck = inspectLinuxAmd64Elf(kernelBytes)
   if (!kernelCheck.ok) return kernelCheck
