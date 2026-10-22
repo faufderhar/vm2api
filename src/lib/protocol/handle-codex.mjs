@@ -57,7 +57,7 @@ import {
 } from '../pool/openai-account-runtime.mjs'
 import { CLIENT_POOL_BUSY_MESSAGE, CLIENT_POOL_UNAVAILABLE_MESSAGE, ErrorCode } from '../core/errors.mjs'
 import { applyOpenaiWashLog } from './openai-wash.mjs'
-import { canonicalImageToolModel, imageGenerationTools } from './image-tool-models.mjs'
+import { DEFAULT_IMAGE_TOOL_MODEL, canonicalImageToolModel, imageGenerationTools } from './image-tool-models.mjs'
 import { isImageToolModelEnabled } from './gpt-model-policy.mjs'
 import { sessionIdForLog } from './log-fields.mjs'
 import { redactHeaders } from '../admin/request-log.mjs'
@@ -376,8 +376,8 @@ export function imageGenUsageFromSseLine(line) {
 /** A known image model the GPT policy disabled is refused before any slot is picked. */
 function disabledImageTool(body, logBag) {
   for (const tool of imageGenerationTools(body)) {
-    const model = typeof tool.model === 'string' ? tool.model.trim() : ''
-    if (!model) continue
+    // No model means the upstream default, which an operator may have switched off.
+    const model = (typeof tool.model === 'string' ? tool.model.trim() : '') || DEFAULT_IMAGE_TOOL_MODEL
     logBag.image_model = canonicalImageToolModel(model) || model
     if (isImageToolModelEnabled(model) === false) return model
   }
@@ -1337,16 +1337,16 @@ export async function handleCodexImages({
     return reject(400, 'invalid_request_error', 'invalid_request', 'Images request body must be a JSON object')
   }
   const model = typeof body.model === 'string' ? body.model.trim() : ''
-  if (model) {
-    logBag.image_model = canonicalImageToolModel(model) || model
-    if (isImageToolModelEnabled(model) === false) {
-      return reject(
-        400,
-        'invalid_request_error',
-        'model_disabled',
-        `image model '${model}' is disabled by gateway GPT model policy`,
-      )
-    }
+  // No model means the upstream default, which an operator may have switched off.
+  const effectiveModel = model || DEFAULT_IMAGE_TOOL_MODEL
+  logBag.image_model = canonicalImageToolModel(effectiveModel) || effectiveModel
+  if (isImageToolModelEnabled(effectiveModel) === false) {
+    return reject(
+      400,
+      'invalid_request_error',
+      'model_disabled',
+      `image model '${effectiveModel}' is disabled by gateway GPT model policy`,
+    )
   }
   const excluded = new Set()
   let usable = 0

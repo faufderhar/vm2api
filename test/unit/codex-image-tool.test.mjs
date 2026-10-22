@@ -112,6 +112,16 @@ test('an enabled, omitted or unknown image model reaches the upstream unchanged'
   }
 })
 
+test('an omitted image model is checked as the upstream default it would get', async () => {
+  saveGptModelPolicy({ image_tools: { 'gpt-image-2.5-flare': { enabled: false } } })
+  const { res, logBag, hops } = await run(request(null))
+  assert.equal(res.statusCode, 400)
+  assert.equal(res.body.error.code, 'model_disabled')
+  assert.match(res.body.error.message, /gpt-image-2\.5-flare/)
+  assert.equal(logBag.error_code, 'model_disabled')
+  assert.equal(hops.length, 0)
+})
+
 test('tool_usage.image_gen from response.completed is captured for billing', async () => {
   const { res, logBag } = await run(request('gpt-image-2.5-flare-2026-09-08'), {
     lines: [

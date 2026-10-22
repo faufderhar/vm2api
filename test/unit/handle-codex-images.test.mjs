@@ -12,6 +12,7 @@ import { resetOpenAIAccountRuntime } from '../../src/lib/pool/openai-account-run
 import { StickyRouter } from '../../src/lib/pool/sticky-router.mjs'
 import { readBody } from '../../src/lib/http/respond.mjs'
 import { createHandleProtocol } from '../../src/lib/protocol/handle-protocol.mjs'
+import { ApiKeyStore } from '../../src/lib/admin/api-keys.mjs'
 
 const USAGE = {
   input_tokens: 300,
@@ -234,9 +235,10 @@ test('a non-JSON upstream answer is a 502, and upstream errors pass through', as
   assert.equal(rejected.logBag.final_state, 'upstream_error')
 })
 
-function protocolHarness(rows, { apiKeyStore = null } = {}) {
+function protocolHarness(rows, { apiKeyStore = null, codexOps = undefined } = {}) {
   return createHandleProtocol({
     apiKeyStore,
+    codexOps,
     cfg: { limits: { max_body_bytes: 1 << 20 }, rewrite: { enabled: false }, paths: { project: root } },
     json(res, status, body) {
       res.statusCode = status
@@ -308,7 +310,12 @@ test('the images route picks slots by the key owner role, like search', async ()
   const file = path.join(root, 'vms', 'vm-tenant.json')
   fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, 'utf8')), owner_user_id: 'u1' }))
   const roles = { a1: 'admin', u1: 'user' }
-  const apiKeyStore = { users: { getById: (id) => ({ id, role: roles[id] }) } }
+  const apiKeyStore = {
+    users: { getById: (id) => ({ id, role: roles[id] }) },
+    acquire: () => ({ ok: true }),
+    release() {},
+    recordUsage() {},
+  }
   const run = async (userId) => {
     const rows = []
     const { handleImages } = protocolHarness(rows, { apiKeyStore })
@@ -335,4 +342,68 @@ test('the images route reads JSON generations', async () => {
   res.finish()
   assert.equal(res.body.error.code, 'proxy_required')
   assert.equal(rows[0].model, 'gpt-image-2.5-flare')
+})
+
+test('an omitted model is refused when the upstream default image model is disabled', async () => {
+  writeGptVm('vm-a')
+  saveGptModelPolicy({ image_tools: { 'gpt-image-2.5-flare': { enabled: false } } })
+  let calls = 0
+  const { res } = await images({
+    body: { prompt: 'x' },
+    ops: { fetchImpl: async () => (calls++, upstream(200, { data: [] })) },
+  })
+  assert.equal(res.statusCode, 400)
+  assert.equal(res.body.error.code, 'model_disabled')
+  assert.match(res.body.error.message, /gpt-image-2\.5-flare/)
+  assert.equal(calls, 0)
+})
+
+function managedImageRequest(rec, body = '{"model":"gpt-image-2.5-flare","prompt":"x"}') {
+  const req = Readable.from([Buffer.from(body)])
+  req.headers = { 'content-type': 'application/json', 'user-agent': 'codex_exec/0.163.0' }
+  req.apiKeyRecord = rec
+  return req
+}
+
+test('an image call is charged to the API key at its image_cost in dollars', async () => {
+  writeGptVm('vm-a')
+  const keys = new ApiKeyStore({ dataDir: root })
+  const created = keys.create({ name: 'img', quota: 1 })
+  const rows = []
+  const { handleImages } = protocolHarness(rows, {
+    apiKeyStore: keys,
+    codexOps: { fetchImpl: async () => upstream(200, { data: [{ b64_json: 'x' }], usage: USAGE }) },
+  })
+  const res = fakeRes()
+  await handleImages(managedImageRequest(keys.getById(created.id)), res, '/v1/images/generations', 'generations')
+  res.finish()
+  assert.equal(res.statusCode, 200)
+  const after = keys.getById(created.id)
+  // 100 text × $5 + 200 image × $8 + 1000 output × $30, per 1M
+  assert.ok(Math.abs(after.quota_used - 0.0321) < 1e-9, String(after.quota_used))
+  assert.equal(after.requests, 1)
+  assert.equal(after.quota_requests_used, 1)
+  assert.equal(keys.inflight.get(created.id) || 0, 0)
+})
+
+test('an image call waits its turn on a busy key and is refused before any slot is used', async () => {
+  writeGptVm('vm-a')
+  const keys = new ApiKeyStore({ dataDir: root })
+  const created = keys.create({ name: 'busy', max_concurrency: 1 })
+  const rec = keys.getById(created.id)
+  assert.equal(keys.acquire(rec).ok, true)
+  let calls = 0
+  const rows = []
+  const { handleImages } = protocolHarness(rows, {
+    apiKeyStore: keys,
+    codexOps: { fetchImpl: async () => (calls++, upstream(200, { data: [], usage: USAGE })) },
+  })
+  const res = fakeRes()
+  await handleImages(managedImageRequest(rec), res, '/v1/images/generations', 'generations')
+  res.finish()
+  assert.equal(res.statusCode, 429)
+  assert.equal(res.body.error.code, 'api_key_concurrency_limit')
+  assert.equal(calls, 0)
+  assert.equal(keys.getById(created.id).requests, 0)
+  keys.release(rec)
 })
