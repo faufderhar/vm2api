@@ -7,6 +7,7 @@ import { getVm, listVms } from '../vm/vm-registry.mjs'
 import { isValidVmId } from '../vm/vm-file.mjs'
 import { isGrokVm } from '../vm/vm-kind.mjs'
 import { grokRoutingOf, isGrokProtocolAllowed } from './grok-route.mjs'
+import { resolveGrokRequestModel } from './grok-model-policy.mjs'
 import { keyAllowsVm, keyScopeFromRequest, vmPoolDenial } from '../admin/key-scope.mjs'
 import { restrictCodexClient } from './codex-restriction.mjs'
 import {
@@ -611,6 +612,24 @@ export async function handleGrokProtocol({
             : `protocol '${protocol}' is not allowed on the Grok hop`,
       },
     })
+  }
+  const modelCheck = resolveGrokRequestModel(ctx.body?.model)
+  if (!modelCheck.ok) {
+    stats.errors++
+    logBag.error_code = modelCheck.code
+    return json(res, 400, {
+      error: {
+        type: 'invalid_request_error',
+        code: modelCheck.code,
+        message: `model '${modelCheck.requested}' is disabled by gateway Grok model policy`,
+        param: 'model',
+      },
+    })
+  }
+  // xai/grok-4.3 or a panel alias goes upstream as the bare model id; pricing and slot gates read it too.
+  if (ctx.body && modelCheck.model !== ctx.body.model) {
+    ctx = { ...ctx, body: { ...ctx.body, model: modelCheck.model } }
+    body = ctx.body
   }
   const restriction = restrictCodexClient(req.headers, ctx.body || inbound, { clients: grok.clients }, protocol)
   if (!restriction.ok) {

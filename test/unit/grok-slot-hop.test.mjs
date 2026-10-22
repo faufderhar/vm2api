@@ -161,3 +161,82 @@ test('a slot credential failure reaches the caller as 503, not as a 401 about th
   assert.equal(sent.status, 503)
   assert.equal(sent.body.error.code, 'refresh_rejected')
 })
+
+test('a prefixed model goes upstream bare; a model the panel turned off is refused before any slot', async (t) => {
+  const fs = await import('node:fs')
+  const os = await import('node:os')
+  const path = await import('node:path')
+  const { handleGrokProtocol } = await import('../../src/lib/protocol/handle-grok.mjs')
+  const { upsertGrokAccount } = await import('../../src/lib/vm/grok-slot.mjs')
+  const { saveGrokModelPolicy, resetGrokModelPolicyForTests } = await import(
+    '../../src/lib/protocol/grok-model-policy.mjs'
+  )
+  const { openDatabase, closeDatabase } = await import('../../src/lib/db/database.mjs')
+  openDatabase({ dbPath: ':memory:' })
+  resetGrokModelPolicyForTests()
+  saveGrokModelPolicy({ models: { 'grok-4.3': { enabled: true }, 'grok-4.5': { enabled: false } } })
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'grok-hop-'))
+  t.after(() => {
+    resetGrokModelPolicyForTests()
+    closeDatabase()
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+  fs.mkdirSync(path.join(root, 'vms', 'vm-g2'), { recursive: true })
+  fs.writeFileSync(
+    path.join(root, 'vms', 'vm-g2.json'),
+    JSON.stringify({
+      id: 'vm-g2',
+      platform: 'xai',
+      family: 'grok',
+      status: 'running',
+      proxy: { id: 'px-local', scheme: 'local' },
+      grok: {},
+    }),
+  )
+  upsertGrokAccount(root, 'vm-g2', { access_token: 'at', refresh_token: 'rt', expires_at: Date.now() + 3_600_000 })
+  const envelopes = []
+  const run = async (model) => {
+    const sent = {}
+    const body = { model, messages: [{ role: 'user', content: 'hi' }] }
+    const logBag = {}
+    await handleGrokProtocol({
+      req: { headers: {}, once() {}, off() {} },
+      res: { headersSent: false, setHeader() {}, once() {}, off() {} },
+      protocol: 'openai.chat',
+      ctx: { body, path: '/v1/chat/completions' },
+      inbound: body,
+      logBag,
+      stats: { errors: 0, requests: 0, by_route: {} },
+      json: (_res, status, payload) => Object.assign(sent, { status, payload }),
+      writeSSEHeaders() {},
+      routing: { grok: { enabled: true } },
+      projectRoot: root,
+      body,
+      ops: {
+        writeGrokKernelConfig: () => ({ agentId: 'a' }),
+        callGrokKernel: async ({ envelope }) => {
+          envelopes.push(envelope)
+          return {
+            statusCode: 200,
+            headers: {},
+            async *[Symbol.asyncIterator]() {
+              yield Buffer.from(
+                JSON.stringify({ id: 'c', choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } }),
+              )
+            },
+          }
+        },
+      },
+    })
+    return { ...sent, logBag }
+  }
+  const ok = await run('xai/grok-4.3')
+  assert.equal(ok.status, 200)
+  assert.equal(envelopes[0].body.model, 'grok-4.3')
+  assert.equal(envelopes[0].model_id, 'grok-4.3')
+  assert.equal(ok.logBag.upstream_model, 'grok-4.3')
+  const off = await run('grok-4.5')
+  assert.equal(off.status, 400)
+  assert.equal(off.payload.error.code, 'model_disabled')
+  assert.equal(envelopes.length, 1)
+})

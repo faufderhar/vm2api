@@ -5,6 +5,7 @@ import { SettingsRepo } from '../../src/lib/db/repos/settings-repo.mjs'
 import {
   loadGrokModelPolicy,
   resetGrokModelPolicyForTests,
+  resolveGrokRequestModel,
   saveGrokModelPolicy,
   syncGrokIdsIntoPolicy,
 } from '../../src/lib/protocol/grok-model-policy.mjs'
@@ -85,5 +86,29 @@ test('saving the published window does not mark it as a custom override', () => 
     assert.equal(row.capabilities.supports_1m, true)
     assert.equal(row.capabilities.context_window_custom, undefined)
     assert.equal(row.params.max_tokens_cap, 32_000)
+  })
+})
+
+test('a request model drops its provider prefix, follows aliases, and respects a disabled row', () => {
+  withDb(() => {
+    saveGrokModelPolicy({
+      models: {
+        'grok-4.3': { enabled: true, aliases: ['grok-fast'] },
+        'grok-4.20-0309-reasoning': { enabled: false },
+      },
+    })
+    assert.deepEqual(resolveGrokRequestModel('xai/grok-4.3'), {
+      ok: true,
+      model: 'grok-4.3',
+      alias: null,
+      requested: 'xai/grok-4.3',
+    })
+    assert.equal(resolveGrokRequestModel('Grok-Fast').model, 'grok-4.3')
+    assert.equal(resolveGrokRequestModel('grok-fast').alias, 'grok-fast')
+    const off = resolveGrokRequestModel('openrouter/grok-4.20-0309-reasoning')
+    assert.equal(off.ok, false)
+    assert.equal(off.code, 'model_disabled')
+    // Not in the catalog yet: xAI decides.
+    assert.deepEqual(resolveGrokRequestModel('grok-5').ok, true)
   })
 })

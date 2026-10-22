@@ -199,6 +199,29 @@ export function isGrokCatalogModel(id) {
   return true
 }
 
+/**
+ * Model id to send upstream for a request: `provider/` prefix dropped, panel alias resolved.
+ * A row the panel turned off is refused. An id the policy has never seen still goes to xAI,
+ * so a model shipped between catalog syncs keeps working; xAI rejects it if it is not real.
+ */
+export function resolveGrokRequestModel(raw) {
+  const requested = String(raw || '').trim()
+  const bare = requested.split('/').filter(Boolean).pop() || requested
+  if (!loaded) loadGrokModelPolicy()
+  const models = policy.models || {}
+  let id = bare
+  if (!models[id]) {
+    const wanted = bare.toLowerCase()
+    const hit = Object.entries(models).find(([, row]) =>
+      (Array.isArray(row?.aliases) ? row.aliases : []).some((alias) => String(alias).trim().toLowerCase() === wanted),
+    )
+    if (hit) id = hit[0]
+  }
+  const row = models[id]
+  if (row && row.enabled === false) return { ok: false, code: 'model_disabled', model: id, requested }
+  return { ok: true, model: id, alias: id !== bare ? bare : null, requested }
+}
+
 export function resetGrokModelPolicy() {
   policy = seedGrokPolicy()
   loaded = true
