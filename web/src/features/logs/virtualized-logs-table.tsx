@@ -238,6 +238,18 @@ function LogRow({
           />
         </div>
       )}
+      {hidden('account') ? null : (
+        <div
+          className='min-w-[90px] flex-[1] truncate px-1.5 text-xs'
+          title={
+            row.accountId && row.accountId !== row.providerName
+              ? `${row.providerName} (${row.accountId})`
+              : (row.providerName ?? undefined)
+          }
+        >
+          {row.providerName || '-'}
+        </div>
+      )}
       <div className='min-w-[100px] flex-[1.3] px-1.5 font-mono text-xs'>
         <Tooltip>
           <TooltipTrigger asChild>
@@ -523,6 +535,9 @@ export function VirtualizedLogsTable({
               )}
               {isHidden('provider') ? null : (
                 <HeadCell className='min-w-[100px] flex-[1.5]'>供应商</HeadCell>
+              )}
+              {isHidden('account') ? null : (
+                <HeadCell className='min-w-[90px] flex-[1]'>账号</HeadCell>
               )}
               <HeadCell className='min-w-[100px] flex-[1.3]'>计费模型</HeadCell>
               {isHidden('reasoningEffort') ? null : (

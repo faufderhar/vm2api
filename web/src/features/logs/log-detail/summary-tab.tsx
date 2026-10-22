@@ -620,10 +620,17 @@ export function SummaryTab({
         </div>
       ) : null}
 
-      {row.stopReason || row.via || row.finalState ? (
+      {row.providerName || row.stopReason || row.via || row.finalState ? (
         <div className='space-y-2'>
           <h4 className='text-sm font-semibold'>执行信息</h4>
           <div className='space-y-2 rounded-lg border bg-card p-4 text-sm'>
+            {row.providerName ? (
+              <BillingRow label='账号'>
+                <span title={row.accountId ?? undefined}>
+                  {row.providerName}
+                </span>
+              </BillingRow>
+            ) : null}
             {row.stopReason ? (
               <BillingRow label='结束原因'>{row.stopReason}</BillingRow>
             ) : null}
