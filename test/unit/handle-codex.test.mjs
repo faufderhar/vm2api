@@ -10,7 +10,6 @@ import {
   pickCodexCandidates,
   codexFailureHold,
   codexFailoverBudget,
-  applyCodexRebuildBody,
 } from '../../src/lib/protocol/handle-codex.mjs'
 import { persistCodexUsage, getVm } from '../../src/lib/vm/vm-registry.mjs'
 import { StickyRouter } from '../../src/lib/pool/sticky-router.mjs'
@@ -1317,49 +1316,6 @@ test('codex passthrough without an inbound session derives a stable fallback ses
   fs.rmSync(root, { recursive: true, force: true })
 })
 
-test('official Codex passthrough keeps native content and rebuilds session plus cache key', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-official-pass-'))
-  const sticky = new StickyRouter({ dataDir: path.join(root, 'data'), config: { sticky: { enabled: true } } })
-  writeGptVm(root, 'vm-gpt-a')
-  const inbound = 'sess-official-pass'
-  const body = {
-    model: 'gpt-5.5',
-    instructions: 'You are Codex, a coding agent.',
-    input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] }],
-    stream: false,
-    prompt_cache_key: 'cache-official-pass',
-    conversation_id: inbound,
-    session_id: inbound,
-    max_output_tokens: 8192,
-    temperature: 0.2,
-    reasoning: { effort: 'high' },
-  }
-  const { envelopes } = await hopCodex({
-    root,
-    stickyRouter: sticky,
-    routing: { codex: { official_passthrough: true } },
-    headers: {
-      'user-agent': 'codex_cli_rs/0.160.0 (linux x86_64)',
-      originator: 'codex_cli_rs',
-      'session-id': inbound,
-    },
-    body,
-  })
-  const sent = envelopes[0]
-  assert.deepEqual(sent.body.instructions, body.instructions)
-  assert.deepEqual(sent.body.input, body.input)
-  assert.equal(sent.body.prompt_cache_key, sent.session.session_id)
-  assert.notEqual(sent.body.prompt_cache_key, 'cache-official-pass')
-  assert.equal(sent.body.conversation_id, undefined)
-  assert.equal(sent.body.session_id, undefined)
-  assert.equal(sent.body.max_output_tokens, 8192)
-  assert.equal(sent.body.temperature, 0.2)
-  assert.notEqual(sent.session.session_id, inbound)
-  assert.match(sent.session.session_id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
-  sticky.db?.close?.()
-  fs.rmSync(root, { recursive: true, force: true })
-})
-
 test('openai.responses stream names each kernel SSE frame after its payload type', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-sse-names-'))
   writeGptVm(root, 'vm-gpt-a')
@@ -1477,19 +1433,4 @@ test('tool argument disagreement terminates the client stream instead of recordi
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
-})
-
-test('Codex passthrough leaves prompt_cache_key/conversation/session untouched', () => {
-  const body = {
-    model: 'gpt-5.5',
-    input: [],
-    prompt_cache_key: 'caller-key',
-    conversation_id: 'conv',
-    session_id: 'sess',
-  }
-  assert.deepEqual(applyCodexRebuildBody(body, 'proxy-session', 'passthrough'), body)
-  const rebuilt = applyCodexRebuildBody(body, 'proxy-session', 'rebuild')
-  assert.equal(rebuilt.prompt_cache_key, 'proxy-session')
-  assert.equal(rebuilt.conversation_id, undefined)
-  assert.equal(rebuilt.session_id, undefined)
 })

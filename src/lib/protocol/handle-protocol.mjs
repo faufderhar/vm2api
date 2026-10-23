@@ -85,7 +85,7 @@ import {
 } from '../core/errors.mjs'
 import { resolveWorkspaceMode, isOfficialClaudeClient } from './workspace-mode.mjs'
 import { officialMessagesBody } from './anthropic-messages.mjs'
-import { prepareOutboundEnvelope, prepareCliHopBody, prepareOfficialPassthroughBody } from './outbound-attempt.mjs'
+import { prepareOutboundEnvelope, prepareCliHopBody } from './outbound-attempt.mjs'
 import { loadVmIdentity, OFFICIAL_CLI_VERSION } from '../identity/vm-identity.mjs'
 import { touchTelemetrySession } from '../vm/worker-telemetry.mjs'
 import {
@@ -1403,16 +1403,8 @@ export function createHandleProtocol(deps) {
           const keptSession = extra.freshSlot ? '' : attemptBound?.sessionId || ''
           const keptAccount = extra.freshSlot ? '' : attemptBound?.accountId || ''
           const keptVm = extra.freshSlot ? '' : attemptBound?.vmId || ''
-          const routingNow = getRouting()
-          const cliHop = resolveOfficialCcInference(selected.vm, routingNow) === 'cli-hop'
-          // Official Claude Code already carries the real system, cache markers
-          // and sampling fields. Content stays on the wire; slot identity and
-          // outbound session still follow attempt/VM rebuild semantics.
-          const officialPassthrough = officialTraffic && cliHop && officialCcPassthroughFromRouting(routingNow)
-          const attemptSessionMode = officialPassthrough ? 'rebuild' : sessionContext.mode
           const attemptSessionId = resolveOutboundSessionId(callerSession, {
             ...sessionContext,
-            mode: attemptSessionMode,
             accountId: selected.accountId,
             boundSessionId: keptSession,
             boundAccountId: keptAccount,
@@ -1425,6 +1417,7 @@ export function createHandleProtocol(deps) {
           if (identity && attemptSessionId) identity.callerSessionId = attemptSessionId
           const credMode = credentialModeFromOauth(selected.vm?.claude || {})
           const modeOverride = slotPersonaModeOverride(selected.vm)
+          const routingNow = getRouting()
           const repaired = extra.repaired === true
           const preserveThinkingBlocks =
             !repaired &&
@@ -1433,6 +1426,8 @@ export function createHandleProtocol(deps) {
           // cli-node receives the cleaned body after this boundary. Keep every
           // thinking block on the first hop and only let a repaired retry strip it.
           const preserveCliHopThinkingBlocks = !repaired
+          const officialPassthrough = officialTraffic && officialCcPassthroughFromRouting(routingNow)
+          const cliHop = resolveOfficialCcInference(selected.vm, routingNow) === 'cli-hop'
           const resolvedPersona = resolveSlotPersonaPreset(selected.vm, routingNow)
           const preserveCallerEnvironment = !presetFlagEnabled(
             routingNow?.compatibility,
@@ -1443,34 +1438,23 @@ export function createHandleProtocol(deps) {
           if (cliHop) {
             // The front rewrite already produces the official two-block shape.
             const panelRewrite = false
-            if (officialPassthrough && !requestContext) {
-              hopBody = prepareOfficialPassthroughBody(hopBody, {
-                stream: upstreamStream,
-                identity,
-                inbound,
-                reqHeaders: req.headers,
+            hopBody = prepareCliHopBody(repaired ? body : hopBody, {
+              stream: upstreamStream,
+              repaired,
+              cacheTtl: requestedCacheTtl,
+              requestContext,
+              preserveSystem: false,
+              preserveThinkingBlocks: preserveCliHopThinkingBlocks,
+              preserveCallerEnvironment,
+              autoCompactWindow: ctx.autoCompactWindow,
+              routing: routingNow,
+            })
+            if (!requestContext) {
+              hopBody = ensureBillingAttribution(hopBody, {
+                firstUserText,
                 sessionId: attemptSessionId,
+                cliVersion: OFFICIAL_CLI_VERSION,
               })
-              logBag.official_passthrough = true
-            } else {
-              hopBody = prepareCliHopBody(repaired ? body : hopBody, {
-                stream: upstreamStream,
-                repaired,
-                cacheTtl: requestedCacheTtl,
-                requestContext,
-                preserveSystem: false,
-                preserveThinkingBlocks: preserveCliHopThinkingBlocks,
-                preserveCallerEnvironment,
-                autoCompactWindow: ctx.autoCompactWindow,
-                routing: routingNow,
-              })
-              if (!requestContext) {
-                hopBody = ensureBillingAttribution(hopBody, {
-                  firstUserText,
-                  sessionId: attemptSessionId,
-                  cliVersion: OFFICIAL_CLI_VERSION,
-                })
-              }
             }
             hopBody = await materializeRemoteImageSources(hopBody)
             if (panelRewrite) {
@@ -1571,7 +1555,7 @@ export function createHandleProtocol(deps) {
             boundVmId: keptVm,
             vmId: selected.vmId,
             epoch: attemptStartedAt,
-            mode: officialPassthrough ? 'rebuild' : sessionMode,
+            mode: sessionMode,
             routing: routingNow,
             clientDiscriminator,
             firstUserText,
@@ -1579,16 +1563,11 @@ export function createHandleProtocol(deps) {
             apiKeyId: req.apiKeyRecord?.id ?? '',
             stream: upstreamStream,
             cacheControlLimit: Number(getRouting()?.compatibility?.cache_control_limit) || 4,
-            toolNameRewrite: officialPassthrough
-              ? false
-              : openaiCompat
-                ? false
-                : getRouting()?.compatibility?.tool_name_rewrite !== false,
+            toolNameRewrite: openaiCompat ? false : getRouting()?.compatibility?.tool_name_rewrite !== false,
             cacheTtl,
             cacheBreakpoints,
             preserveThinkingBlocks,
-            preserveCallerEnvironment: officialPassthrough ? true : preserveCallerEnvironment,
-            officialPassthrough,
+            preserveCallerEnvironment,
             reqHeaders: req.headers,
             homeDir: selected.exec?.homeDir || '',
             credentialMode: credMode,

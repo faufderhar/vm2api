@@ -191,7 +191,12 @@ export function officialSystemTemplate(system, ttl = DEFAULT_CACHE_TTL) {
   return out
 }
 
-/** One marker, on the last text of the current tail, stamped with the session TTL. */
+/**
+ * Two markers, stamped with the session TTL: the last text of the current tail
+ * and of the user turn before it (4+ messages). The second one sits on the
+ * previous request's write, so a turn that grows past the 20-block lookback
+ * still reads it instead of falling back to the system prefix.
+ */
 function officialMessageMarker(messages, ttl = DEFAULT_CACHE_TTL) {
   if (!Array.isArray(messages) || messages.length === 0) return messages
   const next = messages.map((message) => {
@@ -213,34 +218,36 @@ function officialMessageMarker(messages, ttl = DEFAULT_CACHE_TTL) {
     })
     return changed ? { ...message, content } : message
   })
-  let tail = -1
-  for (let i = next.length - 1; i >= 0; i--) {
+  const users = []
+  for (let i = next.length - 1; i >= 0 && users.length < 2; i--) {
     if (next[i]?.role !== 'user') continue
     const content = next[i].content
-    if (typeof content === 'string' ? content : Array.isArray(content) && content.length) {
-      tail = i
-      break
-    }
+    if (typeof content === 'string' ? content : Array.isArray(content) && content.length) users.push(i)
   }
-  if (tail < 0) return next
-  const message = next[tail]
+  if (users.length === 0) return next
+  stampMessageTail(next, users[0], ttl)
+  if (users.length > 1 && next.length >= 4) stampMessageTail(next, users[1], ttl)
+  return next
+}
+
+function stampMessageTail(messages, index, ttl) {
+  const message = messages[index]
   if (typeof message.content === 'string') {
-    next[tail] = {
+    messages[index] = {
       ...message,
       content: [
         { type: 'text', text: message.content, cache_control: { type: 'ephemeral', ttl: normalizeCacheTtl(ttl) } },
       ],
     }
-    return next
+    return
   }
   const content = message.content.slice()
   for (let i = content.length - 1; i >= 0; i--) {
     if (content[i]?.type === 'thinking' || content[i]?.type === 'redacted_thinking') continue
     content[i] = { ...content[i], cache_control: { type: 'ephemeral', ttl: normalizeCacheTtl(ttl) } }
-    next[tail] = { ...message, content }
-    return next
+    messages[index] = { ...message, content }
+    return
   }
-  return next
 }
 /** Official Claude Code omits eager streaming and tool cache markers. A caller TTL here makes CLI fill the omitted system and message markers. */
 function stripEagerInputStreaming(tools) {
@@ -336,41 +343,6 @@ export function prepareCliHopBody(
   }
   return body
 }
-
-/**
- * Official Claude Code passthrough.
- *
- * The caller already sends the genuine Claude Code wire body: system layout,
- * tool schemas, cache_control positions/TTLs, sampling fields and thinking
- * blocks. Rebuilding it (official_full persona, 1h marker restamping, field
- * cleanup) only inflates the prefix and invalidates the caller's cache.
- *
- * Keep the canonical Messages shape and rebind only the slot identity in
- * metadata. Real system/tools/messages/cache_control stay byte-equivalent at
- * the object level; no billing block, no marker restamp, no tool rename.
- */
-export function prepareOfficialPassthroughBody(
-  canonicalBody,
-  {
-    stream = true,
-    identity = null,
-    inbound = {},
-    reqHeaders = {},
-    sessionId = '',
-    mode = 'rebuild',
-    sessionContext = {},
-  } = {},
-) {
-  let body = officialMessagesBody(canonicalBody, { stream, preserveContentShape: true })
-  body = applyCrsIdentityReplace(body, identity, inbound, reqHeaders, {
-    ...sessionContext,
-    officialClient: true,
-    mode,
-    sessionId,
-  })
-  return body
-}
-
 /** Only legacy Haiku rejects thinking; Haiku 5.5 supports adaptive thinking. */
 export function pinHaikuCliThinking(body = {}) {
   if (!body || typeof body !== 'object') return body
@@ -517,18 +489,7 @@ export function prepareOutboundEnvelope({
   authScheme,
   credentialMode,
   want1m,
-  officialPassthrough = false,
 } = {}) {
-  if (officialPassthrough) {
-    const headers = {
-      ...prepareOutboundHeaders(reqHeaders, homeDir, identity, canonicalBody?.model || inbound?.model, {
-        credentialMode,
-        want1m: want1m === true,
-      }),
-    }
-    if (stream) headers.accept = 'text/event-stream'
-    return { body: canonicalBody, headers, toolNames: {} }
-  }
   const prepared = prepareOutboundAttempt({
     requestContext,
     canonicalBody,

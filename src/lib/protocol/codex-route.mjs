@@ -39,9 +39,6 @@ export const DEFAULT_CODEX_ROUTING = Object.freeze({
     claude_code: 'reject',
     unknown: 'allow',
   },
-  // Official Codex CLI already sends the complete Responses body. Keep it
-  // byte/field-equivalent instead of normalizing/rebuilding the cache key.
-  official_passthrough: false,
   quota: normalizeOpenAIQuotaPolicy(),
 })
 
@@ -107,12 +104,6 @@ export function validateInferenceWebsocketPatch(body = {}) {
   if (Object.prototype.hasOwnProperty.call(codex, 'analytics')) {
     validateEnabledToggle(codex.analytics, 'codex.analytics', 'invalid_codex_analytics')
   }
-  if (
-    Object.prototype.hasOwnProperty.call(codex, 'official_passthrough') &&
-    typeof codex.official_passthrough !== 'boolean'
-  ) {
-    throw typedError('codex.official_passthrough 必须是布尔', 'invalid_codex_official_passthrough')
-  }
   if (Object.prototype.hasOwnProperty.call(codex, 'model_mappings')) {
     validateCodexModelMappingsPatch(codex.model_mappings)
   }
@@ -156,7 +147,6 @@ export function normalizeCodexRouting(raw = {}) {
       anthropic_to_codex: src.convert?.anthropic_to_codex === true,
     },
     clients,
-    official_passthrough: src.official_passthrough === true,
     quota: normalizeOpenAIQuotaPolicy(src.quota),
     model_mappings: normalizeCodexModelMappings(src.model_mappings),
   }

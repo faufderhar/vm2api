@@ -59,6 +59,20 @@
 - 同一平台有多个账号时，调度等级、负载或分数接近的情况下，按用量窗口的 7 天重置时间比较，时间更早的账号优先。没有这个时间的仍按原来的槽位顺序。粘性会话和手动等级不变。
 - 安装脚本和容器入口不再保留公开默认密码 `123456`：密码为空或仍是这个值时生成随机密码，并只打印一次；已经改过的密码不动。登录按来源地址限流。主密钥只有本机回环地址能进管理面板。没配数据库密钥时会生成仅本机可读的 `data/db.secret`，之后写入的凭据列加密保存。`/health` 不再返回探针详情和内核信息，`/v1/meta` 必须带密钥且不返回邮箱。代理拒绝云元数据和链路本地地址，本机 `127.0.0.1` 仍可用。内核空令牌直接拒绝。默认日志改为 `normal`。
 
+## 1.3.219 — 2026-10-23
+
+- `kin-guest-exec`：修正 `if ! run_ssh` 在 POSIX 下吞掉真实退出码的问题；来宾非零退出、ssh 255、timeout 124 不再误报为 0，控制面不再把来宾崩溃误判为 `worker_output_invalid`。（#680）
+- **KVM 运行器**：需同步重建/部署 `docker/kin-kvm` 镜像（或等价方式更新 runner 内 `kin-guest-exec` 脚本）后，线上槽位才会生效。
+
+已部署机升级：须重建并同步部署 **kin-kvm** 镜像（或等价更新 runner 内 `kin-guest-exec`）；**仅更新 Node 控制面与 `web/dist` 不够**。更新后重启相关服务。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.3.218 — 2026-10-23
+
+- 版本号对齐线上。官方 Claude Code / Codex 透传（原 #674、#676）已从 1.3.212 起的历史中移除：透传上线后缓存读命中锁在 system+tools 前缀（约 39.7K），messages 每轮新建缓存。cli-hop 重写与 kernel persona 恢复 1.3.209 行为。
+- cli-hop 出站 message 缓存断点恢复为两个：最后一条 user 与上一条 user（4 条消息起）。只打尾部一个点时，上一轮写入接不上就只能靠上游 20 位置回溯，越界后读命中锁在 system+tools 前缀（约 39.7K），messages 每轮整段重写。system 两点不变，总数 4 点。
+
+已部署机升级：更新 Node 控制面与 `web/dist` 后重启一次。不必 `wrap-cli/sync`、不必 `fetch:payload`、不必重建槽。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
 ## 1.3.217 — 2026-10-23
 
 - 新增 `POST /v1/images/generations`、`/v1/images/edits`（edits 支持 multipart）：经槽位直连 Codex Images 接口，与 `/v1/alpha/search` 同一做法，不经内核；Free 槽不接生图，`x-codex-image-turn-id` 固定同一轮编辑的槽，槽位按密钥属主过滤。（#685）
@@ -91,16 +105,11 @@
 
 ## 1.3.213 — 2026-10-22
 
-- 官方透传（`compatibility.official_cc_passthrough`、`codex.official_passthrough`）：system/instructions、messages/input、tools、cache_control、采样字段等 body 仍完全透传；outbound session 与 Codex `prompt_cache_key` 恢复 attempt/VM rebuild/mint（不再沿用入站 session 或调用方 cache key）；`metadata.user_id` 继续重绑槽位 device/account。默认开关仍关。（#676）
-
-已部署机升级：更新 Node 控制面与 `web/dist` 后重启一次。启用时在面板打开对应开关并保存投影；不必 `wrap-cli/sync`、不必 `fetch:payload`、不必重建槽。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+- 版本号保留；原官方透传修正（#676）已从历史移除，本版无运行时变化。
 
 ## 1.3.212 — 2026-10-22
 
-- 新增官方 Codex 透传：开启 `codex.official_passthrough` 后，官方 Codex 家族 `/v1/responses` 保留 `instructions`、`input`、tools、reasoning、`prompt_cache_key`、`previous_response_id`、`conversation_id`/`session_id` 和官方 metadata，不再按 attempt 重建 `prompt_cache_key`；只清掉 API key/authorization/client_metadata。会话使用 `mode=passthrough`。OpenAI 兼容客户端的 body 归一化不变。
-- 新增官方 Claude Code 透传：开启 `compatibility.official_cc_passthrough` 后，官方家族 cli-hop 保留调用方 system/tools/messages、cache_control 位置与 TTL、temperature、context_management、tool_choice 和 thinking，只重绑槽位 `metadata.user_id`，不再注入 `official_full` 完整 prompt、不重打 1h 断点、不按 attempt 重 mint session。内核 persona 投影为 `zero`，避免二次注入。非官方客户端仍走原 persona/rewrite。（#674）
-
-已部署机升级：更新 Node 控制面与 `web/dist` 后重启一次。启用时在面板打开对应开关并保存投影；不必 `wrap-cli/sync`、不必 `fetch:payload`、不必重建槽。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+- 版本号保留；原官方透传（#674）已从历史移除，本版无运行时变化。
 
 ## 1.3.211 — 2026-10-22
 
