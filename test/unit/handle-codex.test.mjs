@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { clientCancelledResult } from '../../src/lib/core/errors.mjs'
 import {
   isRetryableCodexTransport,
   runCodexKernelHop,
@@ -119,6 +120,73 @@ test('GPT candidates follow the caller owner scope', () => {
     assert.deepEqual(session.ids, ['vm-gpt-mine'])
     const platform = pickCodexCandidates(root, { headers: {}, apiKeyKind: 'master' })
     assert.deepEqual(platform.ids, ['vm-gpt-platform'])
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('client cancel keeps Codex usage already streamed and ingests account quota', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-cancel-'))
+  writeGptVm(root, 'vm-gpt-cancel')
+  const ingested = []
+  const res = {
+    headersSent: false,
+    writableEnded: false,
+    write() {
+      this.headersSent = true
+    },
+    end() {
+      this.writableEnded = true
+    },
+    once() {},
+    off() {},
+  }
+  const logBag = {}
+  try {
+    await handleCodexProtocol({
+      req: { headers: {}, apiKeyKind: 'master' },
+      res,
+      protocol: 'openai.responses',
+      ctx: { body: { model: 'gpt-5.4', input: 'hi', stream: true } },
+      inbound: { stream: true },
+      logBag,
+      stats: { errors: 0, requests: 0, by_route: {} },
+      json: (_res, status, body) => {
+        res.statusCode = status
+        res.body = body
+        return body
+      },
+      writeSSEHeaders() {
+        res.headersSent = true
+      },
+      routing: {},
+      projectRoot: root,
+      accountQuota: {
+        ingestHeaders(accountId, headers, usage, extra) {
+          ingested.push({ accountId, headers, usage, extra })
+        },
+      },
+      ops: {
+        writeCodexKernelConfig() {},
+        ensureCodexKernel: async () => ({ ok: true }),
+        streamCodexKernel: async ({ onEvent }) => {
+          await onEvent('data: {"type":"response.output_text.delta","delta":"hi"}\n')
+          await onEvent(
+            'data: {"type":"response.completed","response":{"usage":{"input_tokens":18,"output_tokens":4}}}\n',
+          )
+          return clientCancelledResult({ committed: true, via: 'go-worker-stream' })
+        },
+      },
+    })
+    assert.equal(logBag.final_state, 'cancelled')
+    assert.equal(logBag.error_code, null)
+    assert.equal(logBag.usage.input_tokens, 18)
+    assert.equal(logBag.usage.output_tokens, 4)
+    assert.equal(ingested.length, 1)
+    assert.equal(ingested[0].accountId, 'vm-gpt-cancel')
+    assert.equal(ingested[0].usage.input_tokens, 18)
+    assert.equal(ingested[0].usage.output_tokens, 4)
+    assert.equal(ingested[0].extra.countRequest, true)
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }

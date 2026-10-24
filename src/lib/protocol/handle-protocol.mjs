@@ -210,6 +210,29 @@ export function createHandleProtocol(deps) {
     return disjointOpenaiUsage(next)
   }
 
+  function hasProducedUsage(usage) {
+    if (!usage || typeof usage !== 'object') return false
+    for (const key of [
+      'input_tokens',
+      'output_tokens',
+      'cache_read_input_tokens',
+      'cache_creation_input_tokens',
+      'cache_read_tokens',
+      'cache_creation_tokens',
+      'prompt_tokens',
+      'completion_tokens',
+    ]) {
+      if (Number(usage[key]) > 0) return true
+    }
+    const cache = usage.cache_creation
+    if (cache && typeof cache === 'object') {
+      for (const value of Object.values(cache)) {
+        if (Number(value) > 0) return true
+      }
+    }
+    return false
+  }
+
   function attachPricing(logBag, { managedKey = null, rateMultiplier = 1, bill = false } = {}) {
     const model = logBag.upstream_model || logBag.model
     const priced = costColumnsFromUsage(logBag.usage || {}, model)
@@ -851,6 +874,7 @@ export function createHandleProtocol(deps) {
             projectRoot: cfg.paths.project,
             captureOutbound: logCtx.capture_outbound === true,
             accountGate,
+            accountQuota,
             ops: deps.codexOps || {},
             ...codexSticky,
           }),
@@ -871,6 +895,7 @@ export function createHandleProtocol(deps) {
           projectRoot: cfg.paths.project,
           captureOutbound: logCtx.capture_outbound === true,
           accountGate,
+          accountQuota,
           ops: deps.codexOps || {},
           ...codexSticky,
         }),
@@ -1227,7 +1252,8 @@ export function createHandleProtocol(deps) {
       attachPricing(logBag, {
         managedKey,
         rateMultiplier: deps.groupsRepo.rateMultiplier(managedKey?.group_id ?? 1),
-        bill: !!(result?.ok && managedKey),
+        // Incomplete and cancelled hops still cost whatever usage the upstream already metered.
+        bill: !!(managedKey && (result?.ok || hasProducedUsage(logBag.usage))),
       })
       if (clientStream) {
         if (isClientCancelledResult(result)) return finishClientCancel(res, result, logBag)
@@ -1237,6 +1263,12 @@ export function createHandleProtocol(deps) {
           return sendMapped(res, mapped)
         }
         if (result?.ok && protocol !== 'anthropic.messages') res.write('data: [DONE]\n\n')
+        if (!result?.ok) {
+          stats.errors++
+          logBag.error_code = result?.body?.error?.code || 'stream_incomplete'
+          logBag.error_message = result?.body?.error?.message || 'Stream did not reach a verified terminal state'
+          logBag.final_state = result?.terminalState || logBag.final_state || 'incomplete'
+        }
         return res.end()
       }
       if (!result?.ok || isIncompleteAssistantMessage(result)) {

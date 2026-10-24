@@ -252,6 +252,7 @@ async function fixture(handler) {
       },
     },
     async close() {
+      server.closeAllConnections?.()
       await new Promise((resolve) => server.close(resolve))
       fs.rmSync(root, { recursive: true, force: true })
     },
@@ -516,6 +517,56 @@ unixTest('streamGoWorker names the aborted hop to the kernel cancel route', asyn
     const result = await pending
     assert.equal(result.body.error.code, 'client_cancelled')
     assert.equal(await sawCancel, hopId)
+  } finally {
+    await fx.close()
+  }
+})
+
+unixTest('streamGoWorker keeps usage already seen when the client aborts', async () => {
+  let sawUsage = false
+  let dropStream = () => {}
+  const streamDropped = new Promise((resolve) => {
+    dropStream = resolve
+  })
+  const fx = await fixture(async (req, res) => {
+    if (req.url === '/internal/v1/cancel') {
+      res.setHeader('content-type', 'application/json')
+      res.end('{"ok":true,"cancelled":true}')
+      return
+    }
+    const chunks = []
+    for await (const chunk of req) chunks.push(chunk)
+    res.setHeader('content-type', 'text/event-stream')
+    res.write(
+      'data: {"type":"message_start","message":{"id":"msg_abort","type":"message","role":"assistant","model":"claude-haiku-4-5","content":[],"usage":{"input_tokens":20,"output_tokens":1}}}\n\n',
+    )
+    res.write('data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}\n\n')
+    res.write('data: {"type":"message_delta","delta":{"stop_reason":null},"usage":{"output_tokens":5}}\n\n')
+    res.write(
+      'event: response_headers\ndata: {"type":"response_headers","headers":{"anthropic-ratelimit-unified-5h-utilization":"0.2"}}\n\n',
+    )
+    await streamDropped
+    res.destroy()
+  })
+  try {
+    const controller = new AbortController()
+    const pending = streamGoWorker({
+      exec: fx.exec,
+      body: { model: 'claude-haiku-4-5', stream: true, messages: [{ role: 'user', content: 'hi' }] },
+      signal: controller.signal,
+      onEvent: (line) => {
+        if (String(line).includes('"output_tokens":5')) sawUsage = true
+      },
+    })
+    while (!sawUsage) await new Promise((resolve) => setTimeout(resolve, 5))
+    controller.abort()
+    dropStream()
+    const result = await pending
+    assert.equal(result.body.error.code, 'client_cancelled')
+    assert.equal(result.terminalState, 'cancelled')
+    assert.equal(result.usage.input_tokens, 20)
+    assert.equal(result.usage.output_tokens, 5)
+    assert.equal(result.headers['anthropic-ratelimit-unified-5h-utilization'], '0.2')
   } finally {
     await fx.close()
   }

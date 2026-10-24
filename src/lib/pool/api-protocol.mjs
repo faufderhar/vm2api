@@ -1,7 +1,12 @@
 import { officialMessagesBody } from '../protocol/anthropic-messages.mjs'
 import { prepareClassifierBody } from '../protocol/request-purpose.mjs'
 import { consumeClaudeSSEData } from '../protocol/convert.mjs'
-import { isCompleteAssistantMessage, mapUpstreamError } from '../core/errors.mjs'
+import {
+  clientCancelledResult,
+  isClientCancelledCode,
+  isCompleteAssistantMessage,
+  mapUpstreamError,
+} from '../core/errors.mjs'
 import { isContentPolicyErrorCode } from '../core/refusal-guard.mjs'
 import { forwardApi, readApiJson } from '../transport/api-kernel-client.mjs'
 import { messagesUrl, normalizeProtocol, resolvePreset, responsesUrl, upstreamAuthHeaders } from './api-presets.mjs'
@@ -49,6 +54,69 @@ async function readLines(stream, onLine) {
     }
   }
   if (buf) await onLine(buf)
+}
+
+function mergeUsagePatch(current, patch) {
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return current
+  return { ...(current || {}), ...patch }
+}
+
+/** Anthropic SSE usage lives on message_start.message.usage and message_delta.usage. */
+function noteClaudeLineUsage(line, state) {
+  const event = consumeClaudeSSEData(line, state)
+  if (!event) return state.usage || null
+  if (event.type === 'message_start') state.usage = mergeUsagePatch(state.usage, event.message?.usage)
+  else if (event.type === 'message_delta') state.usage = mergeUsagePatch(state.usage, event.usage)
+  return state.usage || null
+}
+
+function writeCommittedStreamError(res, protocol, error) {
+  if (!res || res.writableEnded || res.destroyed) return
+  const info = {
+    type: 'api_error',
+    code: String(error?.code || 'upstream_stream_interrupted').slice(0, 80),
+    message: String(error?.message || 'upstream stream interrupted').slice(0, 300),
+  }
+  try {
+    if (protocol === 'anthropic.messages') {
+      res.write(`event: error\ndata: ${JSON.stringify({ type: 'error', error: info })}\n\n`)
+    } else {
+      res.write(`data: ${JSON.stringify({ error: info })}\n\ndata: [DONE]\n\n`)
+    }
+  } catch {}
+}
+
+function apiStreamInterruptResult({ resultBase, error, signal, committed, usage, ttftMs, sawStop, res, protocol }) {
+  const aborted = !!signal?.aborted || isClientCancelledCode(error?.code, error?.message)
+  if (aborted) {
+    return clientCancelledResult({
+      ...resultBase,
+      usage: usage || null,
+      committed: !!committed,
+      ttftMs: ttftMs ?? null,
+      sawMessageStop: !!sawStop,
+    })
+  }
+  if (committed && res?.headersSent) writeCommittedStreamError(res, protocol, error)
+  return {
+    ...resultBase,
+    ok: false,
+    status: Number(resultBase?.status) >= 400 ? resultBase.status : 502,
+    body: {
+      type: 'error',
+      error: {
+        type: 'api_error',
+        code: String(error?.code || 'upstream_stream_interrupted').slice(0, 80),
+        message: String(error?.message || 'upstream stream interrupted').slice(0, 300),
+      },
+    },
+    usage: usage || null,
+    terminalState: committed ? 'incomplete' : 'transport_error',
+    committed: !!committed,
+    ttftMs: ttftMs ?? null,
+    sawMessageStop: !!sawStop,
+    transportError: !committed,
+  }
 }
 
 function openAIResponsesSseEvent(line) {
@@ -280,15 +348,19 @@ export async function runApiInference({
       res,
       converters,
       body,
+      signal,
     })
   }
 
   const classifierSseState = { dataBuf: '' }
+  const claudeUsageState = { dataBuf: '', usage: null }
   let classifierError = null
   let classifierStopped = false
+  let streamError = null
   const readUpstreamLines = async (onLine) => {
     try {
       await readLines(upstream, async (line) => {
+        noteClaudeLineUsage(line, claudeUsageState)
         if (requestContext) {
           const event = consumeClaudeSSEData(line, classifierSseState)
           if (event?.type === 'error')
@@ -301,16 +373,19 @@ export async function runApiInference({
         await onLine(line)
       })
     } catch (error) {
-      if (!requestContext) throw error
-      classifierError = {
-        type: 'error',
-        error: {
-          type: 'api_error',
-          code: 'upstream_stream_interrupted',
-          status: 502,
-          message: String(error.message || 'Classifier stream interrupted').slice(0, 300),
-        },
+      if (requestContext) {
+        classifierError = {
+          type: 'error',
+          error: {
+            type: 'api_error',
+            code: 'upstream_stream_interrupted',
+            status: 502,
+            message: String(error.message || 'Classifier stream interrupted').slice(0, 300),
+          },
+        }
+        return
       }
+      streamError = error
     }
   }
   const classifierFailure = () => {
@@ -370,19 +445,32 @@ export async function runApiInference({
         ok: false,
         status,
         body: terminalError,
-        usage: assembler.message?.usage || null,
+        usage: assembler.message?.usage || claudeUsageState.usage || null,
         terminalState: 'rejected',
         committed,
         sawMessageStop,
       }
     }
     const assembled = assembler.message
+    if (streamError && !sawMessageStop) {
+      return apiStreamInterruptResult({
+        resultBase,
+        error: streamError,
+        signal,
+        committed,
+        usage: assembled?.usage || claudeUsageState.usage,
+        ttftMs: null,
+        sawStop: false,
+        res,
+        protocol,
+      })
+    }
     if (!sawMessageStop) {
       return {
         ...resultBase,
         ok: false,
         body: assembled || { type: 'error', error: { message: 'empty api upstream' } },
-        usage: assembled?.usage || null,
+        usage: assembled?.usage || claudeUsageState.usage || null,
         terminalState: assembled || committed ? 'incomplete' : 'rejected',
         committed,
         sawMessageStop: false,
@@ -394,7 +482,7 @@ export async function runApiInference({
       ...resultBase,
       ok: complete,
       body: assembled || { type: 'error', error: { message: 'empty api upstream' } },
-      usage: assembled?.usage || null,
+      usage: assembled?.usage || claudeUsageState.usage || null,
       terminalState: complete ? 'verified' : 'incomplete',
       committed,
       sawMessageStop: true,
@@ -438,11 +526,26 @@ export async function runApiInference({
   })
 
   const failure = classifierFailure()
-  if (failure) return { ...failure, committed, ttftMs }
+  if (failure) return { ...failure, committed, ttftMs, usage: claudeUsageState.usage || null }
+
+  if (streamError && !sawStop) {
+    return apiStreamInterruptResult({
+      resultBase,
+      error: streamError,
+      signal,
+      committed,
+      usage: claudeUsageState.usage,
+      ttftMs,
+      sawStop,
+      res,
+      protocol,
+    })
+  }
 
   return {
     ...resultBase,
     ok: resultBase.ok && (deliveryMode !== 'verified' || sawStop),
+    usage: claudeUsageState.usage || null,
     terminalState: sawStop ? 'verified' : committed ? 'incomplete' : 'rejected',
     committed,
     ttftMs,
@@ -459,6 +562,7 @@ async function runOpenAIResponsesUpstream({
   res,
   converters,
   body,
+  signal,
 }) {
   const chunks = []
   const anthropicSse = protocol === 'anthropic.messages' ? createAnthropicSseState() : null
@@ -501,32 +605,51 @@ async function runOpenAIResponsesUpstream({
     }
   }
 
-  await readLines(upstream, async (line) => {
-    if (conversionError) return
-    const raw = String(line || '')
-    const event = openAIResponsesSseEvent(raw)
-    const failure = openAIResponsesFailure(event)
-    if (failure) terminalFailure = failure
-    const seen = usageFromSseLine(raw)
-    if (seen) streamedUsage = seen
-    const startsOutput = isOpenAIResponsesCommitEvent(event)
-    const completes = event?.type === 'response.completed' || event?.type === 'response.done'
-    const wasCommitted = committed
-    if ((startsOutput || completes) && ttftMs == null) ttftMs = Date.now() - started
-    if (!committed && (startsOutput || completes)) committed = true
-    if (!clientStream) {
-      chunks.push(raw)
-      if (/response\.(completed|done)/.test(raw) || raw.trim() === 'data: [DONE]') sawTerminal = true
-      return
-    }
-    if (!wasCommitted) {
-      pendingLines.push(raw)
-      if (!committed) return
-      for (const pending of pendingLines.splice(0)) writeStreamLine(pending)
-      return
-    }
-    writeStreamLine(raw)
-  })
+  let streamError = null
+  try {
+    await readLines(upstream, async (line) => {
+      if (conversionError) return
+      const raw = String(line || '')
+      const event = openAIResponsesSseEvent(raw)
+      const failure = openAIResponsesFailure(event)
+      if (failure) terminalFailure = failure
+      const seen = usageFromSseLine(raw)
+      if (seen) streamedUsage = seen
+      const startsOutput = isOpenAIResponsesCommitEvent(event)
+      const completes = event?.type === 'response.completed' || event?.type === 'response.done'
+      const wasCommitted = committed
+      if ((startsOutput || completes) && ttftMs == null) ttftMs = Date.now() - started
+      if (!committed && (startsOutput || completes)) committed = true
+      if (!clientStream) {
+        chunks.push(raw)
+        if (/response\.(completed|done)/.test(raw) || raw.trim() === 'data: [DONE]') sawTerminal = true
+        return
+      }
+      if (!wasCommitted) {
+        pendingLines.push(raw)
+        if (!committed) return
+        for (const pending of pendingLines.splice(0)) writeStreamLine(pending)
+        return
+      }
+      writeStreamLine(raw)
+    })
+  } catch (error) {
+    streamError = error
+  }
+
+  if (streamError && !completed && !sawTerminal) {
+    return apiStreamInterruptResult({
+      resultBase,
+      error: streamError,
+      signal,
+      committed,
+      usage: streamedUsage,
+      ttftMs,
+      sawStop: false,
+      res,
+      protocol,
+    })
+  }
 
   if (!clientStream) {
     if (terminalFailure)

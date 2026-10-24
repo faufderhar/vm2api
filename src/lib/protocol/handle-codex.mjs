@@ -55,7 +55,12 @@ import {
   waitForOpenAICapacity,
   wakeOpenAIWaiter,
 } from '../pool/openai-account-runtime.mjs'
-import { CLIENT_POOL_BUSY_MESSAGE, CLIENT_POOL_UNAVAILABLE_MESSAGE, ErrorCode } from '../core/errors.mjs'
+import {
+  CLIENT_POOL_BUSY_MESSAGE,
+  CLIENT_POOL_UNAVAILABLE_MESSAGE,
+  ErrorCode,
+  isClientCancelledResult,
+} from '../core/errors.mjs'
 import { applyOpenaiWashLog } from './openai-wash.mjs'
 import { DEFAULT_IMAGE_TOOL_MODEL, canonicalImageToolModel, imageGenerationTools } from './image-tool-models.mjs'
 import { isImageToolModelEnabled } from './gpt-model-policy.mjs'
@@ -400,6 +405,36 @@ function preferUsage(left, right) {
   return left || right || null
 }
 
+function codexQuotaAccountId(vm) {
+  return vm?.account_uuid || vm?.claude?.account_uuid || vm?.codex?.chatgpt_account_id || vm?.id || null
+}
+
+/** Copy a hop's token usage onto the request log. Managed-key billing reads logBag.usage. */
+function noteCodexUsage(logBag, usage, { serviceTier = null, imageUsage = null } = {}) {
+  if (!usage || usageTokens(usage) <= 0) return false
+  const extracted = extractOpenaiUsage(usage)
+  const tier = serviceTier || usage?.service_tier || null
+  const disjoint = extracted ? openaiAnthropicUsageFromExtract(extracted) : null
+  const logged = disjointOpenaiUsage(usage && tier ? { ...usage, service_tier: tier } : usage)
+  logBag.usage = logged
+  if (imageUsage) logBag.image_usage = imageUsage
+  logBag.input_tokens = disjoint?.input_tokens ?? usage?.input_tokens ?? usage?.prompt_tokens ?? null
+  logBag.output_tokens = disjoint?.output_tokens ?? usage?.output_tokens ?? usage?.completion_tokens ?? null
+  logBag.cache_read_tokens =
+    disjoint?.cache_read_input_tokens ??
+    extracted?.cached_tokens ??
+    usage?.input_tokens_details?.cached_tokens ??
+    usage?.cache_read_tokens ??
+    null
+  logBag.cache_creation_tokens =
+    disjoint?.cache_creation_input_tokens ??
+    extracted?.cache_write_tokens ??
+    usage?.input_tokens_details?.cache_write_tokens ??
+    usage?.cache_creation_tokens ??
+    null
+  return true
+}
+
 const WAIT_TIMEOUT_MIN_MS = 1000
 const WAIT_TIMEOUT_MAX_MS = 120000
 const DEFAULT_WAIT_TIMEOUT_MS = 30000
@@ -548,6 +583,7 @@ export async function handleCodexProtocol({
   captureOutbound = false,
   requestStartedAt = Date.now(),
   accountGate = null,
+  accountQuota = null,
   ownerScope = null,
 }) {
   const codex = normalizeCodexRouting(routing.codex)
@@ -884,34 +920,35 @@ export async function handleCodexProtocol({
         last = result
         const hopUsage = result.usage || result.body?.usage || result.body?.response?.usage || null
         const usage = preferUsage(hopUsage, streamedUsage)
+        const serviceTier = responseServiceTier || converted.body?.service_tier || usage?.service_tier || null
+        const imageUsage =
+          result.body?.tool_usage?.image_gen || result.body?.response?.tool_usage?.image_gen || streamedImageUsage
+        if (isClientCancelledResult(result) || gone.signal?.aborted) {
+          noteCodexUsage(logBag, usage, { serviceTier, imageUsage })
+          logBag.final_state = 'cancelled'
+          logBag.upstream_status = result?.status ?? 499
+          logBag.upstream_model = converted.body.model
+          logBag.error_code = null
+          logBag.error_message = null
+          const accountId = codexQuotaAccountId(vm)
+          if (accountId) {
+            try {
+              accountQuota?.ingestHeaders?.(accountId, result?.headers || {}, logBag.usage, {
+                status: result?.status ?? 499,
+                countRequest: true,
+              })
+            } catch {}
+          }
+          if (stream && res.headersSent && !res.writableEnded) res.end()
+          return
+        }
         // Responses SSE is not a Claude assistant message, so the stream client
         // reports ok:false / incomplete. A 200 hop that carried tokens still billed.
         const delivered = !conversionError && (result?.ok || (Number(result?.status) === 200 && usageTokens(usage) > 0))
         if (delivered) {
           attemptKind = 'succeeded'
           bindSticky(outboundSessionId)
-          const extracted = extractOpenaiUsage(usage)
-          const serviceTier = responseServiceTier || converted.body?.service_tier || usage?.service_tier || null
-          const disjoint = extracted ? openaiAnthropicUsageFromExtract(extracted) : null
-          const logged = disjointOpenaiUsage(usage && serviceTier ? { ...usage, service_tier: serviceTier } : usage)
-          logBag.usage = logged
-          const imageUsage =
-            result.body?.tool_usage?.image_gen || result.body?.response?.tool_usage?.image_gen || streamedImageUsage
-          if (imageUsage) logBag.image_usage = imageUsage
-          logBag.input_tokens = disjoint?.input_tokens ?? usage?.input_tokens ?? usage?.prompt_tokens ?? null
-          logBag.output_tokens = disjoint?.output_tokens ?? usage?.output_tokens ?? usage?.completion_tokens ?? null
-          logBag.cache_read_tokens =
-            disjoint?.cache_read_input_tokens ??
-            extracted?.cached_tokens ??
-            usage?.input_tokens_details?.cached_tokens ??
-            usage?.cache_read_tokens ??
-            null
-          logBag.cache_creation_tokens =
-            disjoint?.cache_creation_input_tokens ??
-            extracted?.cache_write_tokens ??
-            usage?.input_tokens_details?.cache_write_tokens ??
-            usage?.cache_creation_tokens ??
-            null
+          noteCodexUsage(logBag, usage, { serviceTier, imageUsage })
           reportOpenAIAttempt(vm.id, 'succeeded', result.ttftMs ?? null)
           logBag.final_state = result?.ok ? result.terminalState || 'verified' : 'verified'
           logBag.upstream_model = converted.body.model
