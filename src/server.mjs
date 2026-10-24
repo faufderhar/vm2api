@@ -991,13 +991,19 @@ if (proxyPool.snapshot().config.ipv6_enabled !== true) {
 }
 const clusterRoutes = createClusterRoutes({ manager: clusterManager, json, readBody, ok: panel.ok })
 const slotShell = createSlotShell({ projectRoot: cfg.paths.project, importOauth: commitImportedOauth })
-for (const vm of listVms(cfg.paths.project)) {
-  if (!isClaudeVm(vm)) continue
-  try {
-    await ensureSlotSubscriptionType(path.join(cfg.paths.project, 'vms', vm.id, 'cli-home'), vm.account_tier)
-  } catch (error) {
-    console.warn('[credential-subscription]', vm.id, error?.message || error)
+// Each slot takes credentials.json.lock (up to 30s while its worker refreshes), so this runs after listen, a few at a time.
+async function backfillSlotSubscriptionTypes(concurrency = 4) {
+  const queue = listVms(cfg.paths.project).filter(isClaudeVm)
+  const drain = async () => {
+    for (let vm = queue.shift(); vm; vm = queue.shift()) {
+      try {
+        await ensureSlotSubscriptionType(path.join(cfg.paths.project, 'vms', vm.id, 'cli-home'), vm.account_tier)
+      } catch (error) {
+        console.warn('[credential-subscription]', vm.id, error?.message || error)
+      }
+    }
   }
+  await Promise.all(Array.from({ length: concurrency }, drain))
 }
 cliNodeGuard = createCliNodeGuard({
   listTargets: () => listVms(cfg.paths.project),
@@ -1361,6 +1367,9 @@ await bootApiKernel(cfg)
 apiKernelSupervisor = superviseApiKernel(cfg)
 
 server.listen(cfg.port, cfg.host, () => {
+  backfillSlotSubscriptionTypes().catch((e) =>
+    console.warn('[credential-subscription] backfill failed', e?.message || e),
+  )
   try {
     vmTestSchedule.start()
   } catch (e) {

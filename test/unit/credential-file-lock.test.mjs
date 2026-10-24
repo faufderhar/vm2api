@@ -60,7 +60,7 @@ test('worker holds the lock, Node waits, and the event loop is not blocked', asy
     ticks += 1
   }, 20)
   try {
-    await waitUntil(() => fs.existsSync(ready), 2000)
+    await waitUntil(() => fs.existsSync(ready), 10000)
     const started = Date.now()
     const held = await withCredentialFileLock(lock, () => 'held')
     const elapsed = Date.now() - started
@@ -82,7 +82,7 @@ test('writeWorkerCredentialFile waits for credentials.json.lock', async () => {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   const child = holdLock(lock, ready, 0.45)
   try {
-    await waitUntil(() => fs.existsSync(ready), 2000)
+    await waitUntil(() => fs.existsSync(ready), 10000)
     const started = Date.now()
     const written = await writeWorkerCredentialFile(home, {
       access_token: 'access-locked',
