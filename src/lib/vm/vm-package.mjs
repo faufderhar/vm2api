@@ -523,7 +523,7 @@ function credentialPresent(spec, vm) {
   return !!(vm.claude?.has_access || vm.claude?.has_refresh || vm.claude?.has_api_key)
 }
 
-function writeCredential(projectRoot, id, spec) {
+async function writeCredential(projectRoot, id, spec) {
   if (!spec.credential) return { ok: true }
   if (spec.kind === 'codex') {
     const saved = spec.credential.accounts
@@ -537,7 +537,7 @@ function writeCredential(projectRoot, id, spec) {
   }
   const home = path.join(projectRoot, 'vms', id, 'cli-home')
   const oauth = spec.credential.oauth
-  const file = writeWorkerCredentialFile(home, oauth)
+  const file = await writeWorkerCredentialFile(home, oauth)
   if (!file) return fail('credential_required', 'Claude 包需要 access_token、refresh_token 或 api_key')
   persistOauthToVm(path.join(projectRoot, 'vms', `${id}.json`), oauth, { acceptLiveGrant: true })
   return { ok: true }
@@ -735,7 +735,7 @@ export async function commitVmPackage({
     } catch {}
   }
 
-  const written = writeCredential(projectRoot, id, spec)
+  const written = await writeCredential(projectRoot, id, spec)
   if (!written.ok) return { ok: false, status: 400, error: written.error }
   let saved = finishControl(projectRoot, id, spec, status)
   if (written.account) {

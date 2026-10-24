@@ -271,7 +271,7 @@ test('cluster shell login pulls remote OAuth before adopt imports it', async () 
         loginHost: host,
         importOauth: async (input) => {
           calls.push('import')
-          writeWorkerCredentialFile(home, input.oauth)
+          await writeWorkerCredentialFile(home, input.oauth)
           return { ok: true }
         },
       },
@@ -309,7 +309,7 @@ test('shell login is synced into the worker credential and the terminal keeps th
       {
         importOauth: async (input) => {
           calls.push(input)
-          writeWorkerCredentialFile(home, input.oauth)
+          await writeWorkerCredentialFile(home, input.oauth)
           return { ok: true }
         },
       },
@@ -337,7 +337,7 @@ test('a live interactive grant is imported once into the worker credential', asy
   const vm = { id: 'vm-02' }
   const importer = async (input) => {
     calls.push(input.oauth.refresh_token)
-    writeWorkerCredentialFile(home, input.oauth)
+    await writeWorkerCredentialFile(home, input.oauth)
     return { ok: true }
   }
   try {
@@ -407,7 +407,7 @@ test('a cluster grant is pulled before an empty local file can hide it', async (
         loginHost: host,
         importOauth: async (input) => {
           calls.push(input.oauth.refresh_token)
-          writeWorkerCredentialFile(home, input.oauth)
+          await writeWorkerCredentialFile(home, input.oauth)
           return { ok: true }
         },
       },

@@ -770,7 +770,13 @@ export class ProxyPool extends EventEmitter {
       if (!p.enabled || p.status === 'dead' || p.status === 'fail') return false
       if (proxyBlockedReason(p, this.state.config.ipv6_enabled)) return false
       if (boundVmIdsOf(p).length >= limit) return false
-      if (proxyOwnerId(p) !== owner) return false
+      const pOwner = proxyOwnerId(p)
+      if (role === 'user') {
+        if (pOwner !== owner) return false
+      } else if (pOwner && pOwner !== owner) {
+        // admin and admin_assigned: platform proxies are allowed, another tenant's are not
+        return false
+      }
       return canBindProxyToVm(p, ownerVm, { role })
     })
     candidates.sort((a, b) => {

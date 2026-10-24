@@ -994,7 +994,7 @@ const slotShell = createSlotShell({ projectRoot: cfg.paths.project, importOauth:
 for (const vm of listVms(cfg.paths.project)) {
   if (!isClaudeVm(vm)) continue
   try {
-    ensureSlotSubscriptionType(path.join(cfg.paths.project, 'vms', vm.id, 'cli-home'), vm.account_tier)
+    await ensureSlotSubscriptionType(path.join(cfg.paths.project, 'vms', vm.id, 'cli-home'), vm.account_tier)
   } catch (error) {
     console.warn('[credential-subscription]', vm.id, error?.message || error)
   }

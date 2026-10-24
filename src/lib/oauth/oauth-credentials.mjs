@@ -404,7 +404,7 @@ function sealSlotCredentialFile(file) {
 
 /** Write slot credentials.json for imports and worker-owned credential updates. */
 
-export function writeWorkerCredentialFile(homeDir, cred) {
+export async function writeWorkerCredentialFile(homeDir, cred) {
   const file = slotWorkerCredentialPath(homeDir)
   if (!file) return null
   // credentials.json.lock is the worker store's LockPath (path + ".lock").
@@ -492,7 +492,7 @@ function writeWorkerCredentialFileUnlocked(homeDir, file, cred) {
  * Old slot files predate subscriptionType. Fill from the identified plan,
  * otherwise pro; repair the legacy pro fallback for an identified Max slot.
  */
-export function ensureSlotSubscriptionType(homeDir, accountTier = null) {
+export async function ensureSlotSubscriptionType(homeDir, accountTier = null) {
   const file = slotWorkerCredentialPath(homeDir)
   if (!file || !fs.existsSync(file)) return { wrote: false, reason: 'missing' }
   return withCredentialFileLock(`${file}.lock`, () => ensureSlotSubscriptionTypeUnlocked(file, homeDir, accountTier))
@@ -526,7 +526,7 @@ function ensureSlotSubscriptionTypeUnlocked(file, homeDir, accountTier) {
   return { wrote: true, subscriptionType: tier }
 }
 
-export function persistSlotAuthScheme(projectRoot, vmId, rawScheme) {
+export async function persistSlotAuthScheme(projectRoot, vmId, rawScheme) {
   const vmPath = path.join(projectRoot, 'vms', `${vmId}.json`)
   if (!vmPath || !fs.existsSync(vmPath)) return null
   const vm = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
@@ -543,7 +543,7 @@ export function persistSlotAuthScheme(projectRoot, vmId, rawScheme) {
   const cred = readWorkerCredentialFile(homeDir)
   if (cred) {
     try {
-      writeWorkerCredentialFile(homeDir, { ...cred, auth_scheme: scheme })
+      await writeWorkerCredentialFile(homeDir, { ...cred, auth_scheme: scheme })
     } catch {}
   }
   return vm

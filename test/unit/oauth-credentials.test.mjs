@@ -309,9 +309,9 @@ test('readWorkerCredentialFile infers setup-token from inference-only scopes', (
   assert.equal(cred.scope, 'user:inference')
 })
 
-test('writeWorkerCredentialFile maps inference-only oats to official-setup-token', () => {
+test('writeWorkerCredentialFile maps inference-only oats to official-setup-token', async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-slot-scope-'))
-  writeWorkerCredentialFile(home, {
+  await writeWorkerCredentialFile(home, {
     type: 'setup-token',
     access_token: 'sk-ant-oat01-SCOPE',
     scope: 'inference',
@@ -325,9 +325,9 @@ test('writeWorkerCredentialFile maps inference-only oats to official-setup-token
   fs.rmSync(home, { recursive: true, force: true })
 })
 
-test('writeWorkerCredentialFile preserves full-scope setup-token metadata', () => {
+test('writeWorkerCredentialFile preserves full-scope setup-token metadata', async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-slot-full-setup-'))
-  writeWorkerCredentialFile(home, {
+  await writeWorkerCredentialFile(home, {
     type: 'setup-token',
     access_token: 'sk-ant-oat01-SCOPE',
     refresh_token: 'sk-ant-ort01-SCOPE',
@@ -347,9 +347,9 @@ test('writeWorkerCredentialFile preserves full-scope setup-token metadata', () =
   fs.rmSync(home, { recursive: true, force: true })
 })
 
-test('writeWorkerCredentialFile stores claudeAiOauth and reads back', () => {
+test('writeWorkerCredentialFile stores claudeAiOauth and reads back', async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-slot-write-'))
-  writeWorkerCredentialFile(home, {
+  await writeWorkerCredentialFile(home, {
     access_token: 'sk-ant-oat01-TEST',
     refresh_token: 'sk-ant-ort01-TEST',
     expires_at: 1787486457,
@@ -372,9 +372,9 @@ test('writeWorkerCredentialFile stores claudeAiOauth and reads back', () => {
   fs.rmSync(home, { recursive: true, force: true })
 })
 
-test('writeWorkerCredentialFile stores subscriptionType and falls back to the vm plan', () => {
+test('writeWorkerCredentialFile stores subscriptionType and falls back to the vm plan', async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-slot-sub-'))
-  writeWorkerCredentialFile(home, {
+  await writeWorkerCredentialFile(home, {
     type: 'setup-token',
     access_token: 'sk-ant-oat01-SUB',
     subscription_type: 'max',
@@ -382,14 +382,14 @@ test('writeWorkerCredentialFile stores subscriptionType and falls back to the vm
   let raw = JSON.parse(fs.readFileSync(path.join(home, '.claude', 'credentials.json'), 'utf8'))
   assert.equal(raw.claudeAiOauth.subscriptionType, 'max')
   assert.equal(readWorkerCredentialFile(home).subscription_type, 'max')
-  writeWorkerCredentialFile(home, {
+  await writeWorkerCredentialFile(home, {
     type: 'setup-token',
     access_token: 'sk-ant-oat01-SUB',
     account_tier: 'pro',
   })
   raw = JSON.parse(fs.readFileSync(path.join(home, '.claude', 'credentials.json'), 'utf8'))
   assert.equal(raw.claudeAiOauth.subscriptionType, 'pro')
-  writeWorkerCredentialFile(home, {
+  await writeWorkerCredentialFile(home, {
     type: 'setup-token',
     access_token: 'sk-ant-oat01-SUB',
   })
@@ -398,19 +398,19 @@ test('writeWorkerCredentialFile stores subscriptionType and falls back to the vm
   fs.rmSync(home, { recursive: true, force: true })
 })
 
-test('ensureSlotSubscriptionType fills an old credential and keeps an existing plan', () => {
+test('ensureSlotSubscriptionType fills an old credential and keeps an existing plan', async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-slot-migrate-'))
   const file = path.join(home, '.claude', 'credentials.json')
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(file, JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-OLD' } }))
-  assert.deepEqual(ensureSlotSubscriptionType(home, 'max'), { wrote: true, subscriptionType: 'max' })
+  assert.deepEqual(await ensureSlotSubscriptionType(home, 'max'), { wrote: true, subscriptionType: 'max' })
   assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).claudeAiOauth.subscriptionType, 'max')
-  assert.deepEqual(ensureSlotSubscriptionType(home, 'pro'), { wrote: false, reason: 'present' })
+  assert.deepEqual(await ensureSlotSubscriptionType(home, 'pro'), { wrote: false, reason: 'present' })
   fs.rmSync(home, { recursive: true, force: true })
 })
 
 for (const subscriptionType of [undefined, 'pro']) {
-  test(`startup preserves an identified Max plan when the credential contains ${subscriptionType || 'no plan'}`, (t) => {
+  test(`startup preserves an identified Max plan when the credential contains ${subscriptionType || 'no plan'}`, async (t) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-startup-plan-'))
     t.after(() => fs.rmSync(root, { recursive: true, force: true }))
     const home = path.join(root, 'vms', 'vm-max', 'cli-home')
@@ -427,12 +427,12 @@ for (const subscriptionType of [undefined, 'pro']) {
     )
     const source = fs.readFileSync(new URL('../../src/server.mjs', import.meta.url), 'utf8')
     const start = source.indexOf(
-      'for (const vm of listVms(cfg.paths.project)) {\n  if (!isClaudeVm(vm)) continue\n  try {\n    ensureSlotSubscriptionType',
+      'for (const vm of listVms(cfg.paths.project)) {\n  if (!isClaudeVm(vm)) continue\n  try {\n    await ensureSlotSubscriptionType',
     )
     assert.ok(start >= 0, 'the startup credential migration must be exercised')
     const end = source.indexOf('\ncliNodeGuard =', start)
     assert.ok(end > start)
-    runInNewContext(source.slice(start, end), {
+    await runInNewContext(`(async () => {\n${source.slice(start, end)}\n})()`, {
       listVms,
       isClaudeVm,
       ensureSlotSubscriptionType,
@@ -447,7 +447,7 @@ for (const subscriptionType of [undefined, 'pro']) {
     assert.equal(doc.kinGeneration, 42)
     const written = fs.readFileSync(file, 'utf8')
     const mtime = fs.statSync(file).mtimeMs
-    runInNewContext(source.slice(start, end), {
+    await runInNewContext(`(async () => {\n${source.slice(start, end)}\n})()`, {
       listVms,
       isClaudeVm,
       ensureSlotSubscriptionType,
@@ -530,7 +530,7 @@ test('persistOauthToVm writes flattened oauth_account identity', () => {
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
-test('official setup-token persist omits refresh and marks mode', () => {
+test('official setup-token persist omits refresh and marks mode', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-setup-token-'))
   const vmPath = path.join(dir, 'vm-05.json')
   fs.writeFileSync(
@@ -561,7 +561,7 @@ test('official setup-token persist omits refresh and marks mode', () => {
   assert.equal(vm.schedule_disabled_reason, 'disabled')
 
   const home = path.join(dir, 'cli-home')
-  writeWorkerCredentialFile(home, {
+  await writeWorkerCredentialFile(home, {
     type: 'setup-token',
     access_token: 'sk-ant-oat01-SETUP',
     expires_at: vm.claude.expires_at,

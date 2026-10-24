@@ -73,6 +73,7 @@ export class RefusalGuardsRepo {
     this._count = db.prepare('SELECT COUNT(*) AS n FROM refusal_guards')
     this._countOwner = db.prepare('SELECT COUNT(*) AS n FROM refusal_guards WHERE owner_user_id = ?')
     this._remove = db.prepare('DELETE FROM refusal_guards WHERE owner_user_id = ? AND fingerprint = ?')
+    this._removeAllOwners = db.prepare('DELETE FROM refusal_guards WHERE fingerprint = ?')
     this._clear = db.prepare('DELETE FROM refusal_guards')
     this._deleteExpired = db.prepare(
       `DELETE FROM refusal_guards
@@ -142,7 +143,6 @@ export class RefusalGuardsRepo {
     const query = Array.isArray(signature) ? signature : decodeSignature(signature)
     if (!query) return null
     const ownerKey = refusalOwnerKey(owner)
-    this.prune(ownerKey)
     let best = null
     for (const row of this._signatures.all(ownerKey, new Date().toISOString(), NEAREST_SCAN_LIMIT)) {
       const score = signatureSimilarity(query, decodeSignature(row.signature))
@@ -185,6 +185,13 @@ export class RefusalGuardsRepo {
     const fp = String(fingerprint || '').trim()
     if (!fp) return false
     return this._remove.run(refusalOwnerKey(owner), fp).changes > 0
+  }
+
+  /** Delete this fingerprint for every owner. Returns how many rows were removed. */
+  removeAllOwners(fingerprint) {
+    const fp = String(fingerprint || '').trim()
+    if (!fp) return 0
+    return this._removeAllOwners.run(fp).changes
   }
 
   clear() {

@@ -33,7 +33,8 @@
  *   beside kin.db and quick_check it → atomic rename (old file kept as
  *   kin.db.pre-restore) → restore vms/ + config/ (or rebuild from DB) →
  *   reopen + migrate → rebind stores. Any failure after the swap rolls the
- *   file back, reopens the previous database, and rebinds stores.
+ *   database back, puts vms/ and config/ back, reopens the previous database,
+ *   and rebinds stores.
  *   `isRestoring` flag lets the server 503 protocol traffic meanwhile.
  */
 
@@ -83,6 +84,64 @@ function assertRestorableSqlite(file) {
       db?.close()
     } catch {}
   }
+}
+
+function isRegularFile(file) {
+  try {
+    return fs.lstatSync(file).isFile()
+  } catch {
+    return false
+  }
+}
+
+function copyFiles(srcDir, destDir, accept) {
+  if (!srcDir || !fs.existsSync(srcDir)) return
+  fs.mkdirSync(destDir, { recursive: true })
+  for (const name of fs.readdirSync(srcDir)) {
+    if (accept && !accept(name)) continue
+    const from = path.join(srcDir, name)
+    if (!isRegularFile(from)) continue
+    fs.copyFileSync(from, path.join(destDir, name))
+  }
+}
+
+function snapshotSlotFiles({ projectRoot, configDir, destRoot }) {
+  const snap = {
+    vmsLive: projectRoot ? path.join(projectRoot, 'vms') : null,
+    vmsSnap: path.join(destRoot, 'rollback-vms'),
+    configLive: configDir || null,
+    configSnap: path.join(destRoot, 'rollback-config'),
+    configArchive: [],
+  }
+  copyFiles(snap.vmsLive, snap.vmsSnap, (name) => isVmRecordFile(name) || name === 'active.json')
+  copyFiles(snap.configLive, snap.configSnap, () => true)
+  return snap
+}
+
+function restoreSlotFiles(snap) {
+  if (!snap) return
+  if (snap.vmsLive) {
+    fs.mkdirSync(snap.vmsLive, { recursive: true })
+    if (fs.existsSync(snap.vmsLive)) {
+      for (const name of fs.readdirSync(snap.vmsLive)) {
+        if (!(isVmRecordFile(name) || name === 'active.json')) continue
+        try {
+          fs.rmSync(path.join(snap.vmsLive, name), { force: true })
+        } catch {}
+      }
+    }
+    copyFiles(snap.vmsSnap, snap.vmsLive, () => true)
+  }
+  if (!snap.configLive) return
+  fs.mkdirSync(snap.configLive, { recursive: true })
+  const kept = new Set(fs.existsSync(snap.configSnap) ? fs.readdirSync(snap.configSnap) : [])
+  for (const name of snap.configArchive || []) {
+    if (kept.has(name)) continue
+    try {
+      fs.rmSync(path.join(snap.configLive, name), { force: true })
+    } catch {}
+  }
+  copyFiles(snap.configSnap, snap.configLive, () => true)
 }
 
 const SCHEDULE_KEY = 'backup_schedule'
@@ -312,6 +371,7 @@ export class BackupService {
     let tmp = null
     let swapped = false
     let dbPath = null
+    let fileSnap = null
     const keepName = () => `${dbPath}.pre-restore`
     const stageName = () => `${dbPath}.restore-next`
     try {
@@ -375,7 +435,9 @@ export class BackupService {
         throw error
       }
 
-      // 3. restore vm + config files from the archive (tar flavor only)
+      // 3. restore vm + config files from the archive (tar flavor only).
+      // Snapshot the live files first so a later failure can put them back.
+      fileSnap = snapshotSlotFiles({ projectRoot: this.projectRoot, configDir: this.configDir, destRoot: tmp })
       const vmsDirSrc = path.join(tmp, 'vms')
       if (this.projectRoot && fs.existsSync(vmsDirSrc)) {
         const vmsDir = path.join(this.projectRoot, 'vms')
@@ -397,6 +459,7 @@ export class BackupService {
       }
       const cfgDirSrc = path.join(tmp, 'config')
       if (this.configDir && fs.existsSync(cfgDirSrc)) {
+        fileSnap.configArchive = fs.readdirSync(cfgDirSrc).filter((name) => isRegularFile(path.join(cfgDirSrc, name)))
         fs.mkdirSync(this.configDir, { recursive: true })
         for (const f of fs.readdirSync(cfgDirSrc)) {
           fs.copyFileSync(path.join(cfgDirSrc, f), path.join(this.configDir, f))
@@ -434,6 +497,11 @@ export class BackupService {
 
       return { ok: true, restored: rec.id, pre_restore: pre.id }
     } catch (error) {
+      if (fileSnap) {
+        try {
+          restoreSlotFiles(fileSnap)
+        } catch {}
+      }
       if (swapped && dbPath) this._rollbackRestore(dbPath)
       throw error
     } finally {

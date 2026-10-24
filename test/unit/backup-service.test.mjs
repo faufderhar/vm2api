@@ -213,6 +213,25 @@ test('a corrupt snapshot is rejected before the live database is replaced', asyn
   }
 })
 
+test('failed store rebind rolls vm files and config back with the database', async () => {
+  seedVm()
+  fs.writeFileSync(path.join(configDir, 'routing.json'), JSON.stringify({ marker: 'live' }))
+  const rec = await svc.createBackup({ kind: 'manual' })
+  const vmPath = path.join(root, 'vms', 'vm-b1.json')
+  const vm = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
+  vm.name = 'changed-after-backup'
+  fs.writeFileSync(vmPath, JSON.stringify(vm))
+  fs.writeFileSync(path.join(configDir, 'routing.json'), JSON.stringify({ marker: 'changed-after-backup' }))
+  fs.writeFileSync(path.join(configDir, 'extra-live.json'), JSON.stringify({ keep: true }))
+  svc.onRestored(() => {
+    throw new Error('store rebind failed')
+  })
+  await assert.rejects(svc.restoreBackup(rec.id), /store rebind failed/)
+  assert.equal(JSON.parse(fs.readFileSync(vmPath, 'utf8')).name, 'changed-after-backup')
+  assert.equal(JSON.parse(fs.readFileSync(path.join(configDir, 'routing.json'), 'utf8')).marker, 'changed-after-backup')
+  assert.equal(JSON.parse(fs.readFileSync(path.join(configDir, 'extra-live.json'), 'utf8')).keep, true)
+})
+
 test('failed store rebind rolls the live database back', async () => {
   seedVm()
   const rec = await svc.createBackup({ kind: 'manual' })

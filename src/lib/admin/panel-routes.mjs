@@ -992,6 +992,20 @@ export function createPanelHandler(ctx) {
     return cfg.distill
   }
 
+  // Omitted owner deletes every tenant's copy: the old DELETE meant "this
+  // fingerprint/device is gone", and the key is now composite. An explicit
+  // owner_user_id, including '', deletes only that owner so the panel can
+  // drop one row without clearing the others.
+  function refusalDeleteScope(url, body) {
+    if (url?.searchParams?.has('owner_user_id')) {
+      return { all: false, owner: String(url.searchParams.get('owner_user_id') || '') }
+    }
+    if (body && Object.hasOwn(body, 'owner_user_id')) {
+      return { all: false, owner: body.owner_user_id == null ? '' : String(body.owner_user_id) }
+    }
+    return { all: true, owner: '' }
+  }
+
   function refusalGuardSnapshot() {
     const settings = new SettingsRepo()
     const repo = new RefusalGuardsRepo()
@@ -2996,7 +3010,7 @@ export function createPanelHandler(ctx) {
           if (!vm) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
         }
         if (hasAuthScheme) {
-          const vm = persistSlotAuthScheme(cfg.paths.project, id, body.auth_scheme || body.authScheme)
+          const vm = await persistSlotAuthScheme(cfg.paths.project, id, body.auth_scheme || body.authScheme)
           if (!vm) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
         }
         let slotPolicyResult = null
@@ -5728,7 +5742,11 @@ export function createPanelHandler(ctx) {
       }
       if (req.method === 'DELETE' && /^\/api\/panel\/refusal-guards\/[0-9a-f]{64}$/i.test(p)) {
         const fp = p.split('/').pop()
-        const removed = new RefusalGuardsRepo().remove(fp)
+        const len = Number(req.headers?.['content-length'] || req.headers?.['Content-Length'] || 0)
+        const body = len > 0 ? await readBody(req, 8 * 1024).catch(() => ({})) : {}
+        const scope = refusalDeleteScope(url, body)
+        const repo = new RefusalGuardsRepo()
+        const removed = scope.all ? repo.removeAllOwners(fp) > 0 : repo.remove(fp, scope.owner)
         if (!removed) {
           return json(res, 404, {
             ok: false,
@@ -5757,7 +5775,9 @@ export function createPanelHandler(ctx) {
         const repo = new RefusalDeviceBlocksRepo()
         const deviceId = String(body?.device_id || '').trim()
         if (deviceId) {
-          if (!repo.remove(deviceId)) {
+          const scope = refusalDeleteScope(url, body)
+          const removed = scope.all ? repo.removeAllOwners(deviceId) > 0 : repo.remove(deviceId, scope.owner)
+          if (!removed) {
             return json(res, 404, {
               ok: false,
               error: { type: 'not_found_error', code: 'refusal_device_not_found', message: 'device 不存在' },

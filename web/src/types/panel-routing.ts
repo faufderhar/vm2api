@@ -67,6 +67,7 @@ export type DistillRules = {
 
 /** `GET/PUT /api/panel/refusal-guards`。上游 AUP 指纹缓存，独立于蒸馏拦截。 */
 export type RefusalGuardItem = {
+  owner_user_id?: string
   fingerprint: string
   model: string
   first_seen_at: string
@@ -78,6 +79,7 @@ export type RefusalGuardItem = {
 }
 
 export type RefusalDeviceBlock = {
+  owner_user_id?: string
   device_id: string
   first_seen_at: string
   last_seen_at: string

@@ -46,6 +46,7 @@ export class RefusalDeviceBlocksRepo {
     this._count = db.prepare('SELECT COUNT(*) AS n FROM refusal_device_blocks')
     this._countOwner = db.prepare('SELECT COUNT(*) AS n FROM refusal_device_blocks WHERE owner_user_id = ?')
     this._remove = db.prepare('DELETE FROM refusal_device_blocks WHERE owner_user_id = ? AND device_id = ?')
+    this._removeAllOwners = db.prepare('DELETE FROM refusal_device_blocks WHERE device_id = ?')
     this._clear = db.prepare('DELETE FROM refusal_device_blocks')
     this._trim = db.prepare(
       `DELETE FROM refusal_device_blocks
@@ -110,6 +111,13 @@ export class RefusalDeviceBlocksRepo {
     const id = String(deviceId || '').trim()
     if (!id) return false
     return this._remove.run(refusalOwnerKey(owner), id).changes > 0
+  }
+
+  /** Delete this device id for every owner. Returns how many rows were removed. */
+  removeAllOwners(deviceId) {
+    const id = String(deviceId || '').trim()
+    if (!id) return 0
+    return this._removeAllOwners.run(id).changes
   }
 
   clear() {

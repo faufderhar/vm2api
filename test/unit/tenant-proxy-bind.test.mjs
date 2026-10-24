@@ -45,6 +45,7 @@ test('tenant power-on and watchdog revive do not bind a platform proxy', async (
       id,
       status: 'stopped',
       owner_user_id: 'user-a',
+      origin: 'user_created',
       proxy: { id: 'px-local', scheme: 'local', host: 'local' },
     }),
   )
@@ -65,10 +66,10 @@ test('tenant power-on and watchdog revive do not bind a platform proxy', async (
   pool.unbindVm(id)
   fs.writeFileSync(
     path.join(root, 'vms', `${id}.json`),
-    JSON.stringify({ id, status: 'running', owner_user_id: 'user-a' }),
+    JSON.stringify({ id, status: 'running', owner_user_id: 'user-a', origin: 'user_created' }),
   )
   const revived = await reviveDownSlots({
-    vms: [{ id, status: 'running', owner_user_id: 'user-a' }],
+    vms: [{ id, status: 'running', owner_user_id: 'user-a', origin: 'user_created' }],
     inspect: async () => ({ running: false, exists: false, status: 'exited' }),
     powerOn: (vmId) => powerOnSlot({ ...boot, id: vmId }),
   })
@@ -79,10 +80,57 @@ test('tenant power-on and watchdog revive do not bind a platform proxy', async (
   pool.remove(owned.items[0].id)
   fs.writeFileSync(
     path.join(root, 'vms', `${id}.json`),
-    JSON.stringify({ id, status: 'stopped', owner_user_id: 'user-a' }),
+    JSON.stringify({ id, status: 'stopped', owner_user_id: 'user-a', origin: 'user_created' }),
   )
   const denied = await powerOnSlot({ ...boot, id })
   assert.equal(denied.ok, false)
   assert.equal(denied.code, 'proxy_required')
   assert.equal(pool.getProxyForVm(id), null)
+})
+
+test('admin-assigned slots keep a bound platform proxy', async (t) => {
+  const pool = makePool(t)
+  const plat = pool.importLines('203.0.113.10:1080')
+  pool.importLines('203.0.113.30:1080', { ownerUserId: 'user-b' })
+  assert.equal(plat.added, 1, JSON.stringify(plat.skip_details))
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-aa-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const id = 'vm-assigned'
+  fs.mkdirSync(path.join(root, 'vms'), { recursive: true })
+  pool.bind(plat.items[0].id, id)
+  fs.writeFileSync(
+    path.join(root, 'vms', `${id}.json`),
+    JSON.stringify({
+      id,
+      status: 'stopped',
+      owner_user_id: 'user-a',
+      origin: 'admin_assigned',
+      proxy: { id: plat.items[0].id, scheme: 'socks5', host: '203.0.113.10', port: 1080 },
+    }),
+  )
+  const started = await powerOnSlot({
+    projectRoot: root,
+    id,
+    proxyPool: pool,
+    fillTimezone: async () => {},
+    ops: { startSlotReady: async () => ({ ok: true, runtime: { type: 'docker' } }) },
+  })
+  assert.equal(started.ok, true, started.error || started.code)
+  assert.equal(pool.getProxyForVm(id)?.host, '203.0.113.10')
+
+  pool.unbindVm(id)
+  fs.writeFileSync(
+    path.join(root, 'vms', `${id}.json`),
+    JSON.stringify({ id, status: 'stopped', owner_user_id: 'user-a', origin: 'admin_assigned' }),
+  )
+  const allocated = await powerOnSlot({
+    projectRoot: root,
+    id,
+    proxyPool: pool,
+    fillTimezone: async () => {},
+    ops: { startSlotReady: async () => ({ ok: true, runtime: { type: 'docker' } }) },
+  })
+  assert.equal(allocated.ok, true, allocated.error || allocated.code)
+  assert.equal(pool.getProxyForVm(id)?.host, '203.0.113.10')
+  assert.notEqual(pool.getProxyForVm(id)?.owner_user_id, 'user-b')
 })

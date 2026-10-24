@@ -19,7 +19,7 @@ async function fakeKernel() {
   fs.mkdirSync(homeDir, { recursive: true })
   const tokenFile = path.join(runDir, 'internal.token')
   fs.writeFileSync(tokenFile, 'internal-test\n', { mode: 0o600 })
-  writeWorkerCredentialFile(homeDir, {
+  await writeWorkerCredentialFile(homeDir, {
     access_token: 'access-still-fresh',
     refresh_token: 'refresh-still-fresh',
     expires_at: Date.now() + 6 * 3600_000,
