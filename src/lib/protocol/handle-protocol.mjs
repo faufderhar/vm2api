@@ -545,7 +545,7 @@ export function createHandleProtocol(deps) {
       requestContext,
       slotWaitMs: candidate.slotWaitMs,
       noGoFallback,
-      ensureCredential: (exec) => ensureWorkerCredential(exec),
+      ensureCredential: (exec, opts) => ensureWorkerCredential(exec, opts),
       onEnvelope,
       onEvent: async (line) => {
         if (/response_headers/.test(String(line))) return
@@ -1685,7 +1685,7 @@ export function createHandleProtocol(deps) {
               routing: getRouting(),
               slotWaitMs: candidate.slotWaitMs,
               noGoFallback: !!pinVmId,
-              ensureCredential: (exec) => ensureWorkerCredential(exec),
+              ensureCredential: (exec, opts) => ensureWorkerCredential(exec, opts),
               onEnvelope: noteOutboundEnvelope,
               onCommit: () => {
                 if (protocol === 'anthropic.messages' && !res.headersSent) writeSSEHeaders(res)

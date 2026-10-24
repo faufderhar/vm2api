@@ -21,9 +21,13 @@ import (
 )
 
 const (
-	requestTimeout       = 30 * time.Second
-	maxBodyBytes         = 4 << 20
-	claudeResetUsagePath = "/api/oauth/usage?cedar_ember=1&skip_spend=1"
+	// flock wait and the token HTTP call do not share one deadline. A long
+	// lock wait used to leave no time for the refresh, and a cancelled caller
+	// then dropped the new one-time refresh token.
+	credentialLockTimeout    = 30 * time.Second
+	credentialRefreshTimeout = 30 * time.Second
+	maxBodyBytes             = 4 << 20
+	claudeResetUsagePath     = "/api/oauth/usage?cedar_ember=1&skip_spend=1"
 )
 
 var (
@@ -75,12 +79,13 @@ func Run(args []string, stdin io.Reader, stdout io.Writer) int {
 	}
 	store := credential.NewStore(cfg.CredentialPath)
 	refresher := &kinoauth.Refresher{
-		Store:    store,
-		Client:   httpClient,
-		TokenURL: cfg.OAuthTokenURL,
-		Skew:     cfg.RefreshSkew,
+		Store:          store,
+		Client:         httpClient,
+		TokenURL:       cfg.OAuthTokenURL,
+		Skew:           cfg.RefreshSkew,
+		RequestTimeout: credentialRefreshTimeout,
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), credentialLockTimeout)
 	defer cancel()
 
 	if op == "refresh" {
@@ -191,9 +196,9 @@ func validateOperation(op string) error {
 
 func oauthHTTPClient(cfg config.Config) (*http.Client, error) {
 	if cfg.EgressMode == "transparent" {
-		return upstream.NewTransparentOAuthHTTPClient(requestTimeout)
+		return upstream.NewTransparentOAuthHTTPClient(credentialRefreshTimeout)
 	}
-	return upstream.NewOAuthHTTPClient(cfg.ProxyURL, cfg.ProxyRequired, requestTimeout)
+	return upstream.NewOAuthHTTPClient(cfg.ProxyURL, cfg.ProxyRequired, credentialRefreshTimeout)
 }
 
 func requestHeaders(cfg config.Config, op string) map[string]string {
