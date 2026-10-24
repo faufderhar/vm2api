@@ -5,6 +5,11 @@ const COOKIE = 'kin_panel_token'
 
 export { LS_TOKEN, LS_USER, LS_BASE, COOKIE }
 
+/** Old tabs stored the panel token in localStorage. Drop it; the cookie is the session. */
+function forgetStoredPanelToken() {
+  localStorage.removeItem(LS_TOKEN)
+}
+
 export function sameOriginPanel(host = location.hostname): boolean {
   return /^kin\.fkcodex\.com$/i.test(host || '')
 }
@@ -32,11 +37,13 @@ function clearClientCookie(name: string) {
 }
 
 export function sessionToken(): string {
-  return (localStorage.getItem(LS_TOKEN) || '').trim()
+  forgetStoredPanelToken()
+  return ''
 }
 
 export function hasSession(): boolean {
-  return Boolean(sessionToken())
+  forgetStoredPanelToken()
+  return Boolean(storedUser())
 }
 
 type PanelSessionExpiredListener = () => void
@@ -56,14 +63,13 @@ export function expirePanelSession() {
   for (const listener of panelSessionExpiredListeners) listener()
 }
 
-export function setSession(token: string, user?: string) {
+export function setSession(user?: string) {
+  forgetStoredPanelToken()
   clearClientCookie(COOKIE)
   clearClientCookie('kin_console_token')
-  if (token) {
-    panelSessionExpiredHandled = false
-    localStorage.setItem(LS_TOKEN, token)
-  } else localStorage.removeItem(LS_TOKEN)
+  panelSessionExpiredHandled = false
   if (user) localStorage.setItem(LS_USER, user)
+  else localStorage.removeItem(LS_USER)
 }
 
 export function clearSession() {

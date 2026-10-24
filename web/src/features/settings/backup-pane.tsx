@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import { ApiError, api, panelFetch } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
 import {
   Table,
   TableBody,
@@ -24,6 +25,7 @@ export function BackupPane() {
   const list = useQuery(backupsQueryOptions())
   const cfg = useQuery(backupConfigQueryOptions())
   const [restoreId, setRestoreId] = useState('')
+  const [restorePassword, setRestorePassword] = useState('')
   const create = useMutation({
     mutationFn: () => api('/api/panel/backups', { method: 'POST', body: '{}' }),
     onSuccess: async () => {
@@ -105,25 +107,41 @@ export function BackupPane() {
         </Table>
         <ConfirmDialog
           open={!!restoreId}
-          onOpenChange={() => setRestoreId('')}
+          onOpenChange={() => {
+            setRestoreId('')
+            setRestorePassword('')
+          }}
           title='确认恢复备份'
           desc='恢复会覆盖当前状态，期间协议口返回 503。必须显式确认。'
           confirmText='确认恢复'
           cancelBtnText='取消'
           destructive
+          disabled={!restorePassword}
           handleConfirm={() => {
             api(`/api/panel/backups/${encodeURIComponent(restoreId)}/restore`, {
               method: 'POST',
-              body: JSON.stringify({ confirm: true }),
+              body: JSON.stringify({
+                confirm: true,
+                password: restorePassword,
+              }),
             })
               .then(async () => {
                 toast.success('已开始恢复')
                 setRestoreId('')
+                setRestorePassword('')
                 await qc.invalidateQueries({ queryKey: ['panel'] })
               })
               .catch((e: Error) => toast.error(e.message))
           }}
-        />
+        >
+          <Input
+            type='password'
+            autoComplete='current-password'
+            placeholder='当前登录密码'
+            value={restorePassword}
+            onChange={(event) => setRestorePassword(event.target.value)}
+          />
+        </ConfirmDialog>
       </CardContent>
     </Card>
   )

@@ -5,6 +5,7 @@
  * Node never talks to auth.x.ai itself.
  */
 import { isLocalEgressProxy } from '../vm/egress.mjs'
+import { assertKernelProxyResolved } from '../vm/proxy-policy.mjs'
 import { hostProxyUrlForVm } from '../vm/slot-host.mjs'
 import { ensureGrokKernel, writeGrokKernelConfig } from '../transport/grok-kernel-supervisor.mjs'
 import { callGrokKernel, readGrokKernelJson } from '../transport/grok-kernel-client.mjs'
@@ -38,8 +39,17 @@ export function grokKernelOauthTransport({ projectRoot, vm, routing = {}, ops = 
   return async ({ action, form = {}, force = false } = {}) => {
     const exit = (ops.grokKernelExit || grokKernelExit)(vm)
     if (!exit) return { status: 0, error: 'proxy_required' }
+    const write = ops.writeGrokKernelConfig || writeGrokKernelConfig
+    let proxyUrl = exit.proxyUrl
+    if (proxyUrl && write === writeGrokKernelConfig) {
+      try {
+        proxyUrl = await assertKernelProxyResolved(vm, proxyUrl)
+      } catch (error) {
+        return { status: 0, error: error?.code || 'proxy_required' }
+      }
+    }
     try {
-      ;(ops.writeGrokKernelConfig || writeGrokKernelConfig)(projectRoot, vm, { ...exit, routing })
+      write(projectRoot, vm, { ...exit, proxyUrl, routing })
     } catch (error) {
       return { status: 0, error: error?.code || 'proxy_required' }
     }

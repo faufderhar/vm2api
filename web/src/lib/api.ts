@@ -1,10 +1,5 @@
 import type { VmActiveHours, VmQuotaOverride } from '@/types/panel-vm'
-import {
-  apiBase,
-  expirePanelSession,
-  hasSession,
-  sessionToken,
-} from '@/lib/session'
+import { apiBase, expirePanelSession, hasSession } from '@/lib/session'
 
 export type PanelErrorMetadata = {
   type?: string
@@ -58,12 +53,7 @@ type Json =
   Record<string, unknown> | unknown[] | string | number | boolean | null
 
 function authHeaders(): HeadersInit {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  }
-  const token = sessionToken()
-  if (token) headers.Authorization = `Bearer ${token}`
-  return headers
+  return { 'Content-Type': 'application/json' }
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -179,7 +169,7 @@ export async function loginRequest(input: {
   username: string
   password: string
   base?: string
-}): Promise<{ token: string; user: string }> {
+}): Promise<{ user: string }> {
   const base = input.base ?? apiBase()
   const url = `${base || ''}/api/panel/login`
   let res: Response
@@ -199,14 +189,13 @@ export async function loginRequest(input: {
   if (res.status === 405)
     throw new ApiError(`405 Method Not Allowed: ${url}`, 405)
   const json = (await res.json().catch(() => ({}))) as {
-    token?: string
     user?: string
-    data?: { token?: string; user?: string }
+    data?: { user?: string }
     error?: { message?: string }
     message?: string
   }
-  const token = json.token || json.data?.token || ''
-  if (!res.ok || !token) {
+  const user = json.user || json.data?.user || ''
+  if (!res.ok || !user) {
     throw new ApiError(
       json.error?.message ||
         json.message ||
@@ -214,7 +203,7 @@ export async function loginRequest(input: {
       res.status
     )
   }
-  return { token, user: json.user || json.data?.user || input.username }
+  return { user }
 }
 
 export function logoutRequest() {

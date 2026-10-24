@@ -11,6 +11,8 @@ import {
   normalizeLoggingConfig,
   logsToCsv,
   logsToJsonl,
+  presentedApiKeyForLog,
+  authFailureLogFields,
 } from '../../src/lib/admin/request-log.mjs'
 import { ApiKeyStore } from '../../src/lib/admin/api-keys.mjs'
 import { GroupsRepo } from '../../src/lib/db/repos/groups-repo.mjs'
@@ -984,7 +986,7 @@ test('ingress 401 stores presented key + ip and can be excluded from the list', 
   const ctx = store.start(
     {
       method: 'POST',
-      headers: { 'user-agent': 'scanner', authorization: 'Bearer sk-bad-key-plain' },
+      headers: { 'user-agent': 'scanner', authorization: 'Bearer sk-bad-key-plain-xyz' },
       socket: { remoteAddress: '203.0.113.9' },
     },
     { protocol: 'anthropic.messages', pathName: '/v1/messages' },
@@ -993,24 +995,24 @@ test('ingress 401 stores presented key + ip and can be excluded from the list', 
     status: 401,
     error_code: 'invalid_api_key',
     error_message: 'Invalid credentials',
-    api_key_presented: 'sk-bad-key-plain',
+    api_key_presented: 'sk-bad-key-plain-xyz',
   })
   assert.equal(store.queryNormal({ status: 'error' }).total, 0)
   const listed = store.queryNormal({ status: 'error', include_muted: true })
   assert.equal(listed.total, 1)
-  assert.equal(listed.items[0].api_key_presented, 'sk-bad-key-plain')
+  assert.equal(listed.items[0].api_key_presented, 'sk-bad-k…-xyz')
   assert.equal(listed.items[0].ip, '203.0.113.9')
   assert.equal(listed.items[0].error_class, 'auth')
   assert.equal(store.queryNormal({ status: 'error', error_class: 'auth' }).total, 1)
   assert.equal(store.queryNormal({ status: 'error', exclude_error_class: 'auth' }).total, 0)
   const hits = store.windowStats().error_collection.ingress_hits
   assert.equal(hits.length, 1)
-  assert.equal(hits[0].api_key_presented, 'sk-bad-key-plain')
+  assert.equal(hits[0].api_key_presented, 'sk-bad-k…-xyz')
   assert.equal(hits[0].ip, '203.0.113.9')
   assert.equal(hits[0].count, 1)
 })
 
-test('exportRows + csv/jsonl keep presented key and ip', () => {
+test('exportRows + csv/jsonl keep ip and drop the presented key', () => {
   const store = tmpStore('normal')
   const ctx = store.start(
     {
@@ -1030,11 +1032,39 @@ test('exportRows + csv/jsonl keep presented key and ip', () => {
   assert.equal(total, 1)
   assert.equal(items[0].ip, '198.51.100.4')
   const csv = logsToCsv(items)
-  assert.match(csv, /api_key_presented/)
-  assert.match(csv, /sk-export-plain/)
+  assert.doesNotMatch(csv, /api_key_presented/)
+  assert.doesNotMatch(csv, /sk-expor/)
   assert.match(csv, /198\.51\.100\.4/)
   const jsonl = logsToJsonl(items)
-  assert.match(jsonl, /sk-export-plain/)
+  assert.doesNotMatch(jsonl, /sk-expor|api_key_presented/)
+})
+
+test('a presented key is stored as its first 8 and last 4 characters only', () => {
+  const store = tmpStore('normal')
+  const key = 'sk-vm-' + 'ab'.repeat(32)
+  const ctx = store.start({ method: 'POST', headers: {}, socket: { remoteAddress: '198.51.100.5' } }, { pathName: '/v1/messages' })
+  const row = store.finish(ctx, { status: 429, error_code: 'key_quota_exceeded', api_key_presented: key })
+  assert.equal(row.api_key_presented, 'sk-vm-ab…abab')
+  const listed = store.queryNormal({ status: 'error', include_muted: true })
+  assert.equal(listed.items[0].api_key_presented, 'sk-vm-ab…abab')
+  assert.ok(!JSON.stringify(listed).includes(key))
+  assert.equal(presentedApiKeyForLog('short-key'), '…')
+  assert.equal(presentedApiKeyForLog('sk-vm-ab…abab'), 'sk-vm-ab…abab')
+  assert.equal(presentedApiKeyForLog('kin-panel-abc'), '')
+})
+
+test('authFailureLogFields records a recognised key by id, never by its secret', () => {
+  const secret = 'sk-vm-' + 'cd'.repeat(32)
+  assert.deepEqual(
+    authFailureLogFields({ presentedApiKey: secret, authKeyKind: 'managed', authKeyRecord: { id: 'k-1', user_id: 'u-1' } }),
+    { api_key_kind: 'managed', api_key_id: 'k-1', user_id: 'u-1', api_key_presented: null },
+  )
+  assert.deepEqual(authFailureLogFields({ presentedApiKey: secret, authKeyKind: 'master' }), {
+    api_key_kind: 'master',
+    api_key_presented: null,
+  })
+  assert.deepEqual(authFailureLogFields({ presentedApiKey: secret }), { api_key_presented: 'sk-vm-cd…cdcd' })
+  assert.deepEqual(authFailureLogFields({}), { api_key_presented: null })
 })
 
 test('finish persists caller and outbound sessions (capped) and only known reasoning efforts', () => {

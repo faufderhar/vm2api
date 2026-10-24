@@ -6,6 +6,7 @@ import { listVms, getVm } from '../vm/vm-registry.mjs'
 import { isGrokVm } from '../vm/vm-kind.mjs'
 import { hostProxyUrlForVm } from '../vm/slot-host.mjs'
 import { isLocalEgressProxy } from '../vm/egress.mjs'
+import { assertKernelProxyResolved } from '../vm/proxy-policy.mjs'
 import { isGrokSeriesId } from './grok-ids.mjs'
 import { callGrokKernel, grokKernelEnvelope, readGrokKernelJson } from '../transport/grok-kernel-client.mjs'
 import { ensureGrokKernel, writeGrokKernelConfig } from '../transport/grok-kernel-supervisor.mjs'
@@ -71,11 +72,19 @@ export async function probeGrokModels({ projectRoot, routing, vmId = '' } = {}) 
       lastError = 'proxy_required'
       continue
     }
-    writeGrokKernelConfig(projectRoot, vm, {
-      proxyUrl: localExit && !onNode ? '' : proxyUrl,
-      proxyRequired: !(localExit && !onNode),
-      routing,
-    })
+    let kernelProxy = localExit && !onNode ? '' : proxyUrl
+    try {
+      if (kernelProxy) kernelProxy = await assertKernelProxyResolved(vm, kernelProxy)
+      writeGrokKernelConfig(projectRoot, vm, {
+        proxyUrl: kernelProxy,
+        proxyRequired: !(localExit && !onNode),
+        routing,
+      })
+    } catch (error) {
+      if (error?.code !== 'proxy_host_blocked' && error?.code !== 'ipv6_disabled') throw error
+      lastError = error.code || 'proxy_host_blocked'
+      continue
+    }
     const live = await fetchGrokUpstreamModels({
       projectRoot,
       vm,

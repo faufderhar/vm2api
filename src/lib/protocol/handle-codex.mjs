@@ -33,6 +33,7 @@ import {
   writeCodexKernelConfig,
 } from '../transport/codex-kernel-supervisor.mjs'
 import { isLocalEgressProxy } from '../vm/egress.mjs'
+import { assertKernelProxyResolved } from '../vm/proxy-policy.mjs'
 import { vmNodeId } from '../cluster/placement.mjs'
 import { hostProxyUrlForVm } from '../vm/slot-host.mjs'
 import { readCodexAccounts, upsertCodexAccount } from '../vm/codex-slot.mjs'
@@ -754,13 +755,33 @@ export async function handleCodexProtocol({
       let attemptKind = 'failed'
       try {
         const localExit = isLocalEgressProxy(vm.proxy)
-        const written = writeCfg(projectRoot, vm, {
-          // Same rule as slot start: a node on local egress must leave through
-          // that node's forwarder, not the control plane's deployment proxy.
-          proxyUrl: localExit && !vmNodeId(vm) ? '' : hostProxyUrlForVm(vm),
-          proxyRequired: true,
-          routing,
-        })
+        let proxyUrl = localExit && !vmNodeId(vm) ? '' : hostProxyUrlForVm(vm)
+        let written
+        try {
+          if (proxyUrl && writeCfg === writeCodexKernelConfig) {
+            proxyUrl = await assertKernelProxyResolved(vm, proxyUrl)
+          }
+          written = writeCfg(projectRoot, vm, {
+            // Same rule as slot start: a node on local egress must leave through
+            // that node's forwarder, not the control plane's deployment proxy.
+            proxyUrl,
+            proxyRequired: true,
+            routing,
+          })
+        } catch (error) {
+          if (error?.code !== 'proxy_host_blocked' && error?.code !== 'ipv6_disabled') throw error
+          last = {
+            ok: false,
+            status: error.status || 409,
+            committed: false,
+            body: { error: { type: 'api_error', code: error.code, message: error.message } },
+          }
+          pickOpts.excluded.add(vm.id)
+          switches += 1
+          if (!res.headersSent && (switches > failoverBudget.maxSwitches || attempts >= failoverBudget.maxAttempts))
+            break
+          continue
+        }
         const ready = await ensure(execFor(projectRoot, vm))
         if (!ready?.ok) {
           // Kernel init failed: this seat goes back and the next candidate is re-admitted.

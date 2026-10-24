@@ -199,20 +199,105 @@ export function assertProxyAllowed(proxy) {
 }
 
 /** Names that look public can still resolve to loopback. Call before opening the proxy. */
-export async function proxyResolvedBlockReason(proxy) {
+function proxyBlockError(reason, status = 409) {
+  const message =
+    reason === 'ipv6_disabled'
+      ? 'IPv6 已关闭，请在设置 → SOCKS5 开启 IPv6 代理出口'
+      : '代理地址不能指向本机、内网、链路本地地址或云主机元数据'
+  return Object.assign(new Error(message), { code: reason, status })
+}
+
+/**
+ * Replace the hostname with the address that was just checked.
+ * Do not use URL.toString(): a socks5h URL gains a trailing slash and the dialer rejects it.
+ * An address that is already an IP is returned unchanged, so stored config is not rewritten.
+ */
+export function pinSocksProxyUrl(raw, ip) {
+  const text = String(raw || '').trim()
+  const address = String(ip || '').trim()
+  if (!text || !net.isIP(address)) return text
+  let parsed
+  try {
+    parsed = new URL(text)
+  } catch {
+    return text
+  }
+  const current = normalizeSocksHost(parsed.hostname)
+  if (!current || net.isIP(current)) return text
+  const pinned = net.isIPv6(address) ? `[${address}]` : address
+  const schemeEnd = text.indexOf('://')
+  if (schemeEnd < 0) return text
+  const afterScheme = text.slice(schemeEnd + 3)
+  const slash = afterScheme.search(/[/?#]/)
+  const authority = slash < 0 ? afterScheme : afterScheme.slice(0, slash)
+  const tail = slash < 0 ? '' : afterScheme.slice(slash)
+  const at = authority.lastIndexOf('@')
+  const userinfo = at >= 0 ? authority.slice(0, at + 1) : ''
+  const hostport = at >= 0 ? authority.slice(at + 1) : authority
+  const portMatch = hostport.match(/:(\d+)$/)
+  const port = portMatch ? `:${portMatch[1]}` : ''
+  return `${text.slice(0, schemeEnd + 3)}${userinfo}${pinned}${port}${tail}`
+}
+
+function lookupAnswers(value) {
+  if (!value) return []
+  const list = Array.isArray(value) ? value : [value]
+  return list.map((answer) => String(answer?.address || answer || '').trim()).filter(Boolean)
+}
+
+/**
+ * Literal check, then DNS. Failure or an empty answer is a block.
+ * Any resolved address that is unsafe blocks the name. When IPv6 is off, the
+ * first safe IPv4 is chosen; IPv6-only answers are `ipv6_disabled`.
+ * Platform local egress skips DNS. The returned url is only for the dial, not for storage.
+ */
+export async function resolvedProxyDial(proxy, { lookup } = {}) {
   const literal = proxyBlockedReason(proxy)
-  if (literal) return literal
-  if (platformLocalEgress(proxy)) return null
+  if (literal) return { blocked: literal, url: '', address: '' }
+  if (platformLocalEgress(proxy)) return { blocked: null, url: '', address: '', local: true }
   const host = String(proxyHost(proxy) || '')
-  if (!host || net.isIP(host)) return null
+  const rawUrl = String(proxy?.url || '')
+  if (!host || net.isIP(host)) return { blocked: null, url: rawUrl, address: net.isIP(host) ? host : '' }
+  const lookupFn = lookup || ((name) => dns.lookup(name, { all: true, verbatim: true }))
   let answers
   try {
-    answers = await dns.lookup(host, { all: true, verbatim: true })
+    answers = lookupAnswers(await lookupFn(host))
   } catch {
-    return null
+    return { blocked: 'proxy_host_blocked', url: '', address: '' }
   }
-  for (const answer of answers || []) {
-    if (isUnsafeProxyHost({ host: answer.address })) return 'proxy_host_blocked'
+  if (!answers.length) return { blocked: 'proxy_host_blocked', url: '', address: '' }
+  const ipv6Enabled = configuredIpv6Enabled()
+  let chosen = ''
+  let sawIpv6 = false
+  for (const address of answers) {
+    if (isUnsafeProxyHost({ host: address })) return { blocked: 'proxy_host_blocked', url: '', address: '' }
+    const family = net.isIP(address)
+    if (family === 6 && ipv6Enabled !== true) {
+      sawIpv6 = true
+      continue
+    }
+    if (!chosen || family === 4) chosen = address
+    if (family === 4) break
   }
-  return null
+  if (!chosen) return { blocked: sawIpv6 ? 'ipv6_disabled' : 'proxy_host_blocked', url: '', address: '' }
+  return { blocked: null, url: pinSocksProxyUrl(rawUrl, chosen) || rawUrl, address: chosen }
+}
+
+/** Names that look public can still resolve to loopback. DNS failure is a block. */
+export async function proxyResolvedBlockReason(proxy, opts) {
+  const dial = await resolvedProxyDial(proxy, opts)
+  return dial.blocked
+}
+
+/** Resolve `proxyUrl` and return the socks URL pinned to the checked address. */
+export async function assertProxyResolved(proxyUrl, opts = {}) {
+  if (!proxyUrl) return ''
+  const dial = await resolvedProxyDial({ url: proxyUrl }, opts)
+  if (dial.blocked) throw proxyBlockError(dial.blocked, opts.status || 409)
+  return dial.url || proxyUrl
+}
+
+/** Kernel handoff. Empty means this host's local egress and is not looked up. */
+export function assertKernelProxyResolved(_vm, proxyUrl, opts) {
+  return assertProxyResolved(proxyUrl, opts)
 }

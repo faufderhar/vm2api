@@ -35,7 +35,7 @@ function clampInt(v, lo, hi, dflt) {
   return Math.min(hi, Math.max(lo, n))
 }
 
-export function createClusterRoutes({ manager, json, readBody, ok }) {
+export function createClusterRoutes({ manager, json, readBody, ok, stepUp }) {
   function fail(res, err) {
     const status = err instanceof ClusterError ? err.status : 500
     const code = err instanceof ClusterError ? err.code : 'cluster_error'
@@ -83,7 +83,14 @@ export function createClusterRoutes({ manager, json, readBody, ok }) {
       return json(res, 200, ok(await manager.setDirectLink(id, body)))
     }
     if (sub === '/direct-link' && m === 'DELETE') return json(res, 200, ok(await manager.clearDirectLink(id)))
-    if (sub === '/shell-ticket' && m === 'POST') return json(res, 200, ok(manager.issueShellTicket(id)))
+    if (sub === '/shell-ticket' && m === 'POST') {
+      const body = await readBody(req, MAX_BODY)
+      if (stepUp) {
+        const denied = await stepUp(req, res, body)
+        if (denied) return denied
+      }
+      return json(res, 200, ok(manager.issueShellTicket(id)))
+    }
 
     if (sub === '/docker/info' && m === 'GET') return json(res, 200, ok(await dockerInfo(manager.docker(id))))
     if (sub === '/preflight' && m === 'POST') {

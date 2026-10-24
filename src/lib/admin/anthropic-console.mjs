@@ -8,12 +8,42 @@
 import { normalizeAuthScheme, AUTH_SCHEME_BEARER, AUTH_SCHEME_X_API_KEY } from '../oauth/auth-scheme.mjs'
 import { messagesUrl, trimBaseUrl, upstreamAuthHeaders } from '../pool/api-presets.mjs'
 import { forwardApi, readApiJson } from '../transport/api-kernel-client.mjs'
+import { resolvedProxyDial } from '../vm/proxy-policy.mjs'
 
 export const ANTHROPIC_CONSOLE_URL = 'https://api.anthropic.com'
 export const ANTHROPIC_CONSOLE_TIMEOUT_MS = 60_000
 const MAX_MESSAGE_CHARS = 16_000
 const MAX_HEADER_PAIRS = 24
 const MAX_KEYS = 32
+const OFFICIAL_CONSOLE_HOST = 'api.anthropic.com'
+
+function consoleDialError(reason) {
+  const message =
+    reason === 'ipv6_disabled'
+      ? 'IPv6 已关闭，请在设置 → SOCKS5 开启 IPv6 代理出口'
+      : '地址不能指向本机、内网、链路本地地址或云主机元数据'
+  return Object.assign(new Error(message), { code: reason || 'proxy_host_blocked', status: 400 })
+}
+
+/**
+ * Same host rules as a slot proxy. Official api.anthropic.com is not looked up.
+ * A messages URL keeps its hostname (TLS); only a socks proxy is pinned to the checked address.
+ * An invalid URL that does not parse is left for the existing scheme check.
+ */
+export async function assertConsoleDialTarget(raw, { pin = false } = {}) {
+  const value = String(raw || '').trim()
+  if (!value) return ''
+  let parsed
+  try {
+    parsed = new URL(value)
+  } catch {
+    return value
+  }
+  if (parsed.hostname.toLowerCase() === OFFICIAL_CONSOLE_HOST) return value
+  const dial = await resolvedProxyDial({ url: value })
+  if (dial.blocked) throw consoleDialError(dial.blocked)
+  return pin && dial.url ? dial.url : value
+}
 
 export function anthropicMessagesUrl(baseUrl) {
   const trimmed = trimBaseUrl(baseUrl) || ANTHROPIC_CONSOLE_URL
@@ -219,17 +249,20 @@ export function anthropicConsoleResult(upstream, meta) {
 
 async function forwardConsoleRequest(request, { cfg, forward }) {
   try {
+    await assertConsoleDialTarget(request.url)
+    const proxyUrl = await assertConsoleDialTarget(request.proxyUrl, { pin: true })
     const upstream = await forward({
       cfg,
       method: request.method,
       url: request.url,
       headers: request.headers,
       body: request.body,
-      proxyUrl: request.proxyUrl,
+      proxyUrl,
       timeoutMs: request.timeoutMs,
     })
     return anthropicConsoleResult(upstream, request.meta)
   } catch (error) {
+    if (error?.code === 'proxy_host_blocked' || error?.code === 'ipv6_disabled') throw error
     throw Object.assign(new Error(String(error?.message || error).slice(0, 300)), {
       code: error?.code || 'api_kernel_transport',
       status: 502,

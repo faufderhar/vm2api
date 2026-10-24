@@ -7,6 +7,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import {
   changelogQueryOptions,
@@ -31,6 +32,7 @@ export function AboutPane() {
   })
   const changelog = useQuery(changelogQueryOptions())
   const [confirmOpen, setConfirmOpen] = useState(false)
+  const [upgradePassword, setUpgradePassword] = useState('')
   const data = version.data
   const checkFailed =
     version.isError || !!data?.source_error || data?.check_status === 'failed'
@@ -58,10 +60,12 @@ export function AboutPane() {
         body: JSON.stringify({
           confirm: true,
           version: data?.latest_tag,
+          password: upgradePassword,
         }),
       }),
     onSuccess: async (payload) => {
       setConfirmOpen(false)
+      setUpgradePassword('')
       if (payload?.message === 'already_latest') {
         toast.success(`已是最新 ${payload.current_tag}`)
         return
@@ -74,6 +78,7 @@ export function AboutPane() {
     },
     onError: (error: Error) => {
       setConfirmOpen(false)
+      setUpgradePassword('')
       if (isApiError(error) && error.code === 'host_upgrade_required') {
         const command =
           (error.data as { command?: string } | undefined)?.command ||
@@ -257,15 +262,27 @@ export function AboutPane() {
 
       <ConfirmDialog
         open={confirmOpen}
-        onOpenChange={setConfirmOpen}
+        onOpenChange={(open) => {
+          setConfirmOpen(open)
+          if (!open) setUpgradePassword('')
+        }}
         title={`升级到 ${data?.latest_tag || ''}？`}
         desc='会更新并重启控制面，面板短暂不可用。完成后自动刷新。保留槽位、配置和数据。'
         confirmText='开始升级'
         cancelBtnText='取消'
         destructive
+        disabled={!upgradePassword}
         isLoading={upgrade.isPending}
         handleConfirm={() => upgrade.mutate()}
-      />
+      >
+        <Input
+          type='password'
+          autoComplete='current-password'
+          placeholder='当前登录密码'
+          value={upgradePassword}
+          onChange={(event) => setUpgradePassword(event.target.value)}
+        />
+      </ConfirmDialog>
     </div>
   )
 }

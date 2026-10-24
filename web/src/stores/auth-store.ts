@@ -1,25 +1,19 @@
 import type { MeResponse } from '@/types/panel-auth'
 import { create } from 'zustand'
 import { logoutRequest } from '@/lib/api'
-import {
-  clearSession,
-  hasSession,
-  sessionToken,
-  setSession,
-  storedUser,
-} from '@/lib/session'
+import { clearSession, hasSession, setSession, storedUser } from '@/lib/session'
 
 type AuthState = {
   token: string
   user: string
   me: MeResponse | null
   setMe: (me: MeResponse | null) => void
-  signIn: (token: string, user: string) => void
+  signIn: (user: string) => void
   signOut: () => void
 }
 
 export const useAuthStore = create<AuthState>()((set) => ({
-  token: sessionToken(),
+  token: '',
   user: storedUser(),
   me: null,
   setMe: (me) =>
@@ -27,9 +21,9 @@ export const useAuthStore = create<AuthState>()((set) => ({
       me,
       user: me?.user || storedUser(),
     }),
-  signIn: (token, user) => {
-    setSession(token, user)
-    set({ token, user, me: null })
+  signIn: (user) => {
+    setSession(user)
+    set({ token: '', user, me: null })
   },
   signOut: () => {
     logoutRequest()

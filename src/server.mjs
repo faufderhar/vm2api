@@ -22,6 +22,8 @@ import {
   isLoopbackRequest,
   panelSessionAccess,
   revokePanelSession,
+  assertEnvAdminPassword,
+  warnPanelCookieScheme,
 } from './lib/core/security.mjs'
 import { loadModelPolicy } from './lib/protocol/model-policy.mjs'
 import { gatewayModelCatalog } from './lib/protocol/models.mjs'
@@ -108,7 +110,7 @@ import { createImportCommit } from './lib/oauth/import-commit.mjs'
 import { createHandleProtocol } from './lib/protocol/handle-protocol.mjs'
 import { createResponsesWsHandler } from './lib/protocol/responses-ws.mjs'
 import { handleUserCountTokens, handleUserUsage } from './lib/protocol/user-count-tokens.mjs'
-import { createPanelHandler } from './lib/admin/panel-routes.mjs'
+import { authorizePanelStepUp, createPanelHandler } from './lib/admin/panel-routes.mjs'
 
 const FEATURES = [
   'passthrough',
@@ -149,12 +151,8 @@ const UNVERSIONED_PROTOCOL_PATHS = new Set([
 ])
 
 const cfg = loadConfig()
-if (!getPanelAdmin().password) {
-  throw new Error('VM2API_ADMIN_PASSWORD must be set; insecure default panel credentials are disabled')
-}
-if (getPanelAdmin().password === '123456') {
-  throw new Error('VM2API_ADMIN_PASSWORD must not be the public default 123456')
-}
+assertEnvAdminPassword(getPanelAdmin().password)
+warnPanelCookieScheme()
 fs.mkdirSync(cfg.paths.captures, { recursive: true })
 
 const allowRate = createRateLimiter({
@@ -796,6 +794,7 @@ function requireAuth(req, res) {
   // Master env API key — unlimited admin
   if (timingSafeEqualStr(token, cfg.api_key)) {
     if (!allowRate(token)) {
+      req.authKeyKind = 'master'
       return rejectAuth(
         req,
         res,
@@ -829,6 +828,9 @@ function requireAuth(req, res) {
       }),
     )
   }
+  // A known key that is refused is logged by id, never by its secret.
+  req.authKeyKind = 'managed'
+  req.authKeyRecord = managed.record
   const gate = apiKeyStore.canAccept(managed.record)
   if (!gate.ok) {
     const type =
@@ -989,7 +991,13 @@ if (proxyPool.snapshot().config.ipv6_enabled !== true) {
     console.warn('[ipv6-policy] exit not blocked', exit.vm_id || exit.proxy_id, exit.error)
   }
 }
-const clusterRoutes = createClusterRoutes({ manager: clusterManager, json, readBody, ok: panel.ok })
+const clusterRoutes = createClusterRoutes({
+  manager: clusterManager,
+  json,
+  readBody,
+  ok: panel.ok,
+  stepUp: (req, res, body) => authorizePanelStepUp(req, res, body, json),
+})
 const slotShell = createSlotShell({ projectRoot: cfg.paths.project, importOauth: commitImportedOauth })
 // Each slot takes credentials.json.lock (up to 30s while its worker refreshes), so this runs after listen, a few at a time.
 async function backfillSlotSubscriptionTypes(concurrency = 4) {

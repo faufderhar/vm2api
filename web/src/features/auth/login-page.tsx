@@ -40,7 +40,7 @@ export function LoginPage() {
         password,
         base: hideBase ? '' : base.trim().replace(/\/$/, '') || apiBase(),
       })
-      signIn(result.token, result.user)
+      signIn(result.user)
       let needsWelcome = false
       try {
         const onboarding = await queryClient.fetchQuery(

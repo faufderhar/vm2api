@@ -55,7 +55,7 @@ describe('panel error envelope', () => {
 describe('panelFetch 401', () => {
   beforeEach(() => {
     installBrowser()
-    setSession('kin-panel-test-token')
+    setSession('admin')
   })
 
   afterEach(() => {
@@ -74,6 +74,19 @@ describe('panelFetch 401', () => {
     expect(hasSession()).toBe(false)
     expect(sessionToken()).toBe('')
     expect(expired).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not put a bearer token on panel requests', async () => {
+    const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const res = await panelFetch('/api/panel/me')
+    expect(res.status).toBe(200)
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      credentials: 'include',
+    })
+    expect(fetchMock.mock.calls[0]?.[1]?.headers).not.toHaveProperty(
+      'Authorization'
+    )
   })
 
   it('does not expire session when panel login returns 401', async () => {

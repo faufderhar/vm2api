@@ -9,6 +9,7 @@ import { ApiScheduler } from '../../src/lib/pool/api-scheduler.mjs'
 import {
   anthropicConsoleResult,
   anthropicMessagesUrl,
+  assertConsoleDialTarget,
   buildAnthropicConsoleRequest,
   resolveConsoleProxyUrl,
   runAnthropicConsole,
@@ -144,7 +145,7 @@ test('batch check tests each key through its own configured proxy', async () => 
   const seen = []
   const pool = {
     getProxyByIdWithAuth(id) {
-      return id === 'px-2' ? { url: 'socks5://10.1.1.2:1080' } : null
+      return id === 'px-2' ? { url: 'socks5://203.0.113.10:1080' } : null
     },
   }
   const result = await runAnthropicConsole({
@@ -175,7 +176,7 @@ test('batch check tests each key through its own configured proxy', async () => 
   })
   assert.deepEqual(seen, [
     { key: 'sk-one', proxy: '' },
-    { key: 'sk-two', proxy: 'socks5://10.1.1.2:1080' },
+    { key: 'sk-two', proxy: 'socks5://203.0.113.10:1080' },
   ])
   assert.equal(result.ok, false)
   assert.equal(result.items[0].ok, true)
@@ -222,7 +223,7 @@ test('each address keeps its own url and auth, while a blank url stays official'
       message: 'Hi',
       keys: [
         { api_key: 'sk-one' },
-        { api_key: 'sk-two', base_url: 'https://relay.example/v1', auth_scheme: 'authorization_bearer' },
+        { api_key: 'sk-two', base_url: 'https://203.0.113.20/v1', auth_scheme: 'authorization_bearer' },
       ],
     },
     forward: async (request) => {
@@ -241,7 +242,7 @@ test('each address keeps its own url and auth, while a blank url stays official'
   })
   assert.deepEqual(seen, [
     { url: 'https://api.anthropic.com/v1/messages?beta=true', xApiKey: 'sk-one', authorization: '' },
-    { url: 'https://relay.example/v1/messages?beta=true', xApiKey: '', authorization: 'Bearer sk-two' },
+    { url: 'https://203.0.113.20/v1/messages?beta=true', xApiKey: '', authorization: 'Bearer sk-two' },
   ])
 })
 
@@ -297,6 +298,34 @@ test('unsupported schemes on a configured proxy are rejected', () => {
     (error) => error.code === 'invalid_proxy_url',
   )
   assert.equal(anthropicMessagesUrl('http://plain.example'), 'http://plain.example/v1/messages?beta=true')
+})
+
+test('a console base URL or proxy that points at loopback is refused before the forward', async () => {
+  let forwarded = false
+  const result = await runAnthropicConsole({
+    cfg: {},
+    input: {
+      model: 'claude-sonnet-4-5',
+      message: 'Hi',
+      api_key: 'sk-ant',
+      base_url: 'http://127.0.0.1:9',
+    },
+    forward: async () => {
+      forwarded = true
+      return { statusCode: 200, async *[Symbol.asyncIterator]() {} }
+    },
+  })
+  assert.equal(forwarded, false)
+  assert.equal(result.ok, false)
+  assert.equal(result.status, 400)
+  await assert.rejects(
+    () => assertConsoleDialTarget('socks5://127.0.0.1:1080', { pin: true }),
+    (error) => error.code === 'proxy_host_blocked',
+  )
+  assert.equal(
+    await assertConsoleDialTarget('https://api.anthropic.com/v1/messages'),
+    'https://api.anthropic.com/v1/messages',
+  )
 })
 
 test('upstream text is extracted and error bodies stay on the panel result', async () => {
@@ -405,7 +434,7 @@ test('saved Anthropic row reloads its proxy and can test or fetch models without
   const store = new ApiEndpointStore({ dataDir: dir })
   const proxyPool = {
     getProxyByIdWithAuth(id) {
-      return id === 'px-1' ? { url: 'socks5://10.0.0.8:1080' } : null
+      return id === 'px-1' ? { url: 'socks5://203.0.113.10:1080' } : null
     },
   }
   const response = {}
@@ -498,7 +527,7 @@ test('saved Anthropic row reloads its proxy and can test or fetch models without
   )
   assert.deepEqual(
     seen.map((item) => item.proxy),
-    ['socks5://10.0.0.8:1080', 'socks5://10.0.0.8:1080'],
+    ['socks5://203.0.113.10:1080', 'socks5://203.0.113.10:1080'],
   )
   assert.equal(JSON.stringify(response.body).includes('sk-ant-saved'), false)
 })

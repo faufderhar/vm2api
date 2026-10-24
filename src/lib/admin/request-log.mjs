@@ -26,11 +26,37 @@ import { costColumnsFromUsage, normalizeUsage } from './pricing.mjs'
 import { disjointOpenaiUsage } from '../protocol/openai-usage.mjs'
 import { REASONING_EFFORTS, sessionIdForLog } from '../protocol/log-fields.mjs'
 
-/** Persist the token a client actually sent — only for failed ingress auth. */
+const MASKED_PRESENTED_KEY = /^[^…]{0,8}…[^…]{0,4}$/
+
+/**
+ * What a failed ingress auth logs about the token the client sent: its first 8 and
+ * last 4 characters. A valid key can fail too (quota, disabled, rate limit), so the
+ * full token must never reach usage_logs, the in-memory ring or the JSONL mirror.
+ * Already masked values pass through unchanged.
+ */
 export function presentedApiKeyForLog(token) {
   const t = String(token || '').trim()
   if (!t || t.startsWith('kin-panel-')) return ''
-  return t.slice(0, 240)
+  if (MASKED_PRESENTED_KEY.test(t)) return t
+  return t.length > 16 ? `${t.slice(0, 8)}…${t.slice(-4)}` : '…'
+}
+
+/**
+ * Log fields for a request requireAuth refused. A key it recognised (master, or a
+ * managed key over quota / disabled / rate limited) is recorded by kind and id;
+ * only an unknown token keeps its masked form.
+ */
+export function authFailureLogFields(req) {
+  if (req?.authKeyKind === 'master') return { api_key_kind: 'master', api_key_presented: null }
+  if (req?.authKeyKind === 'managed' && req.authKeyRecord) {
+    return {
+      api_key_kind: 'managed',
+      api_key_id: req.authKeyRecord.id || null,
+      user_id: req.authKeyRecord.user_id ?? null,
+      api_key_presented: null,
+    }
+  }
+  return { api_key_presented: presentedApiKeyForLog(req?.presentedApiKey) || null }
 }
 
 const MODES = new Set(['off', 'normal', 'debug'])
@@ -846,7 +872,6 @@ const EXPORT_COLUMNS = [
   'model',
   'vm_id',
   'ip',
-  'api_key_presented',
   'duration_ms',
   'first_token_ms',
   'input_tokens',

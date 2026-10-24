@@ -11,7 +11,7 @@ import path from 'node:path'
 import { getDb, isDbOpen } from '../db/database.mjs'
 import { SettingsRepo } from '../db/repos/settings-repo.mjs'
 import { socksProxyUrl } from './socks-address.mjs'
-import { assertProxyAllowed, proxyBlockedReason, proxyResolvedBlockReason } from './proxy-policy.mjs'
+import { assertProxyAllowed, pinSocksProxyUrl, proxyBlockedReason, resolvedProxyDial } from './proxy-policy.mjs'
 
 export const EGRESS_BIN = process.env.KIN_EGRESS_BIN || '/opt/kin-gateway/bin/kin-egress'
 export const LOCAL_EGRESS_ID = 'px-local'
@@ -798,10 +798,12 @@ export async function startProxyEgress(
   } = {},
 ) {
   const blocked = proxyBlockedReason(proxy)
-  const resolved = blocked || (await proxyResolvedBlockReason(proxy))
-  if (resolved) return { ok: false, error: resolved }
+  const dial = blocked ? { blocked } : await resolvedProxyDial(proxy)
+  if (dial.blocked) return { ok: false, error: dial.blocked }
   const proxyId = proxy?.id
-  const proxyUrl = boundProxyUrl(proxy)
+  const normalized = boundProxyUrl(proxy)
+  // Pin only the URL handed to kin-egress. The stored proxy row keeps its hostname.
+  const proxyUrl = dial.address && normalized ? pinSocksProxyUrl(normalized, dial.address) : normalized
   if (!proxyId || !proxyUrl) return { ok: false, error: 'bound SOCKS5 id and url required; refusing fallback' }
   const net = ensureEgressNetwork(proxyId, runDocker)
   if (!net.ok) return net

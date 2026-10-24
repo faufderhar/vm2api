@@ -87,14 +87,20 @@ export function writeMutedClasses(classes: string[]): void {
 }
 
 /**
- * 掩码入站 Key。后端**不掩码**，只截断到 240 字符，且值是攻击者可控字符串。
- * 保留前 8 后 4 便于运维比对，中间恒定替换。
+ * 掩码入站 Key。后端已只存前 8 后 4（`sk-vm-ab…1234`），旧版本留下的行
+ * 可能还是原文；两种都按前 8 后 4 显示，中间恒定替换。值是攻击者可控字符串。
  *
  * 调用方仍需遵守：不放进 `title=`、不给复制按钮、不写 console / toast。
  */
 export function maskPresentedKey(raw: unknown): string {
   const value = String(raw ?? '').trim()
   if (!value) return '—'
+  const cut = value.indexOf('…')
+  if (cut >= 0) {
+    const head = value.slice(0, Math.min(cut, 8))
+    const tail = value.slice(cut + 1).slice(-4)
+    return head || tail ? `${head}••••••••${tail}` : '••••••••'
+  }
   if (value.length <= 14) return '••••••••'
   return `${value.slice(0, 8)}••••••••${value.slice(-4)}`
 }

@@ -33,8 +33,8 @@ export type RequestLogItem = {
   actual_cost?: number
   rate_multiplier?: number
   /**
-   * 客户端出示的入站 Key。**后端只截断到 240 字符，完全不掩码**，且是攻击者可控字符串。
-   * 仅在 /v1 入站鉴权失败时写入。
+   * 客户端出示的入站 Key，后端只存前 8 后 4（`sk-vm-ab…1234`），是攻击者可控字符串。
+   * 仅在 /v1 入站鉴权失败、且网关认不出这把 key 时写入；认得出的 key 记 `api_key_id`。
    * 渲染前必须过 `maskPresentedKey()`；禁止放进 title= / 复制按钮 / console / toast。
    */
   api_key_presented?: string | null
@@ -116,7 +116,7 @@ export type ErrorCodeBucket = {
 
 /** 入站鉴权失败按 (key, ip) 分组的汇总。不受屏蔽影响，直接查 DB。 */
 export type IngressHit = {
-  /** 明文，与 RequestLogItem.api_key_presented 同样的掩码红线。 */
+  /** 前 8 后 4，与 RequestLogItem.api_key_presented 同样的掩码红线。 */
   api_key_presented: string
   ip: string
   count: number

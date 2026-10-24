@@ -161,7 +161,7 @@ export type UsageLogRow = {
   userAgent: string | null
   clientIp: string | null
   /**
-   * 入站鉴权失败时客户端出示的 key。后端只截断不掩码，
+   * 入站鉴权失败时客户端出示的 key，后端只存前 8 后 4。
    * 渲染前必须过 `maskPresentedKey()`；禁止进 title= / 复制 / toast。
    */
   apiKeyPresented: string | null

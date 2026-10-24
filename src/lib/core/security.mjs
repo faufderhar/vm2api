@@ -1,5 +1,6 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
+import net from 'node:net'
 import path from 'node:path'
 import { atomicWriteJson } from '../vm/vm-file.mjs'
 
@@ -42,20 +43,40 @@ export function extractApiKey(req) {
 /** Simple token bucket per key */
 export function createRateLimiter({ capacity = 60, refillPerSec = 1, maxKeys = 10000 } = {}) {
   const buckets = new Map()
-  return function allow(key) {
-    const now = Date.now()
-    let bucket = buckets.get(key)
-    if (bucket) buckets.delete(key)
-    if (!bucket) {
-      while (buckets.size >= maxKeys) buckets.delete(buckets.keys().next().value)
-      bucket = { tokens: capacity, updated: now }
-    }
-    buckets.set(key, bucket)
+  const refill = (bucket, now) => {
     const elapsed = (now - bucket.updated) / 1000
     bucket.tokens = Math.min(capacity, bucket.tokens + elapsed * refillPerSec)
     bucket.updated = now
+  }
+  return function allow(key) {
+    const now = Date.now()
+    const existing = buckets.get(key)
+    if (existing) {
+      refill(existing, now)
+      if (existing.tokens < 1) return false
+      existing.tokens -= 1
+      return true
+    }
+    // A new name must not reset a bucket that is already empty. Drop the one
+    // with the most tokens left; if every bucket is empty, refuse the new key.
+    if (buckets.size >= maxKeys) {
+      let victimId = null
+      let victimTokens = -1
+      for (const [storedId, stored] of buckets) {
+        refill(stored, now)
+        if (stored.tokens < 1) continue
+        if (victimId == null || stored.tokens > victimTokens) {
+          victimId = storedId
+          victimTokens = stored.tokens
+        }
+      }
+      if (victimId == null) return false
+      buckets.delete(victimId)
+    }
+    const bucket = { tokens: capacity, updated: now }
     if (bucket.tokens < 1) return false
     bucket.tokens -= 1
+    buckets.set(key, bucket)
     return true
   }
 }
@@ -237,7 +258,14 @@ function loadSessions() {
         const abs = Number.isFinite(storedAbs) && storedAbs > 0 ? storedAbs : s.exp
         if (abs <= now) continue
         const key = storedKey.startsWith('kin-panel-') ? panelSessionKey(storedKey) : storedKey
-        panelSessions.set(key, { user: s.user, role: s.role || null, exp: s.exp, abs })
+        const stepUpUntil = Number(s.step_up_until)
+        panelSessions.set(key, {
+          user: s.user,
+          role: s.role || null,
+          exp: s.exp,
+          abs,
+          ...(Number.isFinite(stepUpUntil) && stepUpUntil > 0 ? { step_up_until: stepUpUntil } : {}),
+        })
       }
     }
   } catch (err) {
@@ -327,6 +355,54 @@ export function revokePanelSession(token) {
   if (!token) return
   panelSessions.delete(panelSessionKey(token))
   saveSessions()
+}
+
+/** Recent password check for shell, restore, and starting an upgrade. Not a shorter session. */
+export const STEP_UP_MS = 5 * 60 * 1000
+
+function livePanelSession(token) {
+  if (!token || !String(token).startsWith('kin-panel-')) return null
+  const key = panelSessionKey(token)
+  let session = panelSessions.get(key)
+  if (!session) {
+    reloadSessionsIfChanged()
+    session = panelSessions.get(key)
+  }
+  if (!session) return null
+  const now = Date.now()
+  if (now > session.exp || now > absoluteExpiry(session)) return null
+  return { key, session }
+}
+
+export function panelStepUpFresh(token, now = Date.now()) {
+  const found = livePanelSession(token)
+  const until = Number(found?.session?.step_up_until)
+  return Number.isFinite(until) && until > now
+}
+
+/** Stamp the current session. A missing or expired session is left unchanged. */
+export function markPanelStepUp(token, now = Date.now()) {
+  const found = livePanelSession(token)
+  if (!found) return false
+  found.session.step_up_until = now + STEP_UP_MS
+  saveSessions()
+  return true
+}
+
+export const grantPanelStepUp = markPanelStepUp
+
+/**
+ * Allow the action when this session checked the password recently.
+ * Otherwise `verify(username, password)` must succeed. A wrong password does not revoke the session.
+ */
+export async function consumePanelStepUp(req, password, verify, now = Date.now()) {
+  const token = extractPanelToken(req)
+  if (panelStepUpFresh(token, now)) return { ok: true, fresh: true }
+  const username = String(req?.panelUser || '')
+  const authed = typeof verify === 'function' ? await verify(username, password) : null
+  if (!authed || authed.username !== username) return { ok: false, fresh: false }
+  markPanelStepUp(token, now)
+  return { ok: true, fresh: false }
 }
 
 export function revokePanelSessionsForUser(username, { exceptToken } = {}) {
@@ -471,6 +547,10 @@ export function extractPanelToken(req) {
 
 /** Cookie Secure follows the request (or PUBLIC_SCHEME). Default HTTP, not HTTPS. */
 export function panelCookieSecure(req, env = process.env) {
+  const base = String(env.PUBLIC_BASE_URL || '')
+    .trim()
+    .toLowerCase()
+  if (base.startsWith('https://')) return true
   const scheme = String(env.PUBLIC_SCHEME || '')
     .trim()
     .toLowerCase()
@@ -490,21 +570,102 @@ export function panelCookieSecure(req, env = process.env) {
   return false
 }
 
-/** Build Set-Cookie for panel session (7d) */
-export function panelSessionCookie(token, { secure = true, maxAgeSec = 7 * 24 * 3600 } = {}) {
+function registrableHost(hostname) {
+  const host = String(hostname || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\.$/, '')
+  if (!host) return ''
+  if (net.isIP(host)) return host
+  const labels = host.split('.').filter(Boolean)
+  if (labels.length <= 2) return labels.join('.')
+  return labels.slice(-2).join('.')
+}
+
+function requestHostname(req) {
+  const raw = String(req?.headers?.host || '').trim()
+  if (!raw) return ''
+  try {
+    return new URL(`http://${raw}`).hostname
+  } catch {
+    return raw.replace(/:\d+$/, '')
+  }
+}
+
+function panelOriginCrossSite(origin, req, env) {
+  let parsed
+  try {
+    parsed = new URL(origin)
+  } catch {
+    return false
+  }
+  const requestScheme = panelCookieSecure(req, env) ? 'https:' : 'http:'
+  if (parsed.protocol !== requestScheme) return true
+  const originSite = registrableHost(parsed.hostname)
+  const requestSite = registrableHost(requestHostname(req))
+  if (!originSite || !requestSite) return true
+  return originSite !== requestSite
+}
+
+/**
+ * Same-site stays Lax. A credentialed cross-site panel (origin on the allowlist,
+ * different site or scheme than this request) needs SameSite=None and Secure.
+ * `allowedOrigins` is the set from parsePanelCorsOrigins; this module does not import it.
+ */
+export function panelSessionCookieOptions(req, allowedOrigins, env = process.env) {
+  let secure = panelCookieSecure(req, env)
+  let sameSite = 'Lax'
+  const origin = String(req?.headers?.origin || '').trim()
+  const allowed = allowedOrigins instanceof Set ? allowedOrigins : new Set(allowedOrigins || [])
+  if (origin && allowed.has(origin) && panelOriginCrossSite(origin, req, env)) {
+    sameSite = 'None'
+    secure = true
+  }
+  return { sameSite, secure }
+}
+
+/** Warn once at startup when a TLS proxy would otherwise leave the cookie without Secure. */
+export function warnPanelCookieScheme(env = process.env, warn = console.warn) {
+  const scheme = String(env.PUBLIC_SCHEME || '').trim()
+  const base = String(env.PUBLIC_BASE_URL || '').trim()
+  if (scheme || base) return
+  warn('kin-security: TLS 反代必须设置 PUBLIC_SCHEME 或 PUBLIC_BASE_URL，否则登录 Cookie 不会带 Secure')
+}
+
+/** Startup check for VM2API_ADMIN_PASSWORD / KIN_ADMIN_PASSWORD. Does not rewrite stored hashes. */
+export function assertEnvAdminPassword(password) {
+  const pass = String(password ?? '')
+  if (!pass) {
+    throw new Error('VM2API_ADMIN_PASSWORD must be set; insecure default panel credentials are disabled')
+  }
+  if (pass === '123456') {
+    throw new Error('VM2API_ADMIN_PASSWORD must not be the public default 123456')
+  }
+  if (pass.length < 8 || pass.length > 128) {
+    throw new Error('VM2API_ADMIN_PASSWORD must be 8–128 characters (KIN_ADMIN_PASSWORD is the same setting)')
+  }
+  return pass
+}
+
+/** Build Set-Cookie for panel session (7d). SameSite=None always forces Secure. */
+export function panelSessionCookie(token, { secure = true, maxAgeSec = 7 * 24 * 3600, sameSite = 'Lax' } = {}) {
+  const site = sameSite === 'None' ? 'None' : 'Lax'
+  const lockedSecure = site === 'None' ? true : secure
   const parts = [
     `kin_panel_token=${encodeURIComponent(token)}`,
     'Path=/',
     `Max-Age=${maxAgeSec}`,
     'HttpOnly',
-    'SameSite=Lax',
+    `SameSite=${site}`,
   ]
-  if (secure) parts.push('Secure')
+  if (lockedSecure) parts.push('Secure')
   return parts.join('; ')
 }
 
-export function clearPanelSessionCookie({ secure = true } = {}) {
-  const parts = ['kin_panel_token=', 'Path=/', 'Max-Age=0', 'HttpOnly', 'SameSite=Lax']
-  if (secure) parts.push('Secure')
+export function clearPanelSessionCookie({ secure = true, sameSite = 'Lax' } = {}) {
+  const site = sameSite === 'None' ? 'None' : 'Lax'
+  const lockedSecure = site === 'None' ? true : secure
+  const parts = ['kin_panel_token=', 'Path=/', 'Max-Age=0', 'HttpOnly', `SameSite=${site}`]
+  if (lockedSecure) parts.push('Secure')
   return parts.join('; ')
 }

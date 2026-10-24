@@ -11,6 +11,7 @@ import {
 } from '../pool/api-presets.mjs'
 import { forwardApi, readApiJson } from '../transport/api-kernel-client.mjs'
 import { AUTH_SCHEME_X_API_KEY, resolveAuthScheme } from '../oauth/auth-scheme.mjs'
+import { assertConsoleDialTarget } from './anthropic-console.mjs'
 
 function nowIso() {
   return new Date().toISOString()
@@ -253,6 +254,8 @@ export async function fetchUpstreamModels({
   if (!/^https?:\/\//i.test(preset.base_url)) {
     throw Object.assign(new Error('base_url must be http(s)'), { code: 'invalid_base_url' })
   }
+  await assertConsoleDialTarget(preset.base_url)
+  const proxyUrl = await assertConsoleDialTarget(proxy_url, { pin: true })
 
   const models = []
   let afterId = ''
@@ -269,7 +272,7 @@ export async function fetchUpstreamModels({
         }),
       },
       body: '',
-      proxyUrl: proxy_url,
+      proxyUrl,
       timeoutMs: 30_000,
     })
     const status = Number(upstream.statusCode) || 502

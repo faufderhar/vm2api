@@ -10,6 +10,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 import { api } from '@/lib/api'
+import { isApiError } from '@/lib/api'
 import { captureLoginAuthUrl } from '@/lib/login-terminal'
 import { apiBase } from '@/lib/session'
 import {
@@ -19,6 +20,7 @@ import {
   slashInput,
 } from '@/lib/slash-line'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 
 type Phase = 'connecting' | 'open' | 'closed'
 
@@ -91,6 +93,49 @@ export const WsTerminal = forwardRef<
   const [note, setNote] = useState('')
   const [session, setSession] = useState(0)
   const [running, setRunning] = useState('')
+  const [ticket, setTicket] = useState('')
+  const [asking, setAsking] = useState(false)
+  const [password, setPassword] = useState('')
+  const [sentPassword, setSentPassword] = useState('')
+  const [stepUpNote, setStepUpNote] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    setTicket('')
+    setAsking(false)
+    setPhase('connecting')
+    setNote('')
+    const body: { login?: boolean; password?: string } = {}
+    if (officialLogin) body.login = true
+    if (sentPassword) body.password = sentPassword
+    api<{ ticket: string }>(ticketPath, {
+      method: 'POST',
+      body: Object.keys(body).length ? JSON.stringify(body) : undefined,
+    })
+      .then(({ ticket: issued }) => {
+        if (cancelled) return
+        setTicket(issued)
+        setAsking(false)
+        setStepUpNote('')
+      })
+      .catch((err: Error) => {
+        if (cancelled) return
+        if (
+          isApiError(err) &&
+          (err.code === 'step_up_required' || err.code === 'step_up_failed')
+        ) {
+          setAsking(true)
+          setStepUpNote(err.code === 'step_up_failed' ? err.message : '')
+          setPhase('connecting')
+          return
+        }
+        setNote(err.message)
+        setPhase('closed')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [ticketPath, session, officialLogin, sentPassword])
 
   useEffect(() => {
     commandsRef.current = commands || []
@@ -154,7 +199,7 @@ export const WsTerminal = forwardRef<
   }
   useEffect(() => {
     const host = hostRef.current
-    if (!host) return
+    if (!host || !ticket) return
     const term = new Terminal({
       cursorBlink: true,
       fontSize: 13,
@@ -231,53 +276,41 @@ export const WsTerminal = forwardRef<
       send({ t: 'r', c: cols, r: rows })
     )
     const observer = new ResizeObserver(() => fit.fit())
-    api<{ ticket: string }>(ticketPath, {
-      method: 'POST',
-      body: officialLogin ? JSON.stringify({ login: true }) : undefined,
-    })
-      .then(({ ticket }) => {
-        if (disposed) return
-        const base = new URL(apiBase() || window.location.origin)
-        base.protocol = base.protocol === 'https:' ? 'wss:' : 'ws:'
-        base.pathname = socketPath
-        base.search = new URLSearchParams({
-          cols: String(term.cols),
-          rows: String(term.rows),
-          ...(officialLogin ? { login: '1' } : {}),
-        }).toString()
-        ws = new WebSocket(base.toString(), [`vm2api-ticket.${ticket}`])
-        ws.binaryType = 'arraybuffer'
-        ws.onopen = () => {
-          setPhase('open')
-          term.focus()
-          if (startupCommand && !officialLogin)
-            send({ t: 'd', d: `${startupCommand}\r` })
-        }
-        ws.onmessage = (e) => {
-          if (typeof e.data !== 'string') {
-            const bytes = new Uint8Array(e.data as ArrayBuffer)
-            term.write(bytes)
-            captureUrl(new TextDecoder().decode(bytes))
-            return
-          }
-          const msg = JSON.parse(e.data) as {
-            t: string
-            code?: number | null
-            message?: string
-          }
-          if (msg.t === 'exit') setNote(`会话退出（code ${msg.code ?? '—'}）`)
-          if (msg.t === 'login') onLoginRef.current?.()
-          if (msg.t === 'error') setNote(msg.message || '终端错误')
-        }
-        ws.onclose = () => {
-          if (!disposed) setPhase('closed')
-        }
-      })
-      .catch((err: Error) => {
-        if (disposed) return
-        setNote(err.message)
-        setPhase('closed')
-      })
+    const base = new URL(apiBase() || window.location.origin)
+    base.protocol = base.protocol === 'https:' ? 'wss:' : 'ws:'
+    base.pathname = socketPath
+    base.search = new URLSearchParams({
+      cols: String(term.cols),
+      rows: String(term.rows),
+      ...(officialLogin ? { login: '1' } : {}),
+    }).toString()
+    ws = new WebSocket(base.toString(), [`vm2api-ticket.${ticket}`])
+    ws.binaryType = 'arraybuffer'
+    ws.onopen = () => {
+      setPhase('open')
+      term.focus()
+      if (startupCommand && !officialLogin)
+        send({ t: 'd', d: `${startupCommand}\r` })
+    }
+    ws.onmessage = (e) => {
+      if (typeof e.data !== 'string') {
+        const bytes = new Uint8Array(e.data as ArrayBuffer)
+        term.write(bytes)
+        captureUrl(new TextDecoder().decode(bytes))
+        return
+      }
+      const msg = JSON.parse(e.data) as {
+        t: string
+        code?: number | null
+        message?: string
+      }
+      if (msg.t === 'exit') setNote(`会话退出（code ${msg.code ?? '—'}）`)
+      if (msg.t === 'login') onLoginRef.current?.()
+      if (msg.t === 'error') setNote(msg.message || '终端错误')
+    }
+    ws.onclose = () => {
+      if (!disposed) setPhase('closed')
+    }
 
     return () => {
       disposed = true
@@ -289,7 +322,7 @@ export const WsTerminal = forwardRef<
       termRef.current = null
       term.dispose()
     }
-  }, [ticketPath, socketPath, session, execute, startupCommand, officialLogin])
+  }, [ticket, socketPath, execute, startupCommand, officialLogin])
 
   useImperativeHandle(
     ref,
@@ -342,9 +375,38 @@ export const WsTerminal = forwardRef<
           ) : null}
         </div>
       </div>
+      {asking ? (
+        <form
+          className='flex flex-wrap items-center gap-2'
+          onSubmit={(event) => {
+            event.preventDefault()
+            setSentPassword(password)
+          }}
+        >
+          <Input
+            type='password'
+            autoComplete='current-password'
+            autoFocus
+            placeholder='当前登录密码'
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            className='h-8 max-w-56'
+          />
+          <Button type='submit' size='sm' className='h-8' disabled={!password}>
+            确认
+          </Button>
+          <span className='text-xs text-muted-foreground'>
+            {stepUpNote || '打开终端需要当前密码，通过后 5 分钟内不用再输。'}
+          </span>
+        </form>
+      ) : null}
       <div
         ref={hostRef}
-        className='min-h-0 flex-1 overflow-hidden rounded-md border bg-[#0b0d10] p-1'
+        className={
+          asking
+            ? 'hidden'
+            : 'min-h-0 flex-1 overflow-hidden rounded-md border bg-[#0b0d10] p-1'
+        }
       />
     </div>
   )

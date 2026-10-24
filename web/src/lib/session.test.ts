@@ -24,40 +24,43 @@ function installBrowser(hostname: string) {
 afterEach(() => vi.unstubAllGlobals())
 
 describe('panel session storage', () => {
-  it('stores the bearer token even on same-origin deployments', () => {
+  it('stores the username and drops a leftover bearer token', () => {
     const values = installBrowser('console.example')
+    values.set(LS_TOKEN, 'old-token')
 
-    setSession('secret-token', 'admin')
+    setSession('admin')
 
-    expect(values.get(LS_TOKEN)).toBe('secret-token')
+    expect(values.get(LS_TOKEN)).toBeUndefined()
     expect(values.get(LS_USER)).toBe('admin')
     expect(hasSession()).toBe(true)
   })
 
-  it('stores the bearer token when apiBase is empty (HTTP IP install)', () => {
+  it('treats a stored username as signed in on an HTTP IP install', () => {
     const values = installBrowser('203.0.113.10')
 
-    setSession('secret-token', 'admin')
+    setSession('admin')
 
-    expect(values.get(LS_TOKEN)).toBe('secret-token')
+    expect(values.get(LS_TOKEN)).toBeUndefined()
     expect(hasSession()).toBe(true)
   })
 
-  it('does not treat a leftover username as a session', () => {
+  it('does not treat a leftover token alone as a session', () => {
     const values = installBrowser('203.0.113.10')
-    values.set(LS_USER, 'admin')
+    values.set(LS_TOKEN, 'old-token')
 
     expect(hasSession()).toBe(false)
+    expect(values.get(LS_TOKEN)).toBeUndefined()
   })
 
-  it('keeps the bearer fallback for a separate API origin', () => {
+  it('keeps a separate API origin without storing a token', () => {
     const values = installBrowser('localhost')
     setApiBase('http://127.0.0.1:8787')
 
-    setSession('secret-token', 'admin')
+    setSession('admin')
 
     expect(values.get(LS_BASE)).toBe('http://127.0.0.1:8787')
-    expect(values.get(LS_TOKEN)).toBe('secret-token')
+    expect(values.get(LS_TOKEN)).toBeUndefined()
+    expect(values.get(LS_USER)).toBe('admin')
   })
 
   it('calls the server logout endpoint without a readable bearer token', async () => {
@@ -66,7 +69,7 @@ describe('panel session storage', () => {
       .fn()
       .mockResolvedValue(new Response('{}', { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
-    setSession('secret-token', 'admin')
+    setSession('admin')
 
     logoutRequest()
 

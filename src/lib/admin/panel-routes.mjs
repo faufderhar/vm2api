@@ -9,7 +9,7 @@ import {
   createPanelSession,
   extractPanelToken,
   panelSessionCookie,
-  panelCookieSecure,
+  panelSessionCookieOptions,
   clearPanelSessionCookie,
   revokePanelSession,
   revokePanelSessionsForUser,
@@ -18,6 +18,8 @@ import {
   masterMayAdminister,
   loginRateLimited,
   recordLoginFailure,
+  panelStepUpFresh,
+  markPanelStepUp,
 } from '../core/security.mjs'
 import { loadDistillRules, saveDistillRules, validateDistillPatch } from '../core/distill-detect.mjs'
 import { applyRefusalGuardPatch, refusalGuardPolicy } from '../core/refusal-guard.mjs'
@@ -278,7 +280,7 @@ import {
 } from '../vm/wrap-cli-runtime.mjs'
 import { refreshClusterSlotPayloads } from '../cluster/remote-slot.mjs'
 import { readRawBody as defaultReadRawBody } from '../http/respond.mjs'
-import { corsHeadersForRequest } from '../http/cors.mjs'
+import { corsHeadersForRequest, parsePanelCorsOrigins } from '../http/cors.mjs'
 import { restartRustKernel, writeKernelConfig } from '../transport/rust-kernel-supervisor.mjs'
 
 import { countTokensViaWorker } from '../transport/go-worker-client.mjs'
@@ -310,6 +312,43 @@ import {
 } from '../db/repos/statistics-repo.mjs'
 
 const loginAttempts = createAttemptLimiter({ limit: 30, windowMs: 60_000 })
+
+/**
+ * Shell, restore, and a real upgrade start need the current panel password.
+ * A successful check lasts five minutes on this session. Loopback master skips it.
+ * Returns a response when refused, otherwise null.
+ */
+export async function authorizePanelStepUp(req, res, body, json) {
+  if (masterMayAdminister(req)) return null
+  const token = extractPanelToken(req)
+  if (panelStepUpFresh(token)) return null
+  const username = String(req.panelUser || '')
+  if (loginRateLimited(loginAttempts, req, username)) {
+    return json(res, 429, {
+      ok: false,
+      error: { message: '登录太频繁，请稍后再试', type: 'rate_limit', code: 'rate_limit' },
+    })
+  }
+  const password = body?.password ?? body?.pass ?? body?.p ?? ''
+  const authed = password ? await verifyPanelLogin(username, password) : null
+  if (!authed || authed.username !== username) {
+    if (password) recordLoginFailure(loginAttempts, req, username)
+    return json(res, 401, {
+      ok: false,
+      error: {
+        message: password ? '密码错误' : '需要再次输入当前密码',
+        type: 'auth',
+        code: password ? 'step_up_failed' : 'step_up_required',
+      },
+    })
+  }
+  markPanelStepUp(token)
+  return null
+}
+
+function panelLoginCookie(req) {
+  return panelSessionCookieOptions(req, parsePanelCorsOrigins())
+}
 
 /** Tenants always see their own rows; other roles may narrow by `user_id`. */
 function logsOwner(req, u) {
@@ -1413,12 +1452,11 @@ export function createPanelHandler(ctx) {
         } catch {}
       }
       const token = createPanelSession(authed.username, { role: authed.role })
-      const secure = panelCookieSecure(req)
-      res.setHeader('Set-Cookie', panelSessionCookie(token, { secure }))
+      const cookie = panelLoginCookie(req)
+      res.setHeader('Set-Cookie', panelSessionCookie(token, cookie))
       const me = { user: authed.username, role: authed.role }
       return json(res, 200, {
         ok: true,
-        token,
         user: me.user,
         role: me.role,
         views: mePayload({ panelUser: me.user, panelRole: me.role }).views,
@@ -1429,8 +1467,7 @@ export function createPanelHandler(ctx) {
     if (req.method === 'POST' && p === '/api/panel/logout') {
       const tok = extractPanelToken(req)
       if (tok) revokePanelSession(tok)
-      const secure = panelCookieSecure(req)
-      res.setHeader('Set-Cookie', clearPanelSessionCookie({ secure }))
+      res.setHeader('Set-Cookie', clearPanelSessionCookie(panelLoginCookie(req)))
       return json(res, 200, { ok: true })
     }
 
@@ -1545,20 +1582,30 @@ export function createPanelHandler(ctx) {
       }
       if (req.method === 'POST' && p === '/api/panel/update') {
         const body = await readBody(req, 8192).catch(() => ({}))
-        const result = await startHostUpgrade({
+        const upgradeArgs = {
           projectRoot: cfg?.paths?.project,
           currentVersion: runningVersion,
-          confirm: body?.confirm === true,
           version: body?.version,
-        })
-        if (result.error) {
-          return json(res, result.status, {
-            ok: false,
-            error: result.error,
-            data: result.data || null,
-          })
         }
-        return json(res, result.status, panel.ok(result.data))
+        const respond = (result) => {
+          if (result.error) {
+            return json(res, result.status, { ok: false, error: result.error, data: result.data || null })
+          }
+          return json(res, result.status, panel.ok(result.data))
+        }
+        if (body?.confirm !== true) {
+          return respond(await startHostUpgrade({ ...upgradeArgs, confirm: false }))
+        }
+        const preview = await startHostUpgrade({ ...upgradeArgs, confirm: false })
+        const willStart = !preview.error && (preview.data?.update_available || body?.version)
+        if (!willStart) return respond(preview)
+        const denied = await authorizePanelStepUp(req, res, body, json)
+        if (denied) return denied
+        const result = await startHostUpgrade({
+          ...upgradeArgs,
+          confirm: true,
+        })
+        return respond(result)
       }
       if (req.method === 'GET' && p === '/api/panel/users') {
         return json(res, 200, panel.ok({ items: panelUsers.list() }))
@@ -2280,6 +2327,8 @@ export function createPanelHandler(ctx) {
             error: { message: 'restore requires {"confirm": true}', code: 'confirm_required' },
           })
         }
+        const denied = await authorizePanelStepUp(req, res, body, json)
+        if (denied) return denied
         try {
           const out = await backupService.restoreBackup(id)
           return json(res, 200, { ok: true, ...out })
@@ -2727,6 +2776,8 @@ export function createPanelHandler(ctx) {
       // POST /api/panel/vms/:id/shell-ticket — single-use ticket for the slot terminal WebSocket
       if (req.method === 'POST' && /^\/api\/panel\/vms\/[^/]+\/shell-ticket$/.test(p)) {
         const body = await readBody(req, 1024).catch(() => ({}))
+        const denied = await authorizePanelStepUp(req, res, body, json)
+        if (denied) return denied
         const issued = await ctx.slotShell.issueTicket(p.split('/')[4], { login: body.login === true })
         if (!issued.ok) return json(res, issued.status, { ok: false, error: issued.error })
         return json(res, 200, panel.ok({ ticket: issued.ticket, expires_in: issued.expires_in }))

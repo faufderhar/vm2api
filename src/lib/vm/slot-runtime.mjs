@@ -25,6 +25,7 @@ import {
 } from './vm-runtime.mjs'
 import { inspectWrapCliDir, materializeWrapCli, wrapCliHomeDir } from './wrap-cli-runtime.mjs'
 import { isLocalEgressProxy } from './egress.mjs'
+import { assertKernelProxyResolved } from './proxy-policy.mjs'
 import { vmNodeId } from '../cluster/placement.mjs'
 import { hostProxyUrlForVm, slotHost } from './slot-host.mjs'
 
@@ -124,9 +125,15 @@ export async function ensureSlotInferenceRuntime(vm, projectRoot, opts = {}) {
     const write = opts.ops?.writeGrokKernelConfig || writeGrokKernelConfig
     const start = opts.ops?.ensureGrokKernel || ensureGrokKernel
     const localExit = isLocalEgressProxy(vm?.proxy)
-    const proxyUrl = localExit && !vmNodeId(vm) ? '' : hostProxyUrlForVm(vm)
+    let proxyUrl = localExit && !vmNodeId(vm) ? '' : hostProxyUrlForVm(vm)
     // Same rule as the hop: only a local slot on this host may dial with an empty proxy.
-    write(projectRoot, vm, { proxyUrl, proxyRequired: !(localExit && !vmNodeId(vm)), routing })
+    try {
+      if (proxyUrl && write === writeGrokKernelConfig) proxyUrl = await assertKernelProxyResolved(vm, proxyUrl)
+      write(projectRoot, vm, { proxyUrl, proxyRequired: !(localExit && !vmNodeId(vm)), routing })
+    } catch (error) {
+      if (error?.code !== 'proxy_host_blocked' && error?.code !== 'ipv6_disabled') throw error
+      return { ok: false, code: error.code || 'proxy_host_blocked', error, engine: 'grok' }
+    }
     const kernel = await start({ projectRoot, vmId: vm.id, timeoutMs: opts.timeoutMs })
     if (!kernel?.ok) {
       return {
@@ -147,12 +154,18 @@ export async function ensureSlotInferenceRuntime(vm, projectRoot, opts = {}) {
     // Local egress on this host is the deployment proxy (empty URL). A node
     // slot's local egress is the node's own route, reached through the
     // control-plane forwarder; an empty URL would leave from here instead.
-    const proxyUrl = localExit && !vmNodeId(vm) ? '' : hostProxyUrlForVm(vm)
-    write(projectRoot, vm, {
-      proxyUrl,
-      proxyRequired: !localExit || !!proxyUrl,
-      routing,
-    })
+    let proxyUrl = localExit && !vmNodeId(vm) ? '' : hostProxyUrlForVm(vm)
+    try {
+      if (proxyUrl && write === writeCodexKernelConfig) proxyUrl = await assertKernelProxyResolved(vm, proxyUrl)
+      write(projectRoot, vm, {
+        proxyUrl,
+        proxyRequired: !localExit || !!proxyUrl,
+        routing,
+      })
+    } catch (error) {
+      if (error?.code !== 'proxy_host_blocked' && error?.code !== 'ipv6_disabled') throw error
+      return { ok: false, code: error.code || 'proxy_host_blocked', error, engine: 'codex' }
+    }
     const kernel = await start(slotExec(projectRoot, vm), { timeoutMs: opts.timeoutMs })
     if (!kernel?.ok) {
       return {

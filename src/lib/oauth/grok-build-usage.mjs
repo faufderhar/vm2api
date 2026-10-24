@@ -12,6 +12,7 @@ import { getVm } from '../vm/vm-registry.mjs'
 import { isGrokVm } from '../vm/vm-kind.mjs'
 import { callGrokKernel, grokKernelEnvelope, readGrokKernelJson } from '../transport/grok-kernel-client.mjs'
 import { ensureGrokKernel, writeGrokKernelConfig } from '../transport/grok-kernel-supervisor.mjs'
+import { assertKernelProxyResolved } from '../vm/proxy-policy.mjs'
 import { DEFAULT_USAGE_PROBE } from './usage-probe-monitor.mjs'
 import { grokKernelExit } from './grok-kernel-oauth.mjs'
 
@@ -216,7 +217,18 @@ export async function queryGrokBuildUsage({
   if (!force && grokBuildUsageFresh(stored, now, freshFor)) {
     return { ok: true, skipped: true, usage: stored, source: 'grok-build' }
   }
-  if (exit) writeGrokKernelConfig(projectRoot, vm, { ...exit, routing })
+  if (exit) {
+    let proxyUrl = exit.proxyUrl
+    try {
+      if (proxyUrl) proxyUrl = await assertKernelProxyResolved(vm, proxyUrl)
+      writeGrokKernelConfig(projectRoot, vm, { ...exit, proxyUrl, routing })
+    } catch (error) {
+      if (error?.code === 'proxy_host_blocked' || error?.code === 'ipv6_disabled') {
+        return fail(error.code, error.message, error.status || 409)
+      }
+      throw error
+    }
+  }
   const credits = await fetchGrokBuildDocument({
     projectRoot,
     vm,

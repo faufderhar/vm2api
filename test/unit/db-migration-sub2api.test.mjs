@@ -197,7 +197,8 @@ test('legacy 001-013 db upgrades with data intact', () => {
   assert.equal(logs[0].rate_multiplier, 1)
   assert.equal(logs[0].actual_cost, 0.5)
   assert.equal(logs[1].actual_cost, null)
-  assert.equal(logs[0].api_key_presented, 'sk-presented-1')
+  // 044 keeps only the first 8 and last 4; a short token keeps neither.
+  assert.equal(logs[0].api_key_presented, '…')
   assert.equal(logs[1].api_key_presented, null)
 
   // proxies: scheme→protocol, generated display name, NULL-host fallback

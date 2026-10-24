@@ -23,6 +23,7 @@ import { extractOpenaiUsage, openaiAnthropicUsageFromExtract, disjointOpenaiUsag
 import { callGrokKernel, grokKernelEnvelope } from '../transport/grok-kernel-client.mjs'
 import { ensureGrokKernel, trackGrokKernel, writeGrokKernelConfig } from '../transport/grok-kernel-supervisor.mjs'
 import { hostProxyUrlForVm } from '../vm/slot-host.mjs'
+import { assertKernelProxyResolved } from '../vm/proxy-policy.mjs'
 import { grokKernelExit } from '../oauth/grok-kernel-oauth.mjs'
 import { persistGrokRateLimit, persistGrokRefreshRejected } from '../vm/grok-slot.mjs'
 import { scopeAccountFromVm } from './jev-intercept.mjs'
@@ -495,11 +496,21 @@ function ingestGrokHop(projectRoot, vm, result, now = Date.now()) {
 }
 
 /** Kernel config for this slot's exit, or null when it has none (or the exit is refused). */
-function writeHopKernelConfig(projectRoot, vm, routing, ops = {}) {
+async function writeHopKernelConfig(projectRoot, vm, routing, ops = {}) {
   const exit = grokKernelExit(vm, { hostProxyUrl: ops.hostProxyUrlForVm || hostProxyUrlForVm })
   if (!exit) return null
+  const write = ops.writeGrokKernelConfig || writeGrokKernelConfig
+  let proxyUrl = exit.proxyUrl
+  if (proxyUrl && write === writeGrokKernelConfig) {
+    try {
+      proxyUrl = await assertKernelProxyResolved(vm, proxyUrl)
+    } catch (error) {
+      if (error?.code === 'proxy_host_blocked' || error?.code === 'ipv6_disabled') return null
+      throw error
+    }
+  }
   try {
-    return (ops.writeGrokKernelConfig || writeGrokKernelConfig)(projectRoot, vm, { ...exit, routing })
+    return write(projectRoot, vm, { ...exit, proxyUrl, routing })
   } catch {
     return null
   }
@@ -518,7 +529,7 @@ export async function runGrokSlotHop({
   kernelConfig = null,
 }) {
   // handleGrokProtocol already wrote it for this hop to read the agent id.
-  const written = kernelConfig || writeHopKernelConfig(projectRoot, vm, routing, ops)
+  const written = kernelConfig || (await writeHopKernelConfig(projectRoot, vm, routing, ops))
   if (!written) {
     return {
       ok: false,
@@ -782,9 +793,9 @@ export async function handleGrokProtocol({
           if (outbound.injectedUsage && isInjectedUsageChunk(line)) return
           res.write(`${line}\n`)
         }
-        const runHop = () => {
+        const runHop = async () => {
           const requestId = grokRequestId()
-          const written = writeHopKernelConfig(projectRoot, vm, routing, ops)
+          const written = await writeHopKernelConfig(projectRoot, vm, routing, ops)
           // The log shows the User-Agent this slot's kernel really sends.
           if (written?.platform) logBag.user_agent = grokCliUserAgent(undefined, written.platform)
           const headers = grokCliRequestHeaders({

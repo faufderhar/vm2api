@@ -24,9 +24,8 @@ import { WelcomeUsageMode } from './usage-mode'
 
 export function WelcomePage() {
   const search = useSearch({ from: '/welcome' })
-  const token = useAuthStore((s) => s.token)
   const username = useAuthStore((s) => s.user)
-  const signedIn = Boolean(token)
+  const signedIn = Boolean(username)
 
   const onboarding = useQuery(onboardingQueryOptions(signedIn))
   const me = useQuery(meQueryOptions(signedIn))

@@ -14,7 +14,10 @@ test('an admin-owned key reaches the platform pool on /v1/usage and count_tokens
       body: { username: 'admin', password: 'testpass' },
     })
     assert.equal(login.status, 200, login.text)
-    const session = { authorization: `Bearer ${login.json.token}` }
+    assert.equal(login.json.token, undefined)
+    const cookie = String(login.headers.get('set-cookie') || '').split(';')[0]
+    assert.match(cookie, /^kin_panel_token=/)
+    const session = { cookie, authorization: '' }
     const created = await api(gw, 'POST', '/api/panel/api-keys', { headers: session, body: { name: 'admin-owned' } })
     assert.equal(created.status, 201, created.text)
     assert.ok(created.json.item.user_id, 'a session-created key records its owner')

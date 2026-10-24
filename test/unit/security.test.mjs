@@ -389,3 +389,82 @@ test('the client address trusts X-Forwarded-For only behind a declared proxy, an
     '10.0.0.9',
   )
 })
+
+test('https PUBLIC_BASE_URL sets Secure, and a short env admin password is refused', async () => {
+  const {
+    panelCookieSecure,
+    panelSessionCookieOptions,
+    panelSessionCookie,
+    warnPanelCookieScheme,
+    assertEnvAdminPassword,
+  } = await import(`../../src/lib/core/security.mjs?cookie-https=${Date.now()}`)
+  assert.equal(panelCookieSecure({}, { PUBLIC_BASE_URL: 'https://console.example', PUBLIC_SCHEME: 'http' }), true)
+  const warnings = []
+  warnPanelCookieScheme({}, (line) => warnings.push(line))
+  assert.equal(warnings.length, 1)
+  warnPanelCookieScheme({ PUBLIC_SCHEME: 'http' }, (line) => warnings.push(line))
+  assert.equal(warnings.length, 1)
+  assert.throws(() => assertEnvAdminPassword('short'), /8/)
+  assert.throws(() => assertEnvAdminPassword(''), /must be set/)
+  assert.throws(() => assertEnvAdminPassword('123456'), /123456/)
+  assert.equal(assertEnvAdminPassword('long-enough'), 'long-enough')
+
+  const cross = panelSessionCookieOptions(
+    { headers: { host: 'api.example.com', origin: 'https://panel.other.test' } },
+    new Set(['https://panel.other.test']),
+    { PUBLIC_SCHEME: 'https' },
+  )
+  assert.deepEqual(cross, { sameSite: 'None', secure: true })
+  const cookie = panelSessionCookie('kin-panel-test', cross)
+  assert.match(cookie, /SameSite=None/)
+  assert.match(cookie, /Secure/)
+  const same = panelSessionCookieOptions(
+    { headers: { host: 'api.example.com', origin: 'https://console.example.com' } },
+    new Set(['https://console.example.com']),
+    { PUBLIC_SCHEME: 'https' },
+  )
+  assert.equal(same.sameSite, 'Lax')
+})
+
+test('a full rate-limit map does not reset an empty bucket', async () => {
+  const { createRateLimiter } = await import(`../../src/lib/core/security.mjs?limit=${Date.now()}`)
+  const allow = createRateLimiter({ capacity: 1, refillPerSec: 0, maxKeys: 1 })
+  assert.equal(allow('spent'), true)
+  assert.equal(allow('spent'), false)
+  assert.equal(allow('fresh'), false)
+  assert.equal(allow('spent'), false)
+
+  const roomy = createRateLimiter({ capacity: 2, refillPerSec: 0, maxKeys: 1 })
+  assert.equal(roomy('kept'), true)
+  assert.equal(roomy('newcomer'), true)
+  assert.equal(roomy('kept'), true)
+})
+
+test('a password check lasts five minutes and a wrong password keeps the session', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-step-'))
+  const previous = process.env.KIN_DATA_DIR
+  process.env.KIN_DATA_DIR = dir
+  try {
+    const { createPanelSession, consumePanelStepUp, verifyPanelSession, revokePanelSession } = await import(
+      `../../src/lib/core/security.mjs?step=${Date.now()}`
+    )
+    const token = createPanelSession('ada', { role: 'admin' })
+    const req = { headers: { authorization: `Bearer ${token}` }, panelUser: 'ada' }
+    const denied = await consumePanelStepUp(req, 'nope', async () => null)
+    assert.equal(denied.ok, false)
+    assert.equal(verifyPanelSession(token).user, 'ada')
+    const ok = await consumePanelStepUp(req, 'right', async (user, password) =>
+      password === 'right' ? { username: user } : null,
+    )
+    assert.equal(ok.ok, true)
+    const again = await consumePanelStepUp(req, '', async () => {
+      throw new Error('should not ask again')
+    })
+    assert.equal(again.fresh, true)
+    revokePanelSession(token)
+  } finally {
+    if (previous == null) delete process.env.KIN_DATA_DIR
+    else process.env.KIN_DATA_DIR = previous
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
