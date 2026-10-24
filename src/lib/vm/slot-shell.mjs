@@ -105,7 +105,7 @@ export async function adoptShellLogin(projectRoot, vm, { importOauth = null, log
       throw err
     }
   } else {
-    const written = writeWorkerCredentialFile(home, oauth)
+    const written = await writeWorkerCredentialFile(home, oauth)
     if (!written) {
       const err = new Error('官方登录凭证未能写入槽凭证')
       err.code = 'credential_import_failed'

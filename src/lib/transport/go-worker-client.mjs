@@ -738,6 +738,10 @@ export async function streamGoWorker({
   // Hop-relative TTFT. firstTokenAt is epoch ms so request logs subtract ingress t0.
   const startedAt = Date.now()
   let ttftMs = null
+  // Declared outside the try: abort throws out of the read loop, and the catch
+  // still has to bill whatever message_start / message_delta already reported.
+  let cancelUsage = null
+  let cancelHeaders = null
   const requestId = randomUUID()
   const stopCancel = cancelOnAbort(exec, signal, requestId)
   try {
@@ -816,6 +820,11 @@ export async function streamGoWorker({
       }
       if (onEvent) await onEvent(line)
     }
+    const noteCancelUsage = () => {
+      const merged = mergeUsage(assembler.message?.usage || null, sseUsage)
+      if (merged) cancelUsage = merged
+      if (sseRateHeaders && Object.keys(sseRateHeaders).length) cancelHeaders = { ...sseRateHeaders }
+    }
     const observeSseEvent = (event) => {
       if (!event) return event
       if (ttftMs == null && isFirstTokenEvent(event)) ttftMs = Date.now() - startedAt
@@ -830,6 +839,7 @@ export async function streamGoWorker({
       if (event.message?.model) sseModel = event.message.model
       const stop = event.message?.stop_reason || event.delta?.stop_reason
       if (stop) sseStop = stop
+      noteCancelUsage()
       return event
     }
     const firstByteMs = Math.max(0, Number(timeoutMs) || 0)
@@ -863,6 +873,7 @@ export async function streamGoWorker({
           const line = buffer.slice(0, newline).replace(/\r$/, '')
           buffer = buffer.slice(newline + 1)
           applyClaudeSSELineToMessage(line, assembler)
+          noteCancelUsage()
           if (line.startsWith('data:')) {
             const piece = line.slice(5).trim()
             if (piece && piece !== '[DONE]') {
@@ -887,6 +898,7 @@ export async function streamGoWorker({
       }
       if (buffer) {
         applyClaudeSSELineToMessage(buffer, assembler)
+        noteCancelUsage()
         await emitLine(buffer)
       }
       if (dataBuf) {
@@ -931,6 +943,8 @@ export async function streamGoWorker({
         ttftMs,
         firstTokenAt: ttftMs == null ? null : startedAt + ttftMs,
         committed,
+        usage: cancelUsage,
+        headers: cancelHeaders || {},
       })
     }
     return {
@@ -1118,7 +1132,7 @@ function credentialSummary(credential, now = Date.now()) {
 
 export async function importWorkerCredential(exec, credential, { timeoutMs = 60000, signal } = {}) {
   try {
-    writeWorkerCredentialFile(exec.homeDir, credential)
+    await writeWorkerCredentialFile(exec.homeDir, credential)
     // Import is the one case where the control plane's credential replaces the slot's copy.
     await slotHost(exec.vm).onImport(exec.vm, path.dirname(exec.homeDir))
   } catch (error) {

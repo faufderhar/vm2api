@@ -84,6 +84,65 @@ test('revoked access with remaining TTL is an operator hint, not a scheduled for
   )
 })
 
+test('status 0 worker execution failures are retryable, fatal grants are not', () => {
+  for (const code of ['worker_output_invalid', 'worker_exec_failed', 'credential_pull_failed']) {
+    assert.equal(
+      classifyCredentialRefresh({ ok: false, status: 0, error: { code, message: 'slot worker failed' } }),
+      'retryable',
+      code,
+    )
+  }
+  assert.equal(
+    classifyCredentialRefresh({
+      ok: false,
+      status: 0,
+      error: { code: 'worker_exec_failed', message: 'OAuth refresh failed (invalid_grant): gone' },
+    }),
+    'fatal',
+  )
+})
+
+test('non-fatal refresh_error is retried after backoff; invalid_grant stays parked', () => {
+  const now = Date.now()
+  const recent = {
+    ...offSlot,
+    claude: {
+      refresh_error: 'worker_exec_failed',
+      refresh_error_at: new Date(now - 30_000).toISOString(),
+      refresh_error_attempts: 1,
+    },
+  }
+  assert.equal(needsScheduledRefresh(recent, now), false)
+  const due = {
+    ...offSlot,
+    claude: {
+      refresh_error: 'credential_pull_failed',
+      refresh_error_at: new Date(now - 61_000).toISOString(),
+      refresh_error_attempts: 1,
+    },
+  }
+  assert.equal(needsScheduledRefresh(due, now), true)
+  const backedOff = {
+    ...offSlot,
+    claude: {
+      refresh_error: 'worker_output_invalid',
+      refresh_error_at: new Date(now - 3 * 60_000).toISOString(),
+      refresh_error_attempts: 3,
+    },
+  }
+  assert.equal(needsScheduledRefresh(backedOff, now), false)
+  assert.equal(
+    needsScheduledRefresh(
+      {
+        ...offSlot,
+        claude: { refresh_error: 'invalid_grant', refresh_error_at: new Date(now - 24 * 3600_000).toISOString() },
+      },
+      now,
+    ),
+    false,
+  )
+})
+
 test('classify reads invalid_grant from worker message', () => {
   assert.equal(
     classifyCredentialRefresh({

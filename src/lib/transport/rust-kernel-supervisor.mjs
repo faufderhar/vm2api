@@ -565,7 +565,7 @@ async function startRustKernel(exec, { timeoutMs, control, runDockerExec, force 
     const ids = slotUidGidFromHomeDir(exec.homeDir)
     ensureOfficialCredentialLink(exec.homeDir, ids || {})
     try {
-      ensureSlotSubscriptionType(exec.homeDir, exec.vm?.claude?.account_tier || exec.vm?.account_tier)
+      await ensureSlotSubscriptionType(exec.homeDir, exec.vm?.claude?.account_tier || exec.vm?.account_tier)
     } catch {}
   }
   const paths = rustKernelPaths(exec)

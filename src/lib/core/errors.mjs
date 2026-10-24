@@ -286,6 +286,9 @@ export function isClientCancelledResult(result = {}) {
  * Keeps committed/usage so billing and the log see what was really delivered.
  */
 export function clientCancelledResult(result = {}, details = null) {
+  // The error body replaces any assembled message. Lift usage first so a cancel
+  // still bills and feeds account quota from what the hop already produced.
+  const usage = result?.usage || result?.body?.usage || null
   return {
     ...result,
     ok: false,
@@ -295,6 +298,7 @@ export function clientCancelledResult(result = {}, details = null) {
     terminalState: 'cancelled',
     finalState: 'cancelled',
     committed: !!result?.committed,
+    ...(usage ? { usage } : {}),
     body: {
       type: 'error',
       error: {

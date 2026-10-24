@@ -667,6 +667,14 @@ export class ProxyPool extends EventEmitter {
     const proxyKey = (p) => JSON.stringify([p.host, p.port, p.username || '', p.password || ''])
     const existing = new Set(this.state.proxies.map(proxyKey))
     for (const parsed of records) {
+      if (parsed?.host && String(parsed.host).trim().toLowerCase() === 'local') {
+        skipped.push({
+          line: socksEndpoint(parsed.host, parsed.port || 0),
+          reason: 'proxy_host_blocked',
+          message: '代理 host 不能是 local',
+        })
+        continue
+      }
       if (!parsed || parsed.__invalid || !parsed.host || !parsed.port) {
         const label = parsed?.__invalid || ''
         if (label)
@@ -721,23 +729,27 @@ export class ProxyPool extends EventEmitter {
    * Restore pool↔VM binding after start/restart.
    * Prefer an existing bind, then the VM's last proxy id, then a free allocate.
    */
-  ensureBoundToVm(vmId, preferredId = null) {
+  ensureBoundToVm(vmId, preferredId = null, { ownerUserId = null, role = 'admin', vm = null } = {}) {
     if (!vmId) return null
     if (this.state.proxies.some((p) => proxyHasVm(p, vmId) && proxyBlockedReason(p, this.state.config.ipv6_enabled)))
       return null
     const existing = this.getProxyForVm(vmId)
-    if (existing) return existing
+    if (existing && canBindProxyToVm(existing, vm || { owner_user_id: ownerUserId }, { role })) return existing
+    if (existing) this.unbindVm(vmId)
+    const ownerVm = vm || { owner_user_id: ownerUserId }
     if (preferredId) {
       const preferred = this.state.proxies.find((p) => p.id === preferredId)
-      if (proxyBlockedReason(preferred, this.state.config.ipv6_enabled)) return null
-      const bound = this.bind(preferredId, vmId)
-      if (bound.ok) return this.getProxyForVm(vmId)
+      if (preferred && canBindProxyToVm(preferred, ownerVm, { role })) {
+        if (proxyBlockedReason(preferred, this.state.config.ipv6_enabled)) return null
+        const bound = this.bind(preferredId, vmId)
+        if (bound.ok) return this.getProxyForVm(vmId)
+      }
     }
-    return this.allocateForVm(vmId)
+    return this.allocateForVm(vmId, { ownerUserId, role, vm: ownerVm })
   }
 
   /** Allocate one healthy proxy with remaining capacity and bind to vmId */
-  allocateForVm(vmId, { ownerUserId = null, role = 'admin' } = {}) {
+  allocateForVm(vmId, { ownerUserId = null, role = 'admin', vm = null } = {}) {
     if (!vmId) return null
     if (this.state.proxies.some((p) => proxyHasVm(p, vmId) && proxyBlockedReason(p, this.state.config.ipv6_enabled)))
       return null
@@ -748,6 +760,7 @@ export class ProxyPool extends EventEmitter {
 
     const limit = this.bindLimit()
     const owner = normalizeOwnerId(ownerUserId)
+    const ownerVm = vm || { owner_user_id: owner }
     const localTarget = this.localTargetForVm(vmId)
     if (localTarget !== LOCAL_EGRESS_ID && this.state.proxies.some((p) => p.id === LOCAL_EGRESS_ID)) {
       this.ensureLocalForNode(localEgressNodeId(localTarget))
@@ -757,7 +770,14 @@ export class ProxyPool extends EventEmitter {
       if (!p.enabled || p.status === 'dead' || p.status === 'fail') return false
       if (proxyBlockedReason(p, this.state.config.ipv6_enabled)) return false
       if (boundVmIdsOf(p).length >= limit) return false
-      return proxyOwnerId(p) === owner
+      const pOwner = proxyOwnerId(p)
+      if (role === 'user') {
+        if (pOwner !== owner) return false
+      } else if (pOwner && pOwner !== owner) {
+        // admin and admin_assigned: platform proxies are allowed, another tenant's are not
+        return false
+      }
+      return canBindProxyToVm(p, ownerVm, { role })
     })
     candidates.sort((a, b) => {
       const score = (x) => (x.status === 'ok' ? 0 : x.status === 'unknown' ? 1 : 2)
@@ -1453,6 +1473,7 @@ export class ProxyPool extends EventEmitter {
         kind: 'local',
         username: null,
         password: null,
+        owner_user_id: proxyOwnerId(p),
       }
     }
     return {
@@ -1462,6 +1483,7 @@ export class ProxyPool extends EventEmitter {
       port: p.port,
       username: p.username || null,
       password: p.password == null ? null : p.password,
+      owner_user_id: proxyOwnerId(p),
     }
   }
 }

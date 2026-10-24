@@ -3,6 +3,7 @@ package oauth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -114,33 +115,153 @@ func TestEnsurePreservesSetupTokenTypeAndFullScopes(t *testing.T) {
 	}
 }
 
-func TestEnsureDoesNotPersistAfterCancellation(t *testing.T) {
+func TestEnsurePersistsRefreshWhenCallerContextCancels(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var calls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		time.Sleep(100 * time.Millisecond)
+		if calls.Add(1) != 1 {
+			<-request.Context().Done()
+			return
+		}
+		close(entered)
+		<-release
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"access_token":"too-late","refresh_token":"too-late","expires_in":28800}`))
+		_, _ = writer.Write([]byte(`{"access_token":"access-new","refresh_token":"refresh-new","expires_in":28800}`))
 	}))
 	defer upstream.Close()
 	store := credential.NewStore(filepath.Join(t.TempDir(), "credentials.json"))
-	original, err := store.Save(credential.Credential{
+	if _, err := store.Save(credential.Credential{
 		AccessToken:  "access-old",
 		RefreshToken: "refresh-old",
 		ExpiresAt:    time.Now().Add(-time.Minute).UnixMilli(),
-	}, nil)
-	if err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
-	refresher := &Refresher{Store: store, Client: upstream.Client(), TokenURL: upstream.URL, MaxTries: 1}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	if _, err = refresher.Ensure(ctx, true); err == nil {
-		t.Fatal("expected cancellation error")
+	refresher := &Refresher{
+		Store:          store,
+		Client:         upstream.Client(),
+		TokenURL:       upstream.URL,
+		MaxTries:       1,
+		RequestTimeout: 2 * time.Second,
+	}
+	leaderCtx, leaderCancel := context.WithCancel(context.Background())
+	defer leaderCancel()
+	leaderDone := make(chan error, 1)
+	go func() {
+		_, err := refresher.Ensure(leaderCtx, true)
+		leaderDone <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("refresh did not reach the token endpoint")
+	}
+	waiterDone := make(chan error, 1)
+	go func() {
+		_, err := refresher.Ensure(context.Background(), true)
+		waiterDone <- err
+	}()
+	time.Sleep(100 * time.Millisecond)
+	leaderCancel()
+	close(release)
+	select {
+	case err := <-leaderDone:
+		if err != nil {
+			t.Fatalf("leader Ensure: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("leader did not finish")
+	}
+	select {
+	case err := <-waiterDone:
+		if err != nil {
+			t.Fatalf("waiter Ensure: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("waiter did not finish")
 	}
 	current, err := store.Status()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current.Generation != original.Generation || current.AccessToken != original.AccessToken {
-		t.Fatalf("credential changed after cancellation: before=%#v after=%#v", original, current)
+	if current.RefreshToken != "refresh-new" || current.AccessToken != "access-new" {
+		t.Fatalf("rotated credential was not saved: %#v", current)
+	}
+}
+
+func TestWaiterRetriesWhenLeaderContextEndsDuringLockWait(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"access_token":"access-2","refresh_token":"refresh-2","expires_in":28800}`))
+	}))
+	defer upstream.Close()
+	store := credential.NewStore(filepath.Join(t.TempDir(), "credentials.json"))
+	if _, err := store.Save(credential.Credential{
+		AccessToken:  "access-old",
+		RefreshToken: "refresh-old",
+		ExpiresAt:    time.Now().Add(-time.Minute).UnixMilli(),
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	refresher := &Refresher{Store: store, Client: upstream.Client(), TokenURL: upstream.URL, MaxTries: 1, RequestTimeout: 2 * time.Second}
+
+	held := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+	go func() {
+		if err := store.WithLock(context.Background(), func() error {
+			close(held)
+			<-release
+			return nil
+		}); err != nil {
+			t.Errorf("hold credential lock: %v", err)
+		}
+	}()
+	select {
+	case <-held:
+	case <-time.After(2 * time.Second):
+		t.Fatal("failed to hold the credential lock")
+	}
+
+	leaderCtx, leaderCancel := context.WithCancel(context.Background())
+	defer leaderCancel()
+	leaderDone := make(chan error, 1)
+	go func() {
+		_, err := refresher.Ensure(leaderCtx, true)
+		leaderDone <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+	waiterDone := make(chan error, 1)
+	go func() {
+		_, err := refresher.Ensure(context.Background(), true)
+		waiterDone <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+	leaderCancel()
+	select {
+	case err := <-leaderDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("leader err = %v, want context canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("leader did not leave the lock wait")
+	}
+	releaseOnce.Do(func() { close(release) })
+	select {
+	case err := <-waiterDone:
+		if err != nil {
+			t.Fatalf("waiter Ensure: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("waiter did not finish")
+	}
+	current, err := store.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.RefreshToken != "refresh-2" {
+		t.Fatalf("waiter did not persist the refresh: %#v", current)
 	}
 }

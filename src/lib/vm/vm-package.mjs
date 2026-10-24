@@ -286,7 +286,13 @@ function parseProxy(raw) {
   if (raw == null) return { ok: true, value: null }
   if (typeof raw !== 'object' || Array.isArray(raw)) return fail('invalid_package', 'proxy 必须是对象或 null')
   const kind = cleanText(raw.kind || raw.scheme, 16).toLowerCase()
-  if (kind === 'local' || raw.host === 'local') return { ok: true, value: { kind: 'local' } }
+  const host = String(raw.host || '')
+    .trim()
+    .toLowerCase()
+  // "Local" / "LOCAL" used to miss the lowercase check and become a SOCKS host
+  // that the egress classifier then treated as the machine's direct route.
+  if (host === 'local') return fail('invalid_proxy', '代理 host 不能是 local')
+  if (kind === 'local') return { ok: true, value: { kind: 'local' } }
   if (raw.password && !cleanText(raw.username ?? raw.user, 200)) {
     return fail('invalid_proxy', 'SOCKS5 不能只有密码没有用户名')
   }
@@ -517,7 +523,7 @@ function credentialPresent(spec, vm) {
   return !!(vm.claude?.has_access || vm.claude?.has_refresh || vm.claude?.has_api_key)
 }
 
-function writeCredential(projectRoot, id, spec) {
+async function writeCredential(projectRoot, id, spec) {
   if (!spec.credential) return { ok: true }
   if (spec.kind === 'codex') {
     const saved = spec.credential.accounts
@@ -531,7 +537,7 @@ function writeCredential(projectRoot, id, spec) {
   }
   const home = path.join(projectRoot, 'vms', id, 'cli-home')
   const oauth = spec.credential.oauth
-  const file = writeWorkerCredentialFile(home, oauth)
+  const file = await writeWorkerCredentialFile(home, oauth)
   if (!file) return fail('credential_required', 'Claude 包需要 access_token、refresh_token 或 api_key')
   persistOauthToVm(path.join(projectRoot, 'vms', `${id}.json`), oauth, { acceptLiveGrant: true })
   return { ok: true }
@@ -729,7 +735,7 @@ export async function commitVmPackage({
     } catch {}
   }
 
-  const written = writeCredential(projectRoot, id, spec)
+  const written = await writeCredential(projectRoot, id, spec)
   if (!written.ok) return { ok: false, status: 400, error: written.error }
   let saved = finishControl(projectRoot, id, spec, status)
   if (written.account) {

@@ -230,7 +230,7 @@ export function createImportCommit(ctx) {
       }
     })
     try {
-      writeWorkerCredentialFile(workerExec.homeDir, importedCredential)
+      await writeWorkerCredentialFile(workerExec.homeDir, importedCredential)
     } catch {}
     try {
       const ids = officialCcUidGid(vmId)

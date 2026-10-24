@@ -387,6 +387,8 @@ test('slot network is bound proxy net and never host', () => {
 test('local egress is identified and has no SOCKS url', () => {
   assert.equal(isLocalEgressProxy({ id: LOCAL_EGRESS_ID }), true)
   assert.equal(isLocalEgressProxy({ scheme: 'local', host: 'local' }), true)
+  assert.equal(isLocalEgressProxy({ id: 'px-local-node-a' }), true)
+  assert.equal(isLocalEgressProxy({ host: 'Local', port: 1080 }), false)
   assert.equal(isLocalEgressProxy({ host: '1.2.3.4', port: 1080 }), false)
   assert.equal(boundProxyUrl({ id: LOCAL_EGRESS_ID, host: 'local', port: 0 }), '')
   assert.equal(slotNetworkForVm({ proxy: { id: LOCAL_EGRESS_ID } }), 'kin-eg-px-local')

@@ -11,6 +11,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { atomicWriteJson } from '../vm/vm-file.mjs'
+import { withCredentialFileLock } from './credential-file-lock.mjs'
 import { isManualScheduleLocked } from '../pool/schedule-policy.mjs'
 import {
   credentialModeFromOauth,
@@ -403,9 +404,14 @@ function sealSlotCredentialFile(file) {
 
 /** Write slot credentials.json for imports and worker-owned credential updates. */
 
-export function writeWorkerCredentialFile(homeDir, cred) {
+export async function writeWorkerCredentialFile(homeDir, cred) {
   const file = slotWorkerCredentialPath(homeDir)
   if (!file) return null
+  // credentials.json.lock is the worker store's LockPath (path + ".lock").
+  return withCredentialFileLock(`${file}.lock`, () => writeWorkerCredentialFileUnlocked(homeDir, file, cred))
+}
+
+function writeWorkerCredentialFileUnlocked(homeDir, file, cred) {
   const mode = credentialModeFromOauth(cred)
   const authScheme = resolveAuthScheme({ mode, auth_scheme: cred.auth_scheme || cred.authScheme })
   if (mode === 'apikey') {
@@ -486,9 +492,13 @@ export function writeWorkerCredentialFile(homeDir, cred) {
  * Old slot files predate subscriptionType. Fill from the identified plan,
  * otherwise pro; repair the legacy pro fallback for an identified Max slot.
  */
-export function ensureSlotSubscriptionType(homeDir, accountTier = null) {
+export async function ensureSlotSubscriptionType(homeDir, accountTier = null) {
   const file = slotWorkerCredentialPath(homeDir)
   if (!file || !fs.existsSync(file)) return { wrote: false, reason: 'missing' }
+  return withCredentialFileLock(`${file}.lock`, () => ensureSlotSubscriptionTypeUnlocked(file, homeDir, accountTier))
+}
+
+function ensureSlotSubscriptionTypeUnlocked(file, homeDir, accountTier) {
   let doc
   try {
     doc = JSON.parse(fs.readFileSync(file, 'utf8'))
@@ -516,7 +526,7 @@ export function ensureSlotSubscriptionType(homeDir, accountTier = null) {
   return { wrote: true, subscriptionType: tier }
 }
 
-export function persistSlotAuthScheme(projectRoot, vmId, rawScheme) {
+export async function persistSlotAuthScheme(projectRoot, vmId, rawScheme) {
   const vmPath = path.join(projectRoot, 'vms', `${vmId}.json`)
   if (!vmPath || !fs.existsSync(vmPath)) return null
   const vm = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
@@ -533,7 +543,7 @@ export function persistSlotAuthScheme(projectRoot, vmId, rawScheme) {
   const cred = readWorkerCredentialFile(homeDir)
   if (cred) {
     try {
-      writeWorkerCredentialFile(homeDir, { ...cred, auth_scheme: scheme })
+      await writeWorkerCredentialFile(homeDir, { ...cred, auth_scheme: scheme })
     } catch {}
   }
   return vm
@@ -639,6 +649,8 @@ export function persistOauthToVm(vmPath, cred, { acceptLiveGrant = false } = {})
     return vm
   }
   vm.claude.refresh_error = null
+  delete vm.claude.refresh_error_at
+  delete vm.claude.refresh_error_attempts
   vm.claude.refreshed_at = new Date().toISOString()
   vm.claude._token_version = n._token_version || Date.now()
   clearClaudeAuthCooldown(vm.claude)
@@ -791,6 +803,10 @@ export function classifyCredentialRefresh(result) {
   ) {
     return 'retryable'
   }
+  // The worker never reached the token endpoint. Nothing was rotated.
+  if (status === 0 && /worker_output_invalid|worker_exec_failed|credential_pull_failed/.test(blob)) {
+    return 'retryable'
+  }
   return 'failed'
 }
 
@@ -810,7 +826,12 @@ export function markVmRefreshError(vmPath, result) {
   if (!vmPath || !fs.existsSync(vmPath)) return null
   const vm = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
   vm.claude = stripCredentialSecrets({ ...(vm.claude || {}) })
-  vm.claude.refresh_error = refreshErrorCodeOf(result)
+  const nextCode = refreshErrorCodeOf(result)
+  const same = vm.claude.refresh_error === nextCode
+  const prevAttempts = Number(vm.claude.refresh_error_attempts) || 0
+  vm.claude.refresh_error = nextCode
+  vm.claude.refresh_error_at = new Date().toISOString()
+  vm.claude.refresh_error_attempts = same ? prevAttempts + 1 : 1
   if (classifyCredentialRefresh(result) === 'fatal') {
     vm.schedulable = false
     const code = vm.claude.refresh_error

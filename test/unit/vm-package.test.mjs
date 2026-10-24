@@ -204,6 +204,14 @@ test('write-back updates the current slot and leaves runtime counters', async (t
   assert.equal(cred.access_token, 'sk-ant-oat01-REPLACED')
 })
 
+test('a proxy host of local in any case is rejected', () => {
+  const pkg = claudePackage('vm-local-host')
+  pkg.proxy = { host: 'Local', port: 1080 }
+  const parsed = parseVmPackage(pkg)
+  assert.equal(parsed.ok, false)
+  assert.match(parsed.error.message, /local/)
+})
+
 test('local egress imports as px-local and codex tokens stay out of vm.json', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-vm-pkg-kind-'))
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))

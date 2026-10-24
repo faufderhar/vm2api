@@ -223,20 +223,21 @@ export function matchStoredRefusal({
   similarityEnabled = true,
   similarity = 0.9,
   deviceBlockEnabled = true,
+  owner = '',
 } = {}) {
   const deviceId = inboundRefusalDeviceId({ inbound, body, headers })
   if (deviceBlockEnabled && deviceId && typeof devices?.get === 'function') {
-    const banned = devices.get(deviceId)
+    const banned = devices.get(deviceId, owner)
     if (banned) return { kind: 'device', deviceId, row: banned }
   }
   if (!repo || typeof repo.get !== 'function') return null
   const fingerprint = refusalFingerprint(body, inbound)
-  const exact = repo.get(fingerprint)
+  const exact = repo.get(fingerprint, owner)
   if (exact) return { kind: 'exact', deviceId, fingerprint, row: exact }
   if (!similarityEnabled || typeof repo.nearest !== 'function') return null
   const signature = refusalSignature(refusalUserDocument(inbound, body))
   if (!signature) return null
-  const near = repo.nearest(signature, similarity)
+  const near = repo.nearest(signature, similarity, owner)
   if (!near) return null
   return { kind: 'similar', deviceId, fingerprint: near.fingerprint, score: near.score, row: near }
 }

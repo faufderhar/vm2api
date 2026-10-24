@@ -60,7 +60,7 @@ import { resolveInferenceBackend, runApiInference } from '../pool/api-protocol.m
 import { classifyClaudeRequestPurpose, prepareClassifierBody, classifierRequestSummary } from './request-purpose.mjs'
 import { summarizeBody, redactHeaders, presentedApiKeyForLog } from '../admin/request-log.mjs'
 import { reasoningEffortOf, sessionIdForLog } from './log-fields.mjs'
-import { ownerScopeFromRequest } from '../admin/resource-owner.mjs'
+import { normalizeOwnerId, ownerScopeFromRequest } from '../admin/resource-owner.mjs'
 import { keyScopeFromRequest, vmPoolDenial } from '../admin/key-scope.mjs'
 import {
   resolveInferenceEngine,
@@ -208,6 +208,29 @@ export function createHandleProtocol(deps) {
     if (next && cacheTtl) next = applyCacheTtlToUsage(next, cacheTtl)
     if (next && requestedSpeed) next = { ...next, requested_speed: requestedSpeed }
     return disjointOpenaiUsage(next)
+  }
+
+  function hasProducedUsage(usage) {
+    if (!usage || typeof usage !== 'object') return false
+    for (const key of [
+      'input_tokens',
+      'output_tokens',
+      'cache_read_input_tokens',
+      'cache_creation_input_tokens',
+      'cache_read_tokens',
+      'cache_creation_tokens',
+      'prompt_tokens',
+      'completion_tokens',
+    ]) {
+      if (Number(usage[key]) > 0) return true
+    }
+    const cache = usage.cache_creation
+    if (cache && typeof cache === 'object') {
+      for (const value of Object.values(cache)) {
+        if (Number(value) > 0) return true
+      }
+    }
+    return false
   }
 
   function attachPricing(logBag, { managedKey = null, rateMultiplier = 1, bill = false } = {}) {
@@ -386,6 +409,7 @@ export function createHandleProtocol(deps) {
       devices: deviceRepo(),
       requestId,
       account,
+      owner: refusalOwnerFromReq(req),
     })
     if (!decision || decision.action !== 'block') {
       if (decision?.intercept) logBag.intercept = decision.intercept
@@ -440,10 +464,19 @@ export function createHandleProtocol(deps) {
     }
   }
 
-  function banRefusalDevice(deviceId, { requestId, fingerprint, reason }) {
+  function refusalOwnerFromReq(req) {
+    try {
+      const scope = ownerScopeFromRequest(req, apiKeyStore?.users)
+      return scope?.type === 'user' ? normalizeOwnerId(scope.userId) || '' : ''
+    } catch {
+      return ''
+    }
+  }
+
+  function banRefusalDevice(deviceId, { requestId, fingerprint, reason, ownerUserId = '' }) {
     if (!deviceId) return
     try {
-      deviceRepo()?.block?.({ deviceId, requestId, fingerprint, reason })
+      deviceRepo()?.block?.({ deviceId, requestId, fingerprint, reason, ownerUserId })
     } catch {
       /* the prompt block still stands */
     }
@@ -458,7 +491,7 @@ export function createHandleProtocol(deps) {
     }
   }
 
-  function rememberRefusal({ inbound, body, headers, result, logBag, requestId }) {
+  function rememberRefusal({ inbound, body, headers, result, logBag, requestId, ownerUserId = '' }) {
     if (!refusalEnabled()) return
     const contentRefusal = isUpstreamRefusal(result, logBag)
     const timed = result?.policy?.rememberRefusal === true
@@ -476,6 +509,7 @@ export function createHandleProtocol(deps) {
         preview: refusalPreview(body, inbound),
         expiresAt: contentRefusal || ttl <= 0 ? null : new Date(Date.now() + ttl).toISOString(),
         signature: refusalPromptSignature(inbound, body),
+        ownerUserId,
       })
     } catch {
       return
@@ -485,6 +519,7 @@ export function createHandleProtocol(deps) {
       requestId,
       fingerprint,
       reason: 'refusal_guard',
+      ownerUserId,
     })
   }
 
@@ -522,7 +557,7 @@ export function createHandleProtocol(deps) {
       requestContext,
       slotWaitMs: candidate.slotWaitMs,
       noGoFallback,
-      ensureCredential: (exec) => ensureWorkerCredential(exec),
+      ensureCredential: (exec, opts) => ensureWorkerCredential(exec, opts),
       onEnvelope,
       onEvent: async (line) => {
         if (/response_headers/.test(String(line))) return
@@ -851,6 +886,7 @@ export function createHandleProtocol(deps) {
             projectRoot: cfg.paths.project,
             captureOutbound: logCtx.capture_outbound === true,
             accountGate,
+            accountQuota,
             ops: deps.codexOps || {},
             ...codexSticky,
           }),
@@ -871,6 +907,7 @@ export function createHandleProtocol(deps) {
           projectRoot: cfg.paths.project,
           captureOutbound: logCtx.capture_outbound === true,
           accountGate,
+          accountQuota,
           ops: deps.codexOps || {},
           ...codexSticky,
         }),
@@ -1227,7 +1264,8 @@ export function createHandleProtocol(deps) {
       attachPricing(logBag, {
         managedKey,
         rateMultiplier: deps.groupsRepo.rateMultiplier(managedKey?.group_id ?? 1),
-        bill: !!(result?.ok && managedKey),
+        // Incomplete and cancelled hops still cost whatever usage the upstream already metered.
+        bill: !!(managedKey && (result?.ok || hasProducedUsage(logBag.usage))),
       })
       if (clientStream) {
         if (isClientCancelledResult(result)) return finishClientCancel(res, result, logBag)
@@ -1237,6 +1275,12 @@ export function createHandleProtocol(deps) {
           return sendMapped(res, mapped)
         }
         if (result?.ok && protocol !== 'anthropic.messages') res.write('data: [DONE]\n\n')
+        if (!result?.ok) {
+          stats.errors++
+          logBag.error_code = result?.body?.error?.code || 'stream_incomplete'
+          logBag.error_message = result?.body?.error?.message || 'Stream did not reach a verified terminal state'
+          logBag.final_state = result?.terminalState || logBag.final_state || 'incomplete'
+        }
         return res.end()
       }
       if (!result?.ok || isIncompleteAssistantMessage(result)) {
@@ -1653,7 +1697,7 @@ export function createHandleProtocol(deps) {
               routing: getRouting(),
               slotWaitMs: candidate.slotWaitMs,
               noGoFallback: !!pinVmId,
-              ensureCredential: (exec) => ensureWorkerCredential(exec),
+              ensureCredential: (exec, opts) => ensureWorkerCredential(exec, opts),
               onEnvelope: noteOutboundEnvelope,
               onCommit: () => {
                 if (protocol === 'anthropic.messages' && !res.headersSent) writeSSEHeaders(res)
@@ -1738,7 +1782,15 @@ export function createHandleProtocol(deps) {
       logBag.error_code = logBag.error_code || 'content_filter_refusal'
       logBag.error_message = logBag.error_message || 'upstream stop_reason=refusal'
     }
-    rememberRefusal({ inbound, body: ctx.body, headers: req.headers, result, logBag, requestId: logCtx.request_id })
+    rememberRefusal({
+      inbound,
+      body: ctx.body,
+      headers: req.headers,
+      result,
+      logBag,
+      requestId: logCtx.request_id,
+      ownerUserId: refusalOwnerFromReq(req),
+    })
 
     if (result?.accountId) {
       try {
@@ -1806,7 +1858,15 @@ export function createHandleProtocol(deps) {
           res.write(buildAnthropicSseError(mapped.body?.error || {}))
         }
       }
-      rememberRefusal({ inbound, body: ctx.body, headers: req.headers, result, logBag, requestId: logCtx.request_id })
+      rememberRefusal({
+        inbound,
+        body: ctx.body,
+        headers: req.headers,
+        result,
+        logBag,
+        requestId: logCtx.request_id,
+        ownerUserId: refusalOwnerFromReq(req),
+      })
       return res.end()
     }
 

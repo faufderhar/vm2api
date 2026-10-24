@@ -19,16 +19,20 @@ import (
 const DefaultClientID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
 type Refresher struct {
-	Store     *credential.Store
-	Client    *http.Client
-	TokenURL  string
-	ClientID  string
-	Skew      time.Duration
-	MaxTries  int
-	mu        sync.Mutex
-	inFlight  chan struct{}
-	last      Result
-	lastError error
+	Store    *credential.Store
+	Client   *http.Client
+	TokenURL string
+	ClientID string
+	Skew     time.Duration
+	MaxTries int
+	// RequestTimeout bounds the token HTTP call, including retries and backoff.
+	// It is not the caller's context: flock wait stays on ctx, and a cancelled
+	// caller must not discard a refresh token the endpoint already rotated.
+	RequestTimeout time.Duration
+	mu             sync.Mutex
+	inFlight       chan struct{}
+	last           Result
+	lastError      error
 }
 
 type Result struct {
@@ -69,17 +73,7 @@ func (r *Refresher) Ensure(ctx context.Context, force bool) (Result, error) {
 	r.mu.Lock()
 	if current := r.inFlight; current != nil {
 		r.mu.Unlock()
-		select {
-		case <-ctx.Done():
-			return Result{}, ctx.Err()
-		case <-current:
-			r.mu.Lock()
-			result := r.last
-			err := r.lastError
-			r.mu.Unlock()
-			result.Shared = true
-			return result, err
-		}
+		return r.waitInFlight(ctx, current, force)
 	}
 	r.inFlight = make(chan struct{})
 	done := r.inFlight
@@ -92,6 +86,32 @@ func (r *Refresher) Ensure(ctx context.Context, force bool) (Result, error) {
 	r.inFlight = nil
 	close(done)
 	r.mu.Unlock()
+	return result, err
+}
+
+// waitInFlight joins the leader. A waiter whose own context is still active
+// must not fail just because the leader's context was cancelled.
+func (r *Refresher) waitInFlight(ctx context.Context, current chan struct{}, force bool) (Result, error) {
+	select {
+	case <-ctx.Done():
+		select {
+		case <-current:
+		default:
+			return Result{}, ctx.Err()
+		}
+	case <-current:
+	}
+	r.mu.Lock()
+	result := r.last
+	err := r.lastError
+	r.mu.Unlock()
+	if ctx.Err() != nil && err != nil {
+		return Result{}, ctx.Err()
+	}
+	if err != nil && ctx.Err() == nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+		return r.Ensure(ctx, force)
+	}
+	result.Shared = true
 	return result, err
 }
 
@@ -122,11 +142,12 @@ func (r *Refresher) ensureLocked(ctx context.Context, force bool) (Result, error
 		if strings.TrimSpace(current.RefreshToken) == "" {
 			return &RefreshError{Code: "refresh_token_missing", Message: "credential has no refresh token"}
 		}
-		refreshed, refreshErr := r.requestWithRetry(ctx, current)
+		// Detach from the caller. Cancelling the panel or the 30s lock budget
+		// must not abort a refresh the token endpoint has already accepted.
+		refreshCtx, refreshCancel := context.WithTimeout(context.WithoutCancel(ctx), r.refreshBudget())
+		defer refreshCancel()
+		refreshed, refreshErr := r.requestWithRetry(refreshCtx, current)
 		if refreshErr != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
 			latest, _, latestErr := r.Store.Load()
 			if latestErr == nil && latest.Generation != current.Generation && !latest.NeedsRefresh(time.Now(), r.refreshSkew()) {
 				result.Credential = latest
@@ -134,9 +155,6 @@ func (r *Refresher) ensureLocked(ctx context.Context, force bool) (Result, error
 				return nil
 			}
 			return refreshErr
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
 		}
 		refreshed.Generation = current.Generation
 		saved, saveErr := r.Store.Save(refreshed, document)
@@ -256,6 +274,13 @@ func (r *Refresher) request(ctx context.Context, current credential.Credential) 
 		Scopes:       scopes,
 		AuthScheme:   current.AuthScheme,
 	}, nil
+}
+
+func (r *Refresher) refreshBudget() time.Duration {
+	if r.RequestTimeout > 0 {
+		return r.RequestTimeout
+	}
+	return 30 * time.Second
 }
 
 func (r *Refresher) refreshSkew() time.Duration {

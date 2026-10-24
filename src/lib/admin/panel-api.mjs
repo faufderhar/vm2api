@@ -1700,8 +1700,7 @@ function canImportCredential(v, hit) {
   if (hit) return !!(hit.enabled && hit.status !== 'dead' && hit.status !== 'fail')
   const base = v.proxy || {}
   const scheme = String(base.scheme || base.kind || '').toLowerCase()
-  const host = String(base.host || '').toLowerCase()
-  if (isLocalEgressId(base.id) || scheme === 'local' || host === 'local') return true
+  if (isLocalEgressId(base.id) || scheme === 'local') return true
   return !!(base.url || (base.host && base.port) || v.proxy_id)
 }
 

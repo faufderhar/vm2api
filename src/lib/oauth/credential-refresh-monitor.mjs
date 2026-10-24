@@ -77,8 +77,39 @@ export function shouldForceRefresh(vm) {
   return true
 }
 
+const FATAL_REFRESH_ERROR =
+  /^(invalid_grant|invalid_refresh_token|refresh_token_missing|oauth_revoked|oauth_no_refresh|oauth_invalid_grant)$/i
+const REFRESH_BACKOFF_BASE_MS = 60_000
+const REFRESH_BACKOFF_CAP_MS = 30 * 60_000
+
+export function refreshErrorBackoffMs(attempts) {
+  const n = Math.max(1, Number(attempts) || 1)
+  const shift = Math.min(n - 1, 16)
+  return Math.min(REFRESH_BACKOFF_CAP_MS, REFRESH_BACKOFF_BASE_MS * 2 ** shift)
+}
+
+function recordedRefreshError(vm) {
+  return String(vm?.refresh_error || vm?.claude?.refresh_error || '').trim()
+}
+
+function recordedRefreshErrorAt(vm) {
+  const raw = vm?.refresh_error_at || vm?.claude?.refresh_error_at || vm?.updated_at || vm?.claude?.updated_at
+  const at = Date.parse(raw || '')
+  return Number.isFinite(at) ? at : null
+}
+
+/**
+ * Fatal grants stay out of the pool. Any other refresh_error is retried after
+ * a backoff so a dead worker or a bad pull does not park the account forever.
+ */
 export function needsScheduledRefresh(vm, now = Date.now()) {
-  if (vm?.refresh_error || vm?.claude?.refresh_error) return false
+  const code = recordedRefreshError(vm)
+  if (code) {
+    if (FATAL_REFRESH_ERROR.test(code)) return false
+    const at = recordedRefreshErrorAt(vm)
+    const attempts = Number(vm?.refresh_error_attempts || vm?.claude?.refresh_error_attempts) || 1
+    if (at != null && now - at < refreshErrorBackoffMs(attempts)) return false
+  }
   return needsRefresh(vm?.expires_at || vm?.claude?.expires_at, now)
 }
 

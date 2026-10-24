@@ -3,13 +3,16 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { createDatabase } from '../../src/lib/db/database.mjs'
+import { createDatabase, openDatabase, closeDatabase } from '../../src/lib/db/database.mjs'
+import { createPanelHandler } from '../../src/lib/admin/panel-routes.mjs'
 import { RefusalGuardsRepo } from '../../src/lib/db/repos/refusal-guards-repo.mjs'
+import { RefusalDeviceBlocksRepo } from '../../src/lib/db/repos/refusal-device-blocks-repo.mjs'
 import {
   REFUSAL_GUARD_MESSAGE,
   REFUSAL_GUARD_SETTING,
   isRefusalGuardEnabled,
   isUpstreamRefusal,
+  matchStoredRefusal,
   refusalFingerprint,
   refusalGuardError,
 } from '../../src/lib/core/refusal-guard.mjs'
@@ -187,6 +190,119 @@ test('list remove and clear', () => {
     assert.equal(repo.count(), 0)
   } finally {
     db.close()
+  }
+})
+
+test('refusal fingerprints and device bans do not cross owners', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-refusal-owner-'))
+  const db = createDatabase({ dataDir: dir })
+  try {
+    const repo = new RefusalGuardsRepo(db)
+    const devices = new RefusalDeviceBlocksRepo(db)
+    const inbound = body('tenant only prompt')
+    const fp = refusalFingerprint(inbound)
+    repo.remember({ fingerprint: fp, model: inbound.model, ownerUserId: 'user-a', preview: 'tenant only prompt' })
+    assert.equal(repo.get(fp, 'user-b'), null)
+    assert.equal(repo.get(fp), null)
+    assert.equal(matchStoredRefusal({ inbound, body: inbound, repo, devices, owner: 'user-b' }), null)
+    assert.equal(matchStoredRefusal({ inbound, body: inbound, repo, devices, owner: 'user-a' }).kind, 'exact')
+    devices.block({ deviceId: 'client-device-1', ownerUserId: 'user-a', reason: 'refusal_guard' })
+    assert.equal(devices.get('client-device-1', 'user-b'), null)
+    assert.equal(devices.get('client-device-1'), null)
+    assert.ok(devices.get('client-device-1', 'user-a'))
+    for (const preview of ['one', 'two', 'three']) {
+      repo.remember({ fingerprint: `${fp}:${preview}`, model: inbound.model, ownerUserId: 'user-a', preview })
+    }
+    assert.equal(repo.prune('user-a', 2), 2)
+    assert.equal(repo.countOwner('user-a'), 2)
+    assert.equal(repo.countOwner('user-b'), 0)
+  } finally {
+    db.close()
+  }
+})
+
+test('nearest does not prune; remember drops expired rows', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-refusal-prune-'))
+  const db = createDatabase({ dataDir: dir })
+  try {
+    const repo = new RefusalGuardsRepo(db)
+    const fp = 'c'.repeat(64)
+    repo.remember({ fingerprint: fp, model: 'claude-opus-5', ownerUserId: 'user-a', preview: 'stale' })
+    db.prepare('UPDATE refusal_guards SET expires_at = ? WHERE fingerprint = ?').run(
+      new Date(Date.now() - 1000).toISOString(),
+      fp,
+    )
+    assert.equal(repo.countOwner('user-a'), 1)
+    assert.equal(repo.nearest([1], 0.9, 'user-a'), null)
+    assert.equal(repo.countOwner('user-a'), 1, 'nearest must not delete rows')
+    repo.remember({ fingerprint: 'd'.repeat(64), model: 'claude-opus-5', ownerUserId: 'user-a', preview: 'fresh' })
+    assert.equal(repo.get(fp, 'user-a'), null)
+    assert.equal(repo.countOwner('user-a'), 1)
+  } finally {
+    db.close()
+  }
+})
+
+test('panel delete accepts owner_user_id and otherwise clears every owner', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-refusal-panel-'))
+  const project = path.join(dir, 'project')
+  fs.mkdirSync(project, { recursive: true })
+  const db = openDatabase({ dataDir: dir })
+  const fp = 'ab'.repeat(32)
+  try {
+    const repo = new RefusalGuardsRepo(db)
+    const devices = new RefusalDeviceBlocksRepo(db)
+    repo.remember({ fingerprint: fp, model: 'm', ownerUserId: 'user-a', preview: 'a' })
+    repo.remember({ fingerprint: fp, model: 'm', ownerUserId: 'user-b', preview: 'b' })
+    repo.remember({ fingerprint: fp, model: 'm', ownerUserId: '', preview: 'platform' })
+    devices.block({ deviceId: 'dev-1', ownerUserId: 'user-a' })
+    devices.block({ deviceId: 'dev-1', ownerUserId: 'user-b' })
+    const response = {}
+    let body = {}
+    const handler = createPanelHandler({
+      cfg: { paths: { project, root: project }, limits: {} },
+      requireAuth(req) {
+        req.panelUser = 'admin'
+        req.panelRole = 'admin'
+        return true
+      },
+      json(_res, status, payload) {
+        response.status = status
+        response.body = payload
+        return true
+      },
+      readBody: async () => body,
+    })
+    const call = async (method, pathname, nextBody, headers = {}) => {
+      body = nextBody
+      response.status = 0
+      response.body = null
+      const req = { method, headers, panelUser: 'admin', panelRole: 'admin' }
+      await handler(req, {}, new URL(`http://localhost${pathname}`))
+      return response
+    }
+    const one = await call('DELETE', `/api/panel/refusal-guards/${fp}?owner_user_id=user-a`)
+    assert.equal(one.status, 200, JSON.stringify(one.body))
+    assert.equal(repo.get(fp, 'user-a'), null)
+    assert.ok(repo.get(fp, 'user-b'))
+    assert.ok(repo.get(fp, ''))
+    const all = await call('DELETE', `/api/panel/refusal-guards/${fp}`)
+    assert.equal(all.status, 200, JSON.stringify(all.body))
+    assert.equal(repo.get(fp, 'user-b'), null)
+    assert.equal(repo.get(fp, ''), null)
+    const device = await call(
+      'DELETE',
+      '/api/panel/refusal-device-blocks',
+      { device_id: 'dev-1', owner_user_id: 'user-b' },
+      { 'content-length': '1' },
+    )
+    assert.equal(device.status, 200, JSON.stringify(device.body))
+    assert.ok(devices.get('dev-1', 'user-a'))
+    assert.equal(devices.get('dev-1', 'user-b'), null)
+  } finally {
+    db.close()
+    closeDatabase()
+    fs.rmSync(dir, { recursive: true, force: true })
   }
 })
 

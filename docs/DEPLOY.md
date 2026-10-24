@@ -192,11 +192,15 @@ location / {
   proxy_http_version 1.1;
   proxy_set_header Host $host;
   proxy_set_header Authorization $http_authorization;
+  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  proxy_set_header X-Forwarded-Proto $scheme;
   proxy_set_header Connection "";
   proxy_buffering off;
   proxy_read_timeout 600s;
 }
 ```
+
+反代后面必须设置 `TRUST_PROXY=1`。不设的话，登录限流按 TCP 对端计数，所有人的登录都会算在反代这一个地址上，任何人输错密码都能把所有人锁在登录页外。设了之后才会采用 `X-Forwarded-For` 的最后一跳，登录 Cookie 也才会相信 `X-Forwarded-Proto`。
 
 `Connection ""` 会剥掉 Upgrade，终端或 Responses WS 握手拿不到 101，所以 shell / responses 路径单独放在前面。生产机的 Go 前门在 `:8787`、Node 在 `:8788` 时，这些 location 必须 `proxy_pass` 到 Node。终端症状和核对命令见 [nginx-shell.md](nginx-shell.md)。
 

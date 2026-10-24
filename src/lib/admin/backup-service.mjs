@@ -29,14 +29,18 @@
  *   - retention prunes old ok backups (pre_restore keeps newest 3)
  *
  * Restore:
- *   verify manifest/sha256 → automatic pre_restore backup → close DB →
- *   swap kin.db (old one kept as kin.db.pre-restore) → restore vms/ +
- *   config/ files (or rebuild from DB) → reopen + migrate → rebind stores.
+ *   verify manifest/sha256 → automatic pre_restore backup → copy the snapshot
+ *   beside kin.db and quick_check it → atomic rename (old file kept as
+ *   kin.db.pre-restore) → restore vms/ + config/ (or rebuild from DB) →
+ *   reopen + migrate → rebind stores. Any failure after the swap rolls the
+ *   database back, puts vms/ and config/ back, reopens the previous database,
+ *   and rebinds stores.
  *   `isRestoring` flag lets the server 503 protocol traffic meanwhile.
  */
 
 import fs from 'node:fs'
 import path from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import crypto from 'node:crypto'
 import zlib from 'node:zlib'
 import { spawnSync } from 'node:child_process'
@@ -52,6 +56,93 @@ import { invalidateReadCache, isVmRecordFile } from '../vm/vm-file.mjs'
 // tarAvailability / sha256File / the runnable pipeline live in backup-core.mjs;
 // keep the historical export surface for tests and callers.
 export { tarAvailable } from './backup-core.mjs'
+
+function discardSqliteSidecars(file) {
+  for (const suffix of ['-wal', '-shm']) {
+    try {
+      fs.rmSync(file + suffix, { force: true })
+    } catch {}
+  }
+}
+
+function assertRestorableSqlite(file) {
+  let db
+  try {
+    db = new DatabaseSync(file)
+    const row = db.prepare('PRAGMA quick_check').get()
+    const value = row && (row.quick_check || Object.values(row)[0])
+    if (value !== 'ok') {
+      throw Object.assign(new Error('restored database failed integrity check'), { code: 'backup_corrupt' })
+    }
+  } catch (error) {
+    if (error?.code === 'backup_corrupt') throw error
+    throw Object.assign(new Error('restored database is not a readable sqlite file'), {
+      code: 'backup_corrupt',
+    })
+  } finally {
+    try {
+      db?.close()
+    } catch {}
+  }
+}
+
+function isRegularFile(file) {
+  try {
+    return fs.lstatSync(file).isFile()
+  } catch {
+    return false
+  }
+}
+
+function copyFiles(srcDir, destDir, accept) {
+  if (!srcDir || !fs.existsSync(srcDir)) return
+  fs.mkdirSync(destDir, { recursive: true })
+  for (const name of fs.readdirSync(srcDir)) {
+    if (accept && !accept(name)) continue
+    const from = path.join(srcDir, name)
+    if (!isRegularFile(from)) continue
+    fs.copyFileSync(from, path.join(destDir, name))
+  }
+}
+
+function snapshotSlotFiles({ projectRoot, configDir, destRoot }) {
+  const snap = {
+    vmsLive: projectRoot ? path.join(projectRoot, 'vms') : null,
+    vmsSnap: path.join(destRoot, 'rollback-vms'),
+    configLive: configDir || null,
+    configSnap: path.join(destRoot, 'rollback-config'),
+    configArchive: [],
+  }
+  copyFiles(snap.vmsLive, snap.vmsSnap, (name) => isVmRecordFile(name) || name === 'active.json')
+  copyFiles(snap.configLive, snap.configSnap, () => true)
+  return snap
+}
+
+function restoreSlotFiles(snap) {
+  if (!snap) return
+  if (snap.vmsLive) {
+    fs.mkdirSync(snap.vmsLive, { recursive: true })
+    if (fs.existsSync(snap.vmsLive)) {
+      for (const name of fs.readdirSync(snap.vmsLive)) {
+        if (!(isVmRecordFile(name) || name === 'active.json')) continue
+        try {
+          fs.rmSync(path.join(snap.vmsLive, name), { force: true })
+        } catch {}
+      }
+    }
+    copyFiles(snap.vmsSnap, snap.vmsLive, () => true)
+  }
+  if (!snap.configLive) return
+  fs.mkdirSync(snap.configLive, { recursive: true })
+  const kept = new Set(fs.existsSync(snap.configSnap) ? fs.readdirSync(snap.configSnap) : [])
+  for (const name of snap.configArchive || []) {
+    if (kept.has(name)) continue
+    try {
+      fs.rmSync(path.join(snap.configLive, name), { force: true })
+    } catch {}
+  }
+  copyFiles(snap.configSnap, snap.configLive, () => true)
+}
 
 const SCHEDULE_KEY = 'backup_schedule'
 
@@ -278,6 +369,11 @@ export class BackupService {
 
     this.isRestoring = true
     let tmp = null
+    let swapped = false
+    let dbPath = null
+    let fileSnap = null
+    const keepName = () => `${dbPath}.pre-restore`
+    const stageName = () => `${dbPath}.restore-next`
     try {
       // 0. safety net snapshot of the current state
       const pre = await this.createBackup({ kind: 'pre_restore', note: `before restore of ${rec.id}` })
@@ -304,27 +400,44 @@ export class BackupService {
       }
       if (!fs.existsSync(dbFile)) throw new Error('no db snapshot inside backup')
 
-      // 2. swap the live database
-      const dbPath = getDbPath()
+      // 2. stage and check the new database before the live file moves
+      dbPath = getDbPath()
+      if (!dbPath) throw new Error('database path is not open')
+      fs.copyFileSync(dbFile, stageName())
+      try {
+        fs.chmodSync(stageName(), 0o600)
+      } catch {}
+      assertRestorableSqlite(stageName())
       closeDatabase()
-      const keep = `${dbPath}.pre-restore`
+      const keep = keepName()
       try {
         fs.rmSync(keep, { force: true })
-      } catch {}
-      try {
         fs.renameSync(dbPath, keep)
-      } catch {}
-      for (const suffix of ['-wal', '-shm']) {
+        swapped = true
+        discardSqliteSidecars(dbPath)
+        fs.renameSync(stageName(), dbPath)
+      } catch (error) {
+        if (swapped && fs.existsSync(keep)) {
+          try {
+            fs.rmSync(dbPath, { force: true })
+          } catch {}
+          try {
+            fs.renameSync(keep, dbPath)
+          } catch {}
+        }
+        swapped = false
         try {
-          fs.rmSync(dbPath + suffix, { force: true })
+          const restored = openDatabase({ dataDir: this.dataDir, dbPath })
+          try {
+            this._rebindStores?.(restored)
+          } catch {}
         } catch {}
+        throw error
       }
-      fs.copyFileSync(dbFile, dbPath)
-      try {
-        fs.chmodSync(dbPath, 0o600)
-      } catch {}
 
-      // 3. restore vm + config files from the archive (tar flavor only)
+      // 3. restore vm + config files from the archive (tar flavor only).
+      // Snapshot the live files first so a later failure can put them back.
+      fileSnap = snapshotSlotFiles({ projectRoot: this.projectRoot, configDir: this.configDir, destRoot: tmp })
       const vmsDirSrc = path.join(tmp, 'vms')
       if (this.projectRoot && fs.existsSync(vmsDirSrc)) {
         const vmsDir = path.join(this.projectRoot, 'vms')
@@ -346,6 +459,7 @@ export class BackupService {
       }
       const cfgDirSrc = path.join(tmp, 'config')
       if (this.configDir && fs.existsSync(cfgDirSrc)) {
+        fileSnap.configArchive = fs.readdirSync(cfgDirSrc).filter((name) => isRegularFile(path.join(cfgDirSrc, name)))
         fs.mkdirSync(this.configDir, { recursive: true })
         for (const f of fs.readdirSync(cfgDirSrc)) {
           fs.copyFileSync(path.join(cfgDirSrc, f), path.join(this.configDir, f))
@@ -382,6 +496,14 @@ export class BackupService {
       if (this._rebindStores) this._rebindStores(db)
 
       return { ok: true, restored: rec.id, pre_restore: pre.id }
+    } catch (error) {
+      if (fileSnap) {
+        try {
+          restoreSlotFiles(fileSnap)
+        } catch {}
+      }
+      if (swapped && dbPath) this._rollbackRestore(dbPath)
+      throw error
     } finally {
       this.isRestoring = false
       if (tmp) {
@@ -389,7 +511,31 @@ export class BackupService {
           fs.rmSync(tmp, { recursive: true, force: true })
         } catch {}
       }
+      if (dbPath) {
+        try {
+          fs.rmSync(stageName(), { force: true })
+        } catch {}
+      }
     }
+  }
+
+  _rollbackRestore(file) {
+    const keep = `${file}.pre-restore`
+    try {
+      closeDatabase()
+    } catch {}
+    discardSqliteSidecars(file)
+    if (fs.existsSync(keep)) {
+      try {
+        fs.rmSync(file, { force: true })
+      } catch {}
+      fs.renameSync(keep, file)
+    }
+    discardSqliteSidecars(file)
+    const db = openDatabase({ dataDir: this.dataDir, dbPath: file })
+    try {
+      this._rebindStores?.(db)
+    } catch {}
   }
 
   /**

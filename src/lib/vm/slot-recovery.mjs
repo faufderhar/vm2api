@@ -33,6 +33,7 @@ import { isCodexVm, isGrokVm, isHeadlessSlotVm } from './vm-kind.mjs'
 import { isKvmRuntime } from './runtime-kind.mjs'
 import { slotDockerCpus } from './machine-spec.mjs'
 import { bindVmProxy, getVm, patchVmRecord, vmHasSchedulableCredential } from './vm-registry.mjs'
+import { VM_ORIGIN, vmOriginOf, vmOwnerId } from '../admin/resource-owner.mjs'
 import { isCredentialRefreshFailed } from '../pool/availability.mjs'
 
 const HEALTH_TIMEOUT_MS = 1500
@@ -374,7 +375,15 @@ export async function powerOnSlot({ projectRoot, id, proxyPool, routing = {}, fi
   } catch (error) {
     return { ok: false, status: 400, code: error.code, error: error.message }
   }
-  const bound = proxyPool.ensureBoundToVm(id, vm.proxy?.id || null)
+  const ownerUserId = vmOwnerId(vm)
+  // Only a tenant-created slot is limited to that tenant's proxies. An
+  // admin-assigned slot keeps a platform proxy the admin already bound.
+  const role = vmOriginOf(vm) === VM_ORIGIN.userCreated ? 'user' : 'admin'
+  const bound = proxyPool.ensureBoundToVm(id, vm.proxy?.id || null, {
+    ownerUserId,
+    role,
+    vm,
+  })
   if (!bound) {
     return { ok: false, status: 409, code: 'proxy_required', error: 'No SOCKS5 is bound or free for this VM' }
   }
