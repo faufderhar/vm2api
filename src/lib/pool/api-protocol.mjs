@@ -1,4 +1,5 @@
 import { officialMessagesBody } from '../protocol/anthropic-messages.mjs'
+import { StringDecoder } from 'node:string_decoder'
 import { prepareClassifierBody } from '../protocol/request-purpose.mjs'
 import { consumeClaudeSSEData } from '../protocol/convert.mjs'
 import {
@@ -9,6 +10,7 @@ import {
 } from '../core/errors.mjs'
 import { isContentPolicyErrorCode } from '../core/refusal-guard.mjs'
 import { forwardApi, readApiJson } from '../transport/api-kernel-client.mjs'
+import { consoleForwardTarget } from '../admin/anthropic-console.mjs'
 import { messagesUrl, normalizeProtocol, resolvePreset, responsesUrl, upstreamAuthHeaders } from './api-presets.mjs'
 import { claudeToOpenAIResponsesRequest } from './api-openai.mjs'
 import {
@@ -44,8 +46,9 @@ function joinHeaderMap(headers = {}) {
 
 async function readLines(stream, onLine) {
   let buf = ''
+  const decoder = new StringDecoder('utf8')
   for await (const chunk of stream) {
-    buf += chunk.toString('utf8')
+    buf += decoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
     let idx
     while ((idx = buf.indexOf('\n')) >= 0) {
       const line = buf.slice(0, idx)
@@ -53,6 +56,7 @@ async function readLines(stream, onLine) {
       await onLine(line)
     }
   }
+  buf += decoder.end()
   if (buf) await onLine(buf)
 }
 
@@ -266,10 +270,30 @@ export async function runApiInference({
   }
 
   let upstream
+  let target
+  try {
+    target = await consoleForwardTarget(isOpenAI ? responsesUrl(preset.base_url) : messagesUrl(preset.base_url))
+  } catch (error) {
+    return {
+      ok: false,
+      status: Number(error.status) || 400,
+      via: 'api-kernel',
+      body: {
+        type: 'error',
+        error: {
+          type: 'invalid_request_error',
+          code: error.code || 'proxy_host_blocked',
+          message: String(error.message || '地址不能指向本机、内网或元数据').slice(0, 300),
+        },
+      },
+      terminalState: 'rejected',
+    }
+  }
   try {
     upstream = await forwardApi({
       cfg,
-      url: isOpenAI ? responsesUrl(preset.base_url) : messagesUrl(preset.base_url),
+      url: target.url,
+      dialIp: target.dialIp,
       headers,
       body,
       proxyUrl: picked.key.proxy_url,

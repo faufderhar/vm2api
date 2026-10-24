@@ -10,6 +10,7 @@ import {
   extractPanelToken,
   panelSessionCookie,
   panelSessionCookieOptions,
+  panelCookieWriteAllowed,
   clearPanelSessionCookie,
   revokePanelSession,
   revokePanelSessionsForUser,
@@ -1305,6 +1306,19 @@ export function createPanelHandler(ctx) {
   return async function handlePanel(req, res, url) {
     const p = url.pathname
     if (!p.startsWith('/admin') && !p.startsWith('/api/panel')) return false
+    if (!panelCookieWriteAllowed(req, parsePanelCorsOrigins())) {
+      json(
+        res,
+        403,
+        makeError({
+          type: ErrorType.PERMISSION,
+          code: 'cross_site_write',
+          message: '跨站请求不能修改面板',
+          status: 403,
+        }).body,
+      )
+      return true
+    }
 
     if (p.startsWith('/admin')) {
       if (!requireAuth(req, res)) return true

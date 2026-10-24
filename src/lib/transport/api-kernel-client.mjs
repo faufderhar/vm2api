@@ -210,6 +210,7 @@ export function forwardApi({
   headers = {},
   body,
   proxyUrl = '',
+  dialIp = '',
   signal,
   timeoutMs = 300_000,
   stream = false,
@@ -226,6 +227,7 @@ export function forwardApi({
       body: typeof body === 'string' ? body : JSON.stringify(body ?? {}),
       proxy_url: proxyUrl || '',
     }
+    if (dialIp) envelope.dial_ip = dialIp
     if (stream) envelope.stream = true
     if (requireProxy) envelope.require_proxy = true
     if (upstreamTimeoutMs !== undefined) envelope.timeout_ms = Math.max(0, Math.trunc(Number(upstreamTimeoutMs) || 0))

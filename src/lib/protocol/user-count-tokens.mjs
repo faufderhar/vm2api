@@ -215,6 +215,11 @@ function deviceRepo(deps) {
   }
 }
 
+function countTokensOwner(req) {
+  const scope = ownerScopeFromRequest(req)
+  return scope?.type === 'user' ? scope.userId : ''
+}
+
 /** Distill, hard regex, refusal cache, and jev. `wait` means the slot is required before a verdict. */
 export async function blockCountTokensBeforeHop(req, inbound, deps = {}) {
   let jev
@@ -235,6 +240,7 @@ export async function blockCountTokensBeforeHop(req, inbound, deps = {}) {
     repo: refusalRepo(deps),
     devices: deviceRepo(deps),
     account: deps.account || null,
+    owner: countTokensOwner(req),
   })
   let wait = false
   if (decision?.action !== 'block' && decision?.intercept) {

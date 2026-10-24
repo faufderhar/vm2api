@@ -12,6 +12,34 @@ import (
 	"golang.org/x/net/proxy"
 )
 
+type dialPinKey struct{}
+
+// WithDialIP tells DialContext to connect to ip instead of resolving addr again.
+func WithDialIP(ctx context.Context, ip net.IP) context.Context {
+	if ip == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, dialPinKey{}, ip)
+}
+
+func pinnedAddr(ctx context.Context, addr string) string {
+	ip, _ := ctx.Value(dialPinKey{}).(net.IP)
+	if ip == nil {
+		return addr
+	}
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil || port == "" {
+		return addr
+	}
+	return net.JoinHostPort(ip.String(), port)
+}
+
+func pinDial(base func(context.Context, string, string) (net.Conn, error)) func(context.Context, string, string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return base(ctx, network, pinnedAddr(ctx, addr))
+	}
+}
+
 const (
 	maxIdleConns        = 4096
 	maxIdleConnsPerHost = 2048
@@ -103,15 +131,17 @@ func newClient(proxyKey string) (*http.Client, error) {
 			}
 			contextDialer, ok := d.(proxy.ContextDialer)
 			if ok {
-				transport.DialContext = contextDialer.DialContext
+				transport.DialContext = pinDial(contextDialer.DialContext)
 			} else {
-				transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+				transport.DialContext = pinDial(func(ctx context.Context, network, addr string) (net.Conn, error) {
 					return d.Dial(network, addr)
-				}
+				})
 			}
 		} else {
 			transport.Proxy = http.ProxyURL(u)
 		}
+	} else {
+		transport.DialContext = pinDial(dialer.DialContext)
 	}
 	return &http.Client{Transport: transport, Timeout: 0, CheckRedirect: func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse

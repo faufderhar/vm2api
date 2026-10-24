@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -29,6 +30,7 @@ type forwardEnv struct {
 	Stream       bool              `json:"stream"`
 	RequireProxy bool              `json:"require_proxy"`
 	TimeoutMs    int               `json:"timeout_ms"`
+	DialIP       string            `json:"dial_ip"`
 }
 
 const streamChunk = 32 * 1024
@@ -123,6 +125,14 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
+	if raw := strings.TrimSpace(env.DialIP); raw != "" {
+		ip := net.ParseIP(raw)
+		if ip == nil {
+			kernelError(w, http.StatusBadRequest, `{"ok":false,"error":{"code":"invalid_dial_ip"}}`)
+			return
+		}
+		ctx = pool.WithDialIP(ctx, ip)
+	}
 	if env.TimeoutMs > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(env.TimeoutMs)*time.Millisecond)

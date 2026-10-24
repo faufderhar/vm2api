@@ -1,4 +1,5 @@
 import net from 'node:net'
+import { maybeDecrypt } from '../db/secure.mjs'
 
 /** Socket hosts are unbracketed; reject malformed authorities rather than guessing. */
 export function normalizeSocksHost(value) {
@@ -28,6 +29,11 @@ export function socksEndpoint(host, port) {
 /** URL serialization is independent of policy, so disabled records can still be edited/copied. */
 export function socksProxyUrl(proxy, scheme = 'socks5h') {
   if (!proxy) return ''
+  const fieldEndpoint = socksEndpoint(proxy.host, proxy.port)
+  if (fieldEndpoint && proxy.username) {
+    const password = encodeURIComponent(maybeDecrypt(proxy.password) || '')
+    return `${scheme}://${encodeURIComponent(proxy.username)}:${password}@${fieldEndpoint}`
+  }
   if (proxy.url) {
     const u = new URL(proxy.url)
     const endpoint = socksEndpoint(u.hostname, u.port || 1080)

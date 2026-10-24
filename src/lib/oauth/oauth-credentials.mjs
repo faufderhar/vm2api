@@ -191,6 +191,7 @@ export function ensureOfficialCredentialLink(homeDir, { uid, gid, create = false
   const workerFile = path.join(claudeDir, 'credentials.json')
   const officialFile = path.join(claudeDir, '.credentials.json')
   if (!homeDir) return { wrote: false, error: 'home missing' }
+  dropCredentialSymlink(workerFile)
   const officialGrant = regularOauthGrant(officialFile)
   const workerGrant = regularOauthGrant(workerFile)
   const adopt = officialGrantWins(officialGrant, workerGrant)
@@ -242,6 +243,7 @@ export function ensureOfficialCredentialLink(homeDir, { uid, gid, create = false
 export function readWorkerCredentialFile(homeDir) {
   const file = slotWorkerCredentialPath(homeDir)
   if (!file) return null
+  if (credentialIsSymlink(file)) return null
   try {
     if (!fs.existsSync(file)) return null
     const doc = JSON.parse(fs.readFileSync(file, 'utf8'))
@@ -380,7 +382,9 @@ export function ensureSlotClaudeOwnership(homeDir, uid = null, gid = null) {
   fs.mkdirSync(claudeDir, { recursive: true, mode: 0o700 })
   for (const p of [homeDir, claudeDir, ...SLOT_CLAUDE_FILES.map((name) => path.join(claudeDir, name))]) {
     try {
-      if (fs.existsSync(p)) fs.chownSync(p, user, group)
+      const st = fs.lstatSync(p)
+      if (st.isSymbolicLink()) continue
+      fs.chownSync(p, user, group)
     } catch {}
   }
 }
@@ -402,6 +406,20 @@ function sealSlotCredentialFile(file) {
   } catch {}
 }
 
+function credentialIsSymlink(file) {
+  try {
+    return fs.lstatSync(file).isSymbolicLink()
+  } catch {
+    return false
+  }
+}
+
+/** A planted link would make read, copy and chown follow a path outside the slot. */
+function dropCredentialSymlink(file) {
+  if (!file || !credentialIsSymlink(file)) return
+  fs.unlinkSync(file)
+}
+
 /** Write slot credentials.json for imports and worker-owned credential updates. */
 
 export async function writeWorkerCredentialFile(homeDir, cred) {
@@ -412,6 +430,7 @@ export async function writeWorkerCredentialFile(homeDir, cred) {
 }
 
 function writeWorkerCredentialFileUnlocked(homeDir, file, cred) {
+  dropCredentialSymlink(file)
   const mode = credentialModeFromOauth(cred)
   const authScheme = resolveAuthScheme({ mode, auth_scheme: cred.auth_scheme || cred.authScheme })
   if (mode === 'apikey') {

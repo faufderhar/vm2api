@@ -11,7 +11,8 @@ import {
 } from '../pool/api-presets.mjs'
 import { forwardApi, readApiJson } from '../transport/api-kernel-client.mjs'
 import { AUTH_SCHEME_X_API_KEY, resolveAuthScheme } from '../oauth/auth-scheme.mjs'
-import { assertConsoleDialTarget } from './anthropic-console.mjs'
+import { assertConsoleDialTarget, consoleForwardTarget } from './anthropic-console.mjs'
+import { isUnsafeProxyHost } from '../vm/proxy-policy.mjs'
 
 function nowIso() {
   return new Date().toISOString()
@@ -23,6 +24,22 @@ function nid(prefix) {
 
 function trimUrl(url) {
   return trimBaseUrl(url)
+}
+
+function assertEndpointBaseUrl(baseUrl) {
+  if (!/^https?:\/\//i.test(String(baseUrl || ''))) {
+    throw Object.assign(new Error('base_url must be http(s)'), { code: 'invalid_base_url' })
+  }
+  try {
+    new URL(baseUrl)
+  } catch {
+    throw Object.assign(new Error('base_url must be http(s)'), { code: 'invalid_base_url' })
+  }
+  if (isUnsafeProxyHost({ url: baseUrl })) {
+    throw Object.assign(new Error('base_url must not point at a private or metadata address'), {
+      code: 'invalid_base_url',
+    })
+  }
 }
 
 function maskUpstreamKey(key) {
@@ -117,9 +134,7 @@ export class ApiEndpointStore {
   create(input = {}) {
     const preset = resolvePreset(input.kind, input)
     const base_url = preset.base_url
-    if (!/^https?:\/\//i.test(base_url)) {
-      throw Object.assign(new Error('base_url must be http(s)'), { code: 'invalid_base_url' })
-    }
+    assertEndpointBaseUrl(base_url)
     const rec = {
       id: nid('ep_'),
       name:
@@ -163,9 +178,7 @@ export class ApiEndpointStore {
       rec.kind = preset.kind
       rec.protocol = preset.protocol
       rec.base_url = preset.base_url
-      if (!/^https?:\/\//i.test(rec.base_url)) {
-        throw Object.assign(new Error('base_url must be http(s)'), { code: 'invalid_base_url' })
-      }
+      assertEndpointBaseUrl(rec.base_url)
     }
     if (patch.headers != null && typeof patch.headers === 'object') rec.headers = patch.headers
     if (patch.auth_scheme != null || patch.authScheme != null) {
@@ -254,16 +267,18 @@ export async function fetchUpstreamModels({
   if (!/^https?:\/\//i.test(preset.base_url)) {
     throw Object.assign(new Error('base_url must be http(s)'), { code: 'invalid_base_url' })
   }
-  await assertConsoleDialTarget(preset.base_url)
   const proxyUrl = await assertConsoleDialTarget(proxy_url, { pin: true })
+  const target = await consoleForwardTarget(modelsUrl(preset.base_url, { afterId: '' }))
 
   const models = []
   let afterId = ''
   for (let page = 0; page < 8; page++) {
+    const pageTarget = page === 0 ? target : await consoleForwardTarget(modelsUrl(preset.base_url, { afterId }))
     const upstream = await forward({
       cfg,
       method: 'GET',
-      url: modelsUrl(preset.base_url, { afterId }),
+      url: pageTarget.url,
+      dialIp: pageTarget.dialIp,
       headers: {
         accept: 'application/json',
         ...upstreamAuthHeaders(preset.protocol, key, {

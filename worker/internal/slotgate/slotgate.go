@@ -39,6 +39,7 @@ const (
 	prefaceTimeout = 5 * time.Second
 	keepAlive      = 30 * time.Second
 	MaxConns       = 512
+	maxUnauthConns = 1024
 )
 
 var (
@@ -47,11 +48,12 @@ var (
 )
 
 type Server struct {
-	cfg   Config
-	token [sha256.Size]byte
-	tls   *tls.Config
-	slots chan struct{}
-	wg    sync.WaitGroup
+	cfg    Config
+	token  [sha256.Size]byte
+	tls    *tls.Config
+	slots  chan struct{}
+	unauth chan struct{}
+	wg     sync.WaitGroup
 }
 
 func New(cfg Config) (*Server, error) {
@@ -72,10 +74,11 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("tls: %w", err)
 	}
 	return &Server{
-		cfg:   cfg,
-		token: sha256.Sum256([]byte(cfg.Token)),
-		tls:   &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS13},
-		slots: make(chan struct{}, MaxConns),
+		cfg:    cfg,
+		token:  sha256.Sum256([]byte(cfg.Token)),
+		tls:    &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS13},
+		slots:  make(chan struct{}, MaxConns),
+		unauth: make(chan struct{}, maxUnauthConns),
 	}, nil
 }
 
@@ -108,7 +111,7 @@ func (s *Server) ServeListener(ctx context.Context, ln net.Listener) error {
 			return err
 		}
 		select {
-		case s.slots <- struct{}{}:
+		case s.unauth <- struct{}{}:
 		default:
 			conn.Close()
 			continue
@@ -116,7 +119,6 @@ func (s *Server) ServeListener(ctx context.Context, ln net.Listener) error {
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
-			defer func() { <-s.slots }()
 			s.handle(conn)
 		}()
 	}
@@ -125,7 +127,13 @@ func (s *Server) ServeListener(ctx context.Context, ln net.Listener) error {
 // handle runs the TLS handshake and preface under one deadline, so a client
 // that stalls in either is dropped after prefaceTimeout.
 func (s *Server) handle(conn net.Conn) {
-	defer conn.Close()
+	holdUnauth := true
+	defer func() {
+		if holdUnauth {
+			<-s.unauth
+		}
+		conn.Close()
+	}()
 	conn.SetDeadline(time.Now().Add(prefaceTimeout))
 	br := bufio.NewReaderSize(conn, prefaceMax)
 	line, err := br.ReadSlice('\n')
@@ -141,6 +149,15 @@ func (s *Server) handle(conn net.Conn) {
 		io.WriteString(conn, "OK\n")
 		return
 	}
+	select {
+	case s.slots <- struct{}{}:
+	default:
+		fmt.Fprintf(conn, "ERR busy\n")
+		return
+	}
+	defer func() { <-s.slots }()
+	holdUnauth = false
+	<-s.unauth
 	target, err := dialSlotSocket(filepath.Join(s.cfg.Root, "vms", vm, "run", kinds[kind]))
 	if err != nil {
 		fmt.Fprintf(conn, "ERR no_socket\n")

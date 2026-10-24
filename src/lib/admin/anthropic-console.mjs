@@ -17,6 +17,14 @@ const MAX_HEADER_PAIRS = 24
 const MAX_KEYS = 32
 const OFFICIAL_CONSOLE_HOST = 'api.anthropic.com'
 
+function isOfficialConsoleHost(raw) {
+  try {
+    return new URL(String(raw || '')).hostname.toLowerCase() === OFFICIAL_CONSOLE_HOST
+  } catch {
+    return false
+  }
+}
+
 function consoleDialError(reason) {
   const message =
     reason === 'ipv6_disabled'
@@ -70,6 +78,19 @@ export function anthropicProxyUrl(raw) {
     throw Object.assign(new Error('代理地址缺少主机或端口'), { code: 'invalid_proxy_url', status: 400 })
   }
   return value
+}
+
+/**
+ * Check the URL, then return the IP just verified so the kernel dials that
+ * address instead of resolving the name again. Official api.anthropic.com is
+ * left to the kernel. A proxy URL is not pinned here.
+ */
+export async function consoleForwardTarget(rawUrl) {
+  const url = String(rawUrl || '').trim()
+  if (!url || isOfficialConsoleHost(url)) return { url, dialIp: '' }
+  const dial = await resolvedProxyDial({ url })
+  if (dial.blocked) throw consoleDialError(dial.blocked)
+  return { url, dialIp: dial.address || '' }
 }
 
 function headerMap(raw) {
@@ -249,12 +270,13 @@ export function anthropicConsoleResult(upstream, meta) {
 
 async function forwardConsoleRequest(request, { cfg, forward }) {
   try {
-    await assertConsoleDialTarget(request.url)
+    const target = await consoleForwardTarget(request.url)
     const proxyUrl = await assertConsoleDialTarget(request.proxyUrl, { pin: true })
     const upstream = await forward({
       cfg,
       method: request.method,
-      url: request.url,
+      url: target.url,
+      dialIp: target.dialIp,
       headers: request.headers,
       body: request.body,
       proxyUrl,

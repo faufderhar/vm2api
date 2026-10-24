@@ -28,7 +28,7 @@ import {
   validDnsPrimary,
 } from './egress.mjs'
 import { normalizeSocksHost, socksEndpoint, socksProxyUrl, socksProxyFamily } from './socks-address.mjs'
-import { proxyBlockedReason, proxyResolvedBlockReason } from './proxy-policy.mjs'
+import { proxyBlockedReason, proxyResolvedBlockReason, resolvedProxyDial } from './proxy-policy.mjs'
 import { canRevealClusterNodes, annotatePublicLocalProxy } from './local-proxy-nodes.mjs'
 
 export const MAX_VMS_PER_PROXY = 5
@@ -1123,10 +1123,18 @@ export class ProxyPool extends EventEmitter {
     if (blocked) return { ok: false, scope: 'policy', error: blocked, latency_ms: null }
     const host = normalizeSocksHost(proxy.host)
     if (!host) return { ok: false, error: 'invalid_proxy_host', latency_ms: null }
+    let dialHost = host
+    try {
+      const dial = await resolvedProxyDial(proxy)
+      if (dial?.blocked) return { ok: false, scope: 'policy', error: dial.blocked, latency_ms: null }
+      if (dial?.address) dialHost = dial.address
+    } catch (error) {
+      return { ok: false, scope: 'policy', error: error.code || 'proxy_host_blocked', latency_ms: null }
+    }
     const timeout = this.state.config.probe_timeout_ms || 8000
     const started = Date.now()
     return new Promise((resolve) => {
-      const socket = net.connect({ host, port: proxy.port })
+      const socket = net.connect({ host: dialHost, port: proxy.port })
       this._probeSockets.set(socket, proxy)
       let done = false
       let connected = false

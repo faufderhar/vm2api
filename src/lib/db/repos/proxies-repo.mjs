@@ -5,6 +5,7 @@
  */
 
 import { getDb, withTransaction } from '../database.mjs'
+import { maybeDecrypt, maybeEncrypt } from '../secure.mjs'
 import { SettingsRepo } from './settings-repo.mjs'
 
 const CONFIG_KEY = 'proxy_pool_config'
@@ -52,8 +53,14 @@ const COLUMNS = [
 
 function rowToProxy(row) {
   if (!row) return null
-  // ProxyPool still speaks `scheme`; the column is sub2api's `protocol`.
-  return { ...row, scheme: row.protocol, enabled: !!row.enabled, domain_forward: !!row.domain_forward }
+  return {
+    ...row,
+    password: maybeDecrypt(row.password),
+    raw: maybeDecrypt(row.raw),
+    scheme: row.protocol,
+    enabled: !!row.enabled,
+    domain_forward: !!row.domain_forward,
+  }
 }
 
 export class ProxiesRepo {
@@ -82,6 +89,7 @@ export class ProxiesRepo {
             if (c === 'domain_forward') return p.domain_forward ? 1 : 0
             if (c === 'protocol') return p.protocol ?? p.scheme ?? 'socks5'
             if (c === 'name') return p.name ?? (p.host && p.port != null ? `${p.host}:${p.port}` : p.id)
+            if (c === 'password' || c === 'raw') return maybeEncrypt(p[c] ?? null)
             return p[c] ?? null
           }),
         )

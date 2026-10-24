@@ -169,6 +169,31 @@ func TestDoesNotFollowPlantedSymlink(t *testing.T) {
 	}
 }
 
+func TestSilentConnectionsDoNotFillServiceSlots(t *testing.T) {
+	root := shortRoot(t)
+	slotSocket(t, root, "vm-1", "kernel.sock")
+	addr := startGate(t, root)
+	var held []net.Conn
+	for range 600 {
+		c, err := tls.Dial("tcp", addr, &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13})
+		if err != nil {
+			break
+		}
+		held = append(held, c)
+	}
+	t.Cleanup(func() {
+		for _, c := range held {
+			c.Close()
+		}
+	})
+	if len(held) < MaxConns+1 {
+		t.Fatalf("held %d silent connections, want more than %d", len(held), MaxConns)
+	}
+	if _, _, reply := dialGate(t, addr, "KSG1 "+testToken+" vm-1 kernel\n"); reply != "OK\n" {
+		t.Fatalf("authenticated preface reply = %q", reply)
+	}
+}
+
 func TestCertificateSurvivesRestartAndIsRecreatedWhenLost(t *testing.T) {
 	root := shortRoot(t)
 	cfg := Config{Listen: "127.0.0.1:1", Root: root, Token: testToken, TLSDir: filepath.Join(root, "tls")}

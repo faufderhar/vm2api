@@ -7,6 +7,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { validTimezone } from '../core/timezone.mjs'
+import { maybeDecrypt } from '../db/secure.mjs'
 import { normalizeAuthScheme } from '../oauth/auth-scheme.mjs'
 import { persistOauthToVm, readWorkerCredentialFile, writeWorkerCredentialFile } from '../oauth/oauth-credentials.mjs'
 import { oauthToSub2apiExport, sub2apiAccountToOauth } from '../oauth/sub2api-account.mjs'
@@ -120,7 +121,7 @@ function proxyDocument(proxy, label) {
   const port = Number(proxy.port)
   if (!host || !Number.isInteger(port)) return null
   const username = proxy.username == null || proxy.username === '' ? null : String(proxy.username)
-  const password = username == null || proxy.password == null ? null : String(proxy.password)
+  const password = username == null || proxy.password == null ? null : maybeDecrypt(proxy.password)
   return {
     kind: 'socks5',
     host,

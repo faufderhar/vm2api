@@ -1,4 +1,5 @@
 import { getDb, withTransaction } from '../database.mjs'
+import { maybeDecrypt, maybeEncrypt } from '../secure.mjs'
 
 const EP_COLS = [
   'id',
@@ -50,8 +51,8 @@ function rowKey(row) {
   return {
     id: row.id,
     endpoint_id: row.endpoint_id,
-    api_key: row.api_key,
-    proxy_url: row.proxy_url || '',
+    api_key: maybeDecrypt(row.api_key),
+    proxy_url: maybeDecrypt(row.proxy_url) || '',
     proxy_id: row.proxy_id || '',
     disabled: !!row.disabled,
     cooldown_until: row.cooldown_until || null,
@@ -166,8 +167,8 @@ export class ApiEndpointsRepo {
     this._insKey.run(
       rec.id,
       rec.endpoint_id,
-      rec.api_key,
-      rec.proxy_url || '',
+      maybeEncrypt(rec.api_key),
+      maybeEncrypt(rec.proxy_url || ''),
       rec.proxy_id || '',
       bool01(rec.disabled),
       rec.cooldown_until || null,
@@ -192,8 +193,8 @@ export class ApiEndpointsRepo {
     if (patch.disabled != null) rec.disabled = !!patch.disabled
     if (patch.cooldown_until !== undefined) rec.cooldown_until = patch.cooldown_until || null
     this._updKey.run(
-      rec.api_key,
-      rec.proxy_url || '',
+      maybeEncrypt(rec.api_key),
+      maybeEncrypt(rec.proxy_url || ''),
       rec.proxy_id || '',
       bool01(rec.disabled),
       rec.cooldown_until,

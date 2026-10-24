@@ -2,6 +2,7 @@ import http from 'node:http'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { StringDecoder } from 'node:string_decoder'
 import { prepareOutboundHeaders } from '../protocol/outbound-attempt.mjs'
 import { sanitizeAnthropicBodyForBetaTokens } from '../protocol/anthropic-policy.mjs'
 import { withRequestProtocolBetas } from '../protocol/claude-code-betas.mjs'
@@ -144,19 +145,31 @@ function workerRequest(
 function cancelOnAbort(exec, signal, requestId) {
   if (!signal || signal.aborted) return () => {}
   const onAbort = () => {
-    workerRequest(exec, {
+    void cancelWorkerJob(exec, requestId)
+  }
+  signal.addEventListener('abort', onAbort, { once: true })
+  return () => signal.removeEventListener('abort', onAbort)
+}
+
+/**
+ * Name the hop to the kernel so it stops that job before this process starts another
+ * one with a new request id. The client-abort listener covers a dropped caller; a
+ * first-byte timeout only destroyed the local socket, so the slot kept generating
+ * and a retry billed the account twice. Best effort: an old worker answers 404.
+ */
+async function cancelWorkerJob(exec, requestId) {
+  if (!requestId) return
+  try {
+    const res = await workerRequest(exec, {
       method: 'POST',
       requestPath: '/internal/v1/cancel',
       body: { request_id: requestId },
       timeoutMs: 3000,
     })
-      .then((res) => res.resume())
-      .catch((error) => {
-        console.warn(`[kernel-cancel] ${exec?.vmId || 'slot'} ${requestId}: ${error?.code || error?.message || error}`)
-      })
+    res.resume()
+  } catch (error) {
+    console.warn(`[kernel-cancel] ${exec?.vmId || 'slot'} ${requestId}: ${error?.code || error?.message || error}`)
   }
-  signal.addEventListener('abort', onAbort, { once: true })
-  return () => signal.removeEventListener('abort', onAbort)
 }
 
 async function readAll(stream, limit = MAX_BODY) {
@@ -611,6 +624,9 @@ export async function callGoWorker({
       threadBetas: prepared.thread,
     })
   } catch (error) {
+    if (!isClientCancelledResult({ body: { error: { code: error.code } } }) && error.code !== 'aborted') {
+      await cancelWorkerJob(exec, requestId)
+    }
     return {
       ok: false,
       status: 0,
@@ -787,6 +803,7 @@ export async function streamGoWorker({
       })
     }
     let buffer = ''
+    const decoder = new StringDecoder('utf8')
     let lastError = null
     let dataBuf = ''
     let sseUsage = null
@@ -867,7 +884,7 @@ export async function streamGoWorker({
       for await (const chunk of response) {
         sawChunk = true
         lastChunkAt = Date.now()
-        buffer += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk)
+        buffer += decoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)))
         let newline
         while ((newline = buffer.indexOf('\n')) >= 0) {
           const line = buffer.slice(0, newline).replace(/\r$/, '')
@@ -947,6 +964,7 @@ export async function streamGoWorker({
         headers: cancelHeaders || {},
       })
     }
+    await cancelWorkerJob(exec, requestId)
     return {
       ok: false,
       status: 0,
@@ -959,7 +977,8 @@ export async function streamGoWorker({
           message: String(error.message || error).slice(0, 300),
         },
       },
-      headers: {},
+      headers: cancelHeaders || {},
+      usage: cancelUsage,
       ttftMs,
       firstTokenAt: ttftMs == null ? null : startedAt + ttftMs,
       committed,

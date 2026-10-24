@@ -4,6 +4,7 @@
  * SOCKS exit. Claude convert/pool and the Codex kernel never run here.
  */
 import { getVm, listVms } from '../vm/vm-registry.mjs'
+import { StringDecoder } from 'node:string_decoder'
 import { isValidVmId } from '../vm/vm-file.mjs'
 import { isGrokVm } from '../vm/vm-kind.mjs'
 import { grokRoutingOf, isGrokProtocolAllowed } from './grok-route.mjs'
@@ -238,9 +239,10 @@ export async function grokUpstreamCall({ projectRoot, vmId, envelope, stream, si
       return { ok: true, status, headers, body: payload, emitted, ttftMs: Date.now() - startedAt }
     }
     let buffered = ''
+    const decoder = new StringDecoder('utf8')
     for await (const chunk of res) {
       armIdle()
-      buffered += chunk.toString('utf8')
+      buffered += decoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
       let nl = buffered.indexOf('\n')
       while (nl !== -1) {
         const line = buffered.slice(0, nl).replace(/\r$/, '')
@@ -253,6 +255,7 @@ export async function grokUpstreamCall({ projectRoot, vmId, envelope, stream, si
         nl = buffered.indexOf('\n')
       }
     }
+    buffered += decoder.end()
     if (buffered) await onLine(buffered.replace(/\r$/, ''))
     return { ok: true, status, headers, emitted, firstTokenAt, ttftMs: firstTokenAt ? firstTokenAt - startedAt : null }
   } catch (error) {
@@ -686,6 +689,7 @@ export async function handleGrokProtocol({
     Number.isFinite(sameRetryDelay) && sameRetryDelay >= 0 ? Math.min(10_000, sameRetryDelay) : 100
   logBag.attempt_count = 0
   let last = null
+  let lastProduced = null
   let hops = 0
   let attempts = 0
   let switches = 0
@@ -861,9 +865,11 @@ export async function handleGrokProtocol({
           : (result?.ttftMs ?? null)
         ingestGrokHop(projectRoot, vm, result)
         last = result
+        const produced = usage.take(result?.body)
+        if (produced) lastProduced = produced
         if (result?.ok) {
           bindSticky(outboundSessionId)
-          logUsage(logBag, usage.take(result.body), shape)
+          logUsage(logBag, produced, shape)
           grokRuntime.reportAttempt(vm.id, 'succeeded', result.ttftMs ?? null)
           logBag.final_state = 'verified'
           logBag.upstream_model = outbound.body.model
@@ -885,6 +891,7 @@ export async function handleGrokProtocol({
           logBag.error_code = result?.body?.error?.code || 'grok_upstream'
           logBag.upstream_status = result?.status || 0
           logBag.final_state = 'incomplete'
+          logUsage(logBag, produced, shape)
           return res.end()
         }
         if (isGrokFailoverError(result)) {
@@ -910,6 +917,7 @@ export async function handleGrokProtocol({
   stats.errors++
   logBag.error_code = last?.body?.error?.code || 'grok_upstream'
   logBag.upstream_status = last?.status || 0
+  if (!logBag.usage && lastProduced) logUsage(logBag, lastProduced, shape)
   // The caller's own key was accepted. A 401 here is a slot credential; SDKs would read it as theirs.
   if (Number(last?.status) === 401) {
     return json(res, 503, {

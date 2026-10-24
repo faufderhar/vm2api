@@ -38,7 +38,28 @@ import { evaluateCodexQuotaSchedule } from '../pool/codex-slot-pool.mjs'
 import { effectiveOpenAIPolicy, normalizeOpenAIQuotaPolicy } from '../pool/openai-quota-policy.mjs'
 import { runtimeKind } from './runtime-kind.mjs'
 import { hasBoundExit } from './egress.mjs'
+import { maybeEncrypt } from '../db/secure.mjs'
 import { ensureSlotSmbios } from './machine-spec.mjs'
+
+function proxyUrlWithoutAuth(raw) {
+  if (!raw) return null
+  try {
+    const parsed = new URL(raw)
+    const port = parsed.port ? `:${parsed.port}` : ''
+    return `${parsed.protocol}//${parsed.hostname}${port}`
+  } catch {
+    return String(raw)
+  }
+}
+
+function panelProxy(proxy) {
+  if (!proxy || typeof proxy !== 'object') return null
+  return {
+    ...proxy,
+    password: proxy.password ? '***' : (proxy.password ?? null),
+    url: proxyUrlWithoutAuth(proxy.url),
+  }
+}
 
 export { isCodexVm, normalizeVmKind } from './vm-kind.mjs'
 
@@ -201,7 +222,7 @@ export function summarizeVm(vm, projectRoot = null, routing = null) {
     timezone: vm.timezone || null,
     timezone_source: vm.timezone_source || 'auto',
     locale: vm.locale || null,
-    proxy: vm.proxy ? { ...vm.proxy, password: vm.proxy.password ? '***' : (vm.proxy.password ?? null) } : null,
+    proxy: panelProxy(vm.proxy),
     claude_code_version: vm.claude_code_version || null,
     stats: vm.stats || {},
     fingerprint: vm.fingerprint || null,
@@ -658,9 +679,9 @@ export function bindVmProxy(projectRoot, id, proxyInfo) {
         host: proxyInfo.host,
         port: proxyInfo.port,
         scheme: proxyInfo.scheme || proxyInfo.kind || 'socks5',
-        url: proxyInfo.url || null,
         username: proxyInfo.username || null,
-        password: proxyInfo.password == null ? null : proxyInfo.password,
+        password: proxyInfo.password == null ? null : maybeEncrypt(String(proxyInfo.password)),
+        url: proxyUrlWithoutAuth(proxyInfo.url),
       }
     : null
   // Eligibility (`slotHasBoundProxy`) and CLI egress both require this flag.

@@ -567,6 +567,8 @@ export function panelCookieSecure(req, env = process.env) {
     if (xf === 'http') return false
   }
   if (req?.socket?.encrypted) return true
+  const peer = req?.socket?.remoteAddress
+  if (peer && !isLoopbackAddress(peer)) return true
   return false
 }
 
@@ -622,6 +624,39 @@ export function panelSessionCookieOptions(req, allowedOrigins, env = process.env
     secure = true
   }
   return { sameSite, secure }
+}
+
+function originMatchesRequestHost(origin, req) {
+  let parsed
+  try {
+    parsed = new URL(origin)
+  } catch {
+    return false
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false
+  const host = requestHostname(req).toLowerCase()
+  return !!host && parsed.hostname.toLowerCase() === host
+}
+
+/**
+ * Cookie-authenticated writes must come from this host or an allowlisted panel origin.
+ * A cross-site form does not send a Bearer token, but it does send SameSite=None cookies.
+ * Requests with no cookie (API key, login) are unchanged.
+ */
+export function panelCookieWriteAllowed(req, allowedOrigins) {
+  const method = String(req?.method || 'GET').toUpperCase()
+  if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return true
+  const cookie = String(req?.headers?.cookie || '')
+  if (!/kin_panel_token=|kin_console_token=/.test(cookie)) return true
+  const fetchSite = String(req?.headers?.['sec-fetch-site'] || '')
+    .trim()
+    .toLowerCase()
+  if (fetchSite === 'cross-site') return false
+  const origin = String(req?.headers?.origin || '').trim()
+  if (!origin) return true
+  if (originMatchesRequestHost(origin, req)) return true
+  const allowed = allowedOrigins instanceof Set ? allowedOrigins : new Set(allowedOrigins || [])
+  return allowed.has(origin)
 }
 
 /** Warn once at startup when a TLS proxy would otherwise leave the cookie without Secure. */
