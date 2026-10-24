@@ -60,7 +60,7 @@ import { resolveInferenceBackend, runApiInference } from '../pool/api-protocol.m
 import { classifyClaudeRequestPurpose, prepareClassifierBody, classifierRequestSummary } from './request-purpose.mjs'
 import { summarizeBody, redactHeaders, presentedApiKeyForLog } from '../admin/request-log.mjs'
 import { reasoningEffortOf, sessionIdForLog } from './log-fields.mjs'
-import { ownerScopeFromRequest } from '../admin/resource-owner.mjs'
+import { normalizeOwnerId, ownerScopeFromRequest } from '../admin/resource-owner.mjs'
 import { keyScopeFromRequest, vmPoolDenial } from '../admin/key-scope.mjs'
 import {
   resolveInferenceEngine,
@@ -409,6 +409,7 @@ export function createHandleProtocol(deps) {
       devices: deviceRepo(),
       requestId,
       account,
+      owner: refusalOwnerFromReq(req),
     })
     if (!decision || decision.action !== 'block') {
       if (decision?.intercept) logBag.intercept = decision.intercept
@@ -463,10 +464,19 @@ export function createHandleProtocol(deps) {
     }
   }
 
-  function banRefusalDevice(deviceId, { requestId, fingerprint, reason }) {
+  function refusalOwnerFromReq(req) {
+    try {
+      const scope = ownerScopeFromRequest(req, apiKeyStore?.users)
+      return scope?.type === 'user' ? normalizeOwnerId(scope.userId) || '' : ''
+    } catch {
+      return ''
+    }
+  }
+
+  function banRefusalDevice(deviceId, { requestId, fingerprint, reason, ownerUserId = '' }) {
     if (!deviceId) return
     try {
-      deviceRepo()?.block?.({ deviceId, requestId, fingerprint, reason })
+      deviceRepo()?.block?.({ deviceId, requestId, fingerprint, reason, ownerUserId })
     } catch {
       /* the prompt block still stands */
     }
@@ -481,7 +491,7 @@ export function createHandleProtocol(deps) {
     }
   }
 
-  function rememberRefusal({ inbound, body, headers, result, logBag, requestId }) {
+  function rememberRefusal({ inbound, body, headers, result, logBag, requestId, ownerUserId = '' }) {
     if (!refusalEnabled()) return
     const contentRefusal = isUpstreamRefusal(result, logBag)
     const timed = result?.policy?.rememberRefusal === true
@@ -499,6 +509,7 @@ export function createHandleProtocol(deps) {
         preview: refusalPreview(body, inbound),
         expiresAt: contentRefusal || ttl <= 0 ? null : new Date(Date.now() + ttl).toISOString(),
         signature: refusalPromptSignature(inbound, body),
+        ownerUserId,
       })
     } catch {
       return
@@ -508,6 +519,7 @@ export function createHandleProtocol(deps) {
       requestId,
       fingerprint,
       reason: 'refusal_guard',
+      ownerUserId,
     })
   }
 
@@ -1770,7 +1782,15 @@ export function createHandleProtocol(deps) {
       logBag.error_code = logBag.error_code || 'content_filter_refusal'
       logBag.error_message = logBag.error_message || 'upstream stop_reason=refusal'
     }
-    rememberRefusal({ inbound, body: ctx.body, headers: req.headers, result, logBag, requestId: logCtx.request_id })
+    rememberRefusal({
+      inbound,
+      body: ctx.body,
+      headers: req.headers,
+      result,
+      logBag,
+      requestId: logCtx.request_id,
+      ownerUserId: refusalOwnerFromReq(req),
+    })
 
     if (result?.accountId) {
       try {
@@ -1838,7 +1858,15 @@ export function createHandleProtocol(deps) {
           res.write(buildAnthropicSseError(mapped.body?.error || {}))
         }
       }
-      rememberRefusal({ inbound, body: ctx.body, headers: req.headers, result, logBag, requestId: logCtx.request_id })
+      rememberRefusal({
+        inbound,
+        body: ctx.body,
+        headers: req.headers,
+        result,
+        logBag,
+        requestId: logCtx.request_id,
+        ownerUserId: refusalOwnerFromReq(req),
+      })
       return res.end()
     }
 

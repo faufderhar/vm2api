@@ -5,11 +5,13 @@ import os from 'node:os'
 import path from 'node:path'
 import { createDatabase } from '../../src/lib/db/database.mjs'
 import { RefusalGuardsRepo } from '../../src/lib/db/repos/refusal-guards-repo.mjs'
+import { RefusalDeviceBlocksRepo } from '../../src/lib/db/repos/refusal-device-blocks-repo.mjs'
 import {
   REFUSAL_GUARD_MESSAGE,
   REFUSAL_GUARD_SETTING,
   isRefusalGuardEnabled,
   isUpstreamRefusal,
+  matchStoredRefusal,
   refusalFingerprint,
   refusalGuardError,
 } from '../../src/lib/core/refusal-guard.mjs'
@@ -185,6 +187,34 @@ test('list remove and clear', () => {
     assert.equal(repo.count(), 1)
     assert.equal(repo.clear(), 1)
     assert.equal(repo.count(), 0)
+  } finally {
+    db.close()
+  }
+})
+
+test('refusal fingerprints and device bans do not cross owners', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-refusal-owner-'))
+  const db = createDatabase({ dataDir: dir })
+  try {
+    const repo = new RefusalGuardsRepo(db)
+    const devices = new RefusalDeviceBlocksRepo(db)
+    const inbound = body('tenant only prompt')
+    const fp = refusalFingerprint(inbound)
+    repo.remember({ fingerprint: fp, model: inbound.model, ownerUserId: 'user-a', preview: 'tenant only prompt' })
+    assert.equal(repo.get(fp, 'user-b'), null)
+    assert.equal(repo.get(fp), null)
+    assert.equal(matchStoredRefusal({ inbound, body: inbound, repo, devices, owner: 'user-b' }), null)
+    assert.equal(matchStoredRefusal({ inbound, body: inbound, repo, devices, owner: 'user-a' }).kind, 'exact')
+    devices.block({ deviceId: 'client-device-1', ownerUserId: 'user-a', reason: 'refusal_guard' })
+    assert.equal(devices.get('client-device-1', 'user-b'), null)
+    assert.equal(devices.get('client-device-1'), null)
+    assert.ok(devices.get('client-device-1', 'user-a'))
+    for (const preview of ['one', 'two', 'three']) {
+      repo.remember({ fingerprint: `${fp}:${preview}`, model: inbound.model, ownerUserId: 'user-a', preview })
+    }
+    assert.equal(repo.prune('user-a', 2), 2)
+    assert.equal(repo.countOwner('user-a'), 2)
+    assert.equal(repo.countOwner('user-b'), 0)
   } finally {
     db.close()
   }

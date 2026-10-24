@@ -63,10 +63,7 @@ function platformLocalEgress(proxy) {
   const scheme = String(proxy?.scheme || proxy?.kind || '')
     .trim()
     .toLowerCase()
-  const host = String(proxy?.host || '')
-    .trim()
-    .toLowerCase()
-  return scheme === 'local' || host === 'local'
+  return scheme === 'local'
 }
 
 function proxyHost(proxy) {

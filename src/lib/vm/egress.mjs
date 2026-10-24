@@ -48,10 +48,8 @@ export function isLocalEgressProxy(proxy) {
   const scheme = String(proxy.scheme || proxy.kind || '')
     .trim()
     .toLowerCase()
-  const host = String(proxy.host || '')
-    .trim()
-    .toLowerCase()
-  return scheme === 'local' || host === 'local'
+  // A SOCKS row whose host happens to be "local" is not the platform route.
+  return scheme === 'local'
 }
 
 /** Remote SOCKS (url or host:port) or local egress. Empty URL is not "unbound". */

@@ -8,6 +8,7 @@ import { openDatabase, closeDatabase, getDb } from '../../src/lib/db/database.mj
 import { SettingsRepo } from '../../src/lib/db/repos/settings-repo.mjs'
 import { VmsRepo } from '../../src/lib/db/repos/vms-repo.mjs'
 import { BackupService, tarAvailable } from '../../src/lib/admin/backup-service.mjs'
+import { sha256File } from '../../src/lib/admin/backup-core.mjs'
 import { ApiKeyStore } from '../../src/lib/admin/api-keys.mjs'
 import { stopVmWatch, initVmDbSync } from '../../src/lib/vm/vm-db-sync.mjs'
 import { setVmWriteHook } from '../../src/lib/vm/vm-file.mjs'
@@ -180,6 +181,48 @@ test('restore rebuilds vm files from DB mirror for db-only path', async () => {
   assert.equal(row.access_token, null)
   assert.equal(row.vm.claude.has_access, true)
   assert.equal(row.vm.claude.access_token, undefined)
+})
+
+test('a corrupt snapshot is rejected before the live database is replaced', async () => {
+  seedVm()
+  new SettingsRepo(getDb()).set('marker', 'live')
+  const rec = await svc.createBackup({ kind: 'manual' })
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-bak-bad-'))
+  try {
+    const extracted = spawnSync('tar', ['-xzf', rec.file_path, '-C', tmp], { stdio: 'pipe' })
+    assert.equal(extracted.status, 0, String(extracted.stderr || ''))
+    const dbFile = path.join(tmp, 'db', 'kin.db')
+    fs.writeFileSync(dbFile, 'not a sqlite database')
+    const manifestPath = path.join(tmp, 'manifest.json')
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+    manifest.sha256s['db/kin.db'] = sha256File(dbFile)
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest))
+    const rebuilt = path.join(tmp, 'rebuilt.tar.gz')
+    const packed = spawnSync('tar', ['-czf', rebuilt, '-C', tmp, 'manifest.json', 'db', 'vms', 'config'], {
+      stdio: 'pipe',
+    })
+    assert.equal(packed.status, 0, String(packed.stderr || ''))
+    fs.copyFileSync(rebuilt, rec.file_path)
+    getDb()
+      .prepare('UPDATE backup_records SET sha256 = ?, size_bytes = ? WHERE id = ?')
+      .run(sha256File(rec.file_path), fs.statSync(rec.file_path).size, rec.id)
+    await assert.rejects(svc.restoreBackup(rec.id), (error) => error?.code === 'backup_corrupt')
+    assert.equal(new SettingsRepo(getDb()).get('marker'), 'live')
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('failed store rebind rolls the live database back', async () => {
+  seedVm()
+  const rec = await svc.createBackup({ kind: 'manual' })
+  new SettingsRepo(getDb()).set('marker', 'after')
+  svc.onRestored(() => {
+    throw new Error('store rebind failed')
+  })
+  await assert.rejects(svc.restoreBackup(rec.id), /store rebind failed/)
+  assert.equal(svc.isRestoring, false)
+  assert.equal(new SettingsRepo(getDb()).get('marker'), 'after')
 })
 
 test('sha256 tamper detection blocks restore', async () => {

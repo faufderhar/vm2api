@@ -61,17 +61,24 @@ function hardRulesFor(inbound, body, jev, distillOn) {
   })
 }
 
+function ownerUserIdOf(owner) {
+  if (owner && typeof owner === 'object') {
+    return owner.type === 'user' ? String(owner.userId || '').trim() : ''
+  }
+  return String(owner || '').trim()
+}
+
 function similarityRatio(value) {
   const n = Number(value)
   if (!Number.isFinite(n) || n <= 0) return 0.9
   return n > 1 ? n / 100 : n
 }
 
-export function commitProtocolBlock(decision, { repo, devices, policy, requestId } = {}) {
+export function commitProtocolBlock(decision, { repo, devices, policy, requestId, owner = '' } = {}) {
   if (!decision || decision.action !== 'block') return
   if (decision.kind === 'device') {
     try {
-      devices?.hit?.(decision.deviceId)
+      devices?.hit?.(decision.deviceId, owner)
     } catch {
       /* counter is best-effort */
     }
@@ -79,7 +86,7 @@ export function commitProtocolBlock(decision, { repo, devices, policy, requestId
   }
   if ((decision.kind === 'exact' || decision.kind === 'similar') && decision.fingerprint) {
     try {
-      repo?.hit?.(decision.fingerprint)
+      repo?.hit?.(decision.fingerprint, owner)
     } catch {
       /* counter is best-effort */
     }
@@ -94,6 +101,7 @@ export function commitProtocolBlock(decision, { repo, devices, policy, requestId
         preview: decision.preview || null,
         expiresAt: null,
         signature: decision.signature || null,
+        ownerUserId: owner,
       })
     } catch {
       /* the response still must not hop */
@@ -106,6 +114,7 @@ export function commitProtocolBlock(decision, { repo, devices, policy, requestId
       requestId: requestId || null,
       fingerprint: decision.fingerprint || null,
       reason: decision.reason || decision.kind,
+      ownerUserId: owner,
     })
   } catch {
     /* the prompt block still stands */
@@ -137,6 +146,7 @@ export async function evaluateProtocolIntercept({
   requestId,
   account = null,
   fetchImpl,
+  owner = '',
 } = {}) {
   // GPT / Codex skips every layer unless the panel opts it in. Once a scope
   // is set, the slot decides GPT: a scope with no GPT pair and no named
@@ -254,6 +264,7 @@ export async function evaluateProtocolIntercept({
       similarityEnabled: policy.similarity_enabled,
       similarity: similarityRatio(policy.similarity),
       deviceBlockEnabled: policy.device_block_enabled,
+      owner: ownerUserIdOf(owner),
     })
     // Our own Jev/regex block used to be stored here and then blocked every retry.
     if (match && match.kind !== 'device' && isPolicyBlockMemory(match.row?.error_message)) match = null

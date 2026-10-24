@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- 备份恢复先把新库复制到旁边并做完整性检查，再原子替换；任何一步失败都会回到替换前的库并重新接上数据访问。租户槽位开机（含看门狗拉起）只绑定该租户自己的代理，不会再分到平台 SOCKS 或本机直连。导入时拒绝 host 为 `local` 的代理行（不区分大小写），本机直连只认 `px-local*` 或 scheme `local`。拒答指纹和设备封禁按属主分开，客户端自报的设备号不能封到别人的租户；指纹库会过期并丢掉超出上限的旧记录。反代后面必须设置 `TRUST_PROXY=1`，否则登录限流会变成全站一个计数器。（#PR）
 - 槽位刷新不再把 worker 起不来、输出无效、凭证拉不回这类瞬时失败记成永久 `refresh_error`。已经记下的非致命错误会按退避重试；`invalid_grant` 和吊销仍不会自动回到号池。槽内 401 触发的强制刷新会把 `force` 传到 worker。刷新请求已经换到新的 refresh token 时，即使调用方取消也会落盘。控制面写 `credentials.json` 时会拿和 worker 相同的 `credentials.json.lock`。（#PR）
 - API 直连的流式响应会累计 `message_start` 和 `message_delta` 里的用量。流被截断、上游中途断开或客户端取消时，按已经产生的 token 计费，日志 `final_state` 记为 `incomplete` 或 `cancelled`，不再变成一条没有用量的成功记录；已经发给客户端的流会补一条 error 事件。Claude 槽和 Codex 槽在客户端取消后同样保留已流出的用量，计入密钥费用和账号额度。（#PR）
 - 通知邮件：服务器不在 EHLO 里提供 STARTTLS 时，配置了用户名的发信直接失败（`smtp_starttls_unavailable`），不再把 SMTP 密码明文发出（STARTTLS 可能被中间人剥掉）。端口 465 隐式 TLS 和不需要登录的发信不受影响。正文按 RFC 5321 做点转义并统一 CRLF，正文里单独一个 `.` 的行不会再提前结束邮件。
