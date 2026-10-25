@@ -189,6 +189,12 @@ export function isUnsafeProxyHost(proxy) {
     .trim()
     .toLowerCase()
     .replace(/\.+$/, '')
+  // An IPv6 zone id (`fe80::1%eth0`, `%25` URL-encoded) names a local interface:
+  // never a proxy. The normalizer drops such a host to '' (so the dial fails
+  // today), but the policy must say so itself rather than lean on that (L-10).
+  if (String(proxy?.host || '').includes('%') || /^[a-z0-9+.-]+:\/\/[^/]*\[[^\]]*%/i.test(String(proxy?.url || ''))) {
+    return true
+  }
   if (!host) return false
   if (host === 'localhost' || host.endsWith('.localhost')) return !privateProxyAllowed()
   if (
