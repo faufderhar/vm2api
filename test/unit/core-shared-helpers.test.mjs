@@ -83,3 +83,19 @@ test('splitQemuOpts treats ,, as a literal comma', async () => {
   assert.deepEqual(splitQemuOpts(''), [''])
   assert.deepEqual(splitQemuOpts('a,'), ['a', ''])
 })
+
+test('claude PTY session helpers', async () => {
+  const m = await import('../../src/lib/oauth/claude-pty-session.mjs')
+  const url = 'https://claude.com/cai/oauth/authorize?code=true&state=abc'
+  assert.equal(m.extractCaiAuthorizeUrl(`\x1b]8;;${url}\x07link`), url)
+  assert.equal(m.extractCaiAuthorizeUrl(`visit:\r\n ${url.slice(0, 30)}\n${url.slice(30)}\n`), url)
+  assert.equal(m.pidAlive(process.pid), true)
+  assert.equal(m.pidAlive(0), false)
+  let n = 0
+  assert.equal(await m.waitFor(() => ++n >= 2 && 'done', 1000, 5), 'done')
+  assert.equal(await m.waitFor(() => null, 20, 5), null)
+  const view = m.ptySessionView({ session_id: 's', expires_at: 1 }, 'vm1', { alive: true, flavor: 'f', source: 'x' })
+  assert.equal(view.vm_id, 'vm1')
+  assert.equal(view.expired, true)
+  assert.equal(m.codedError('c', 'msg').code, 'c')
+})

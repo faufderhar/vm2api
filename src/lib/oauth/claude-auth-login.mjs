@@ -11,7 +11,6 @@ import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { fileURLToPath } from 'node:url'
 import { containerName, inspectContainer, officialCcUidGid } from '../vm/vm-runtime.mjs'
 import { officialCcHome, officialCcHostCli } from './official-cc-bootstrap.mjs'
 import { execDetached, inspectContainerOrNull } from '../cluster/docker-remote.mjs'
@@ -23,6 +22,15 @@ import { slotHost } from '../vm/slot-host.mjs'
 import { FULL_OAUTH_SCOPE } from './oauth-contract.mjs'
 import { flattenOauthIdentity } from './oauth-identity.mjs'
 import { sleep } from '../core/clock.mjs'
+import {
+  codedError as fail,
+  extractCaiAuthorizeUrl,
+  pidAlive,
+  ptySessionView,
+  readJsonOrNull as readJson,
+  scriptsDir,
+  waitFor,
+} from './claude-pty-session.mjs'
 
 export const AUTH_LOGIN_SESSION_TTL_MS = 30 * 60 * 1000
 export const AUTH_LOGIN_SOURCE = 'claude-auth-login'
@@ -31,48 +39,12 @@ export const AUTH_LOGIN_FLAVOR = 'claude_code'
 const URL_WAIT_MS = 45_000
 const TOKEN_WAIT_MS = 90_000
 
-function fail(code, message) {
-  const err = new Error(message)
-  err.code = code
-  return err
-}
-
-function scriptsDir() {
-  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../scripts')
-}
-
 export function authLoginSessionDir(projectRoot, vmId) {
   return path.join(projectRoot, 'vms', vmId, 'run', 'auth-login')
 }
 
 /** Official `claude auth login` prints the manual CAI URL, not the console authorize page. */
-export function extractAuthLoginUrl(raw = '') {
-  const text = String(raw || '')
-  const osc = text.match(/\x1b\]8;[^;]*;(https:\/\/claude\.com\/cai\/oauth\/authorize\?[^\x07]+)\x07/)
-  if (osc?.[1]) return osc[1].trim()
-  const stripped = text.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').replace(/\r/g, '')
-  const compact = stripped.replace(/\s+/g, '')
-  const m = compact.match(/https:\/\/claude\.com\/cai\/oauth\/authorize\?[A-Za-z0-9_\-.=&%+]+/)
-  return m ? m[0] : ''
-}
-
-function readJson(file) {
-  try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'))
-  } catch {
-    return null
-  }
-}
-
-function pidAlive(pid) {
-  if (!pid) return false
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch {
-    return false
-  }
-}
+export const extractAuthLoginUrl = extractCaiAuthorizeUrl
 
 function readPidFile(file) {
   try {
@@ -89,37 +61,12 @@ export function readAuthLoginSession(projectRoot, vmId) {
   if (!status) return null
   const ptyPid = readPidFile(path.join(dir, 'pty.pid'))
   const alive = !!(ptyPid && pidAlive(ptyPid))
-  const expired = Number(status.expires_at || 0) && Date.now() > Number(status.expires_at)
-  return {
-    session_id: status.session_id || '',
-    vm_id: status.vm_id || vmId,
-    status: status.status || '',
-    auth_url: status.auth_url || '',
-    error: status.error || null,
-    code_fed: !!status.code_fed,
-    created_at: status.created_at || 0,
-    updated_at: status.updated_at || 0,
-    expires_at: status.expires_at || 0,
-    flavor: AUTH_LOGIN_FLAVOR,
-    source: AUTH_LOGIN_SOURCE,
-    alive,
-    expired: !!expired,
-  }
+  return ptySessionView(status, vmId, { alive, flavor: AUTH_LOGIN_FLAVOR, source: AUTH_LOGIN_SOURCE })
 }
 
 export function isPersistentAuthLoginSession(session, { force = false } = {}) {
   if (force || !session) return false
   return !!(session.alive && session.auth_url && !session.expired && session.status !== 'login_ready')
-}
-
-async function waitFor(fn, timeoutMs, intervalMs = 200) {
-  const start = Date.now()
-  while (Date.now() - start < timeoutMs) {
-    const value = fn()
-    if (value) return value
-    await sleep(intervalMs)
-  }
-  return null
 }
 
 /**
