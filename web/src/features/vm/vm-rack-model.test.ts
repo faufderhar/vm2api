@@ -169,6 +169,7 @@ describe('rackTotals', () => {
       window_7d_cost: 5,
       total_cost: 8,
     })
+    // 单台 Grok 第一行是「今日」，机架合计不收它：混排时只合计 Grok 的今日会误导。
     expect(rackTotals([grok]).ledger.map((r) => r.key)).toEqual(['7d', 'total'])
     const mixed = rackTotals([
       grok,
