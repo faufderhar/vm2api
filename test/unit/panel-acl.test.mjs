@@ -214,8 +214,10 @@ test('managed keys cannot bypass admin role checks through models refresh', asyn
   assert.equal(response.body.error.code, 'forbidden')
 })
 
-test('admin models refresh stays delegated to the server route', async () => {
+test('admin models refresh is answered by the panel handler with a single requireAuth (L-7)', async () => {
   let authCalls = 0
+  let refreshCalls = 0
+  const response = {}
   const handlePanel = createPanelHandler({
     cfg: {},
     requireAuth(req) {
@@ -224,14 +226,22 @@ test('admin models refresh stays delegated to the server route', async () => {
       req.panelRole = 'admin'
       return true
     },
-    json() {
-      assert.fail('delegated admin refresh must not respond in the panel handler')
+    fetchWorkerModels: async () => {
+      refreshCalls += 1
+      return { object: 'list', data: [] }
+    },
+    json(_res, status, body) {
+      response.status = status
+      response.body = body
     },
   })
 
   const handled = await handlePanel({ method: 'POST' }, {}, new URL('http://localhost/admin/models/refresh'))
+  assert.notEqual(handled, false)
   assert.equal(authCalls, 1)
-  assert.equal(handled, false)
+  assert.equal(refreshCalls, 1)
+  assert.equal(response.status, 200)
+  assert.deepEqual(response.body, { object: 'list', data: [] })
 })
 
 test('a remote master key is not an admin on /admin', async () => {

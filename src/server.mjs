@@ -1226,11 +1226,6 @@ const server = http.createServer(async (req, res) => {
       const result = await fetchWorkerModels({ groupType: keyScopeFromRequest(req).group_type })
       return json(res, 200, result)
     }
-    if (req.method === 'POST' && p === '/admin/models/refresh') {
-      if (!requireAuth(req, res)) return
-      const result = await fetchWorkerModels()
-      return json(res, 200, result)
-    }
     if (req.method === 'GET' && p === '/v1/usage') {
       return await handleUserUsage(req, res, {
         json,

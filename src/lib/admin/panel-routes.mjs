@@ -1339,7 +1339,11 @@ export function createPanelHandler(ctx) {
         return true
       }
     }
-    if (p === '/admin/models/refresh') return false
+    // Authenticated and admin-checked above: one requireAuth, one rate-limit token (L-7).
+    if (p === '/admin/models/refresh') {
+      if (req.method !== 'POST') return false
+      return json(res, 200, await fetchWorkerModels())
+    }
 
     if (p === '/admin/routing' && req.method === 'GET') {
       if (!requireAuth(req, res)) return
