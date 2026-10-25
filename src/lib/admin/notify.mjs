@@ -7,6 +7,8 @@
 import net from 'node:net'
 import tls from 'node:tls'
 import { CREDENTIAL_REFRESH_FAIL } from '../pool/availability.mjs'
+import { asBool, clampPositiveInt } from '../core/config-values.mjs'
+import { createPeriodicTask } from '../core/periodic-task.mjs'
 
 export const SECRET_KEEP = '__KEEP__'
 export const DEFAULT_NOTIFY = Object.freeze({
@@ -65,21 +67,6 @@ const EVENT_TITLES = {
   test: '账号池汇报',
 }
 
-function asBool(value, fallback) {
-  if (value == null) return fallback
-  if (typeof value === 'boolean') return value
-  const s = String(value).trim().toLowerCase()
-  if (s === 'true' || s === '1' || s === 'yes' || s === 'on') return true
-  if (s === 'false' || s === '0' || s === 'no' || s === 'off') return false
-  return fallback
-}
-
-function clampInt(value, min, max, fallback) {
-  const n = Number(value)
-  if (!Number.isFinite(n) || n <= 0) return fallback
-  return Math.min(max, Math.max(min, Math.round(n)))
-}
-
 function isSecretKeep(value) {
   const s = String(value ?? '').trim()
   return !s || s === SECRET_KEEP || s === '••••' || /^•+$/.test(s)
@@ -104,13 +91,13 @@ export function normalizeNotifyConfig(raw = {}) {
   const tgSrc = src.telegram && typeof src.telegram === 'object' ? src.telegram : {}
   const wecomSrc = src.wecom && typeof src.wecom === 'object' ? src.wecom : {}
   const evSrc = src.events && typeof src.events === 'object' ? src.events : {}
-  const port = clampInt(emailSrc.port, 1, 65535, DEFAULT_NOTIFY.email.port)
+  const port = clampPositiveInt(emailSrc.port, 1, 65535, DEFAULT_NOTIFY.email.port)
   return {
     enabled: asBool(src.enabled, false),
-    interval_sec: clampInt(src.interval_sec, 15, 86400, DEFAULT_NOTIFY.interval_sec),
-    cooldown_sec: clampInt(src.cooldown_sec, 30, 86400, DEFAULT_NOTIFY.cooldown_sec),
-    digest_sec: clampInt(src.digest_sec, 300, 86400, DEFAULT_NOTIFY.digest_sec),
-    min_available: clampInt(src.min_available, 1, 1000, DEFAULT_NOTIFY.min_available),
+    interval_sec: clampPositiveInt(src.interval_sec, 15, 86400, DEFAULT_NOTIFY.interval_sec),
+    cooldown_sec: clampPositiveInt(src.cooldown_sec, 30, 86400, DEFAULT_NOTIFY.cooldown_sec),
+    digest_sec: clampPositiveInt(src.digest_sec, 300, 86400, DEFAULT_NOTIFY.digest_sec),
+    min_available: clampPositiveInt(src.min_available, 1, 1000, DEFAULT_NOTIFY.min_available),
     run_on_start: asBool(src.run_on_start, true),
     console_url:
       String(src.console_url || DEFAULT_NOTIFY.console_url)
@@ -867,7 +854,6 @@ export function createNotifyMonitor(opts = {}) {
   let lastError = null
   let lastRunAt = 0
   let inflight = null
-  let timer = null
   const lastSent = new Map()
   const nowFn = opts.now || (() => Date.now())
 
@@ -943,27 +929,10 @@ export function createNotifyMonitor(opts = {}) {
     return inflight
   }
 
-  const stop = () => {
-    if (timer) {
-      clearInterval(timer)
-      timer = null
-    }
-  }
-
-  const start = ({ immediate = false } = {}) => {
-    stop()
-    if (!config.enabled) return { started: false, reason: 'disabled' }
-    timer = setInterval(() => {
-      runOnce().catch(() => {})
-    }, config.interval_sec * 1000)
-    if (typeof timer.unref === 'function') timer.unref()
-    if (immediate && config.run_on_start) {
-      queueMicrotask(() => {
-        runOnce().catch(() => {})
-      })
-    }
-    return { started: true, interval_sec: config.interval_sec, run_on_start: config.run_on_start }
-  }
+  const { start, stop } = createPeriodicTask(
+    () => runOnce(),
+    () => config,
+  )
 
   const setConfig = (next, { restart = true } = {}) => {
     config = normalizeNotifyConfig(next)

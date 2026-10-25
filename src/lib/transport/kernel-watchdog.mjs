@@ -26,6 +26,7 @@ import { resolveInferenceEngine } from '../vm/slot-engine.mjs'
 import { slotHost } from '../vm/slot-host.mjs'
 import { dockerRequest } from '../cluster/docker-remote.mjs'
 import { clusterManager, vmNodeId } from '../cluster/placement.mjs'
+import { clampPositiveInt } from '../core/config-values.mjs'
 
 /** A failed observation is not evidence of a dead container. Use the slot's own host, including KVM runners. */
 export async function observeWatchdogContainer(
@@ -78,22 +79,21 @@ export const DEFAULT_KERNEL_WATCHDOG = Object.freeze({
 // A missing sidecar costs telemetry, not inference: one docker exec per slot per window is enough.
 const TELEMETRY_HEAL_MS = 10 * 60 * 1000
 
-function clampInt(value, min, max, fallback) {
-  const n = Number(value)
-  if (!Number.isFinite(n) || n <= 0) return fallback
-  return Math.min(max, Math.max(min, Math.round(n)))
-}
-
 export function normalizeKernelWatchdogConfig(raw = {}) {
   const backoff = Array.isArray(raw.restart_backoff_sec)
-    ? raw.restart_backoff_sec.map((sec) => clampInt(sec, 10, 86_400, 0)).filter((sec) => sec > 0)
+    ? raw.restart_backoff_sec.map((sec) => clampPositiveInt(sec, 10, 86_400, 0)).filter((sec) => sec > 0)
     : []
   return {
     enabled: raw.enabled !== false,
-    interval_sec: clampInt(raw.interval_sec, 5, 300, DEFAULT_KERNEL_WATCHDOG.interval_sec),
-    timeout_ms: clampInt(raw.timeout_ms, 3000, 60_000, DEFAULT_KERNEL_WATCHDOG.timeout_ms),
+    interval_sec: clampPositiveInt(raw.interval_sec, 5, 300, DEFAULT_KERNEL_WATCHDOG.interval_sec),
+    timeout_ms: clampPositiveInt(raw.timeout_ms, 3000, 60_000, DEFAULT_KERNEL_WATCHDOG.timeout_ms),
     restart_backoff_sec: backoff.length ? backoff : [...DEFAULT_KERNEL_WATCHDOG.restart_backoff_sec],
-    restart_window_sec: clampInt(raw.restart_window_sec, 60, 86_400, DEFAULT_KERNEL_WATCHDOG.restart_window_sec),
+    restart_window_sec: clampPositiveInt(
+      raw.restart_window_sec,
+      60,
+      86_400,
+      DEFAULT_KERNEL_WATCHDOG.restart_window_sec,
+    ),
   }
 }
 

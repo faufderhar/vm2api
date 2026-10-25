@@ -25,6 +25,7 @@ import {
   waitEgressExit,
   waitPortReleased,
 } from './egress.mjs'
+import { mapPool } from '../core/map-pool.mjs'
 
 const ACTIONS = new Set(['collect', 'reload', 'roll', 'telemetry'])
 
@@ -97,20 +98,6 @@ export async function waitWorkerReady(exec, { timeoutMs = 15000, healthFn = rust
     await sleep(400)
   }
   return { ok: false, error: last?.error || last?.code || 'worker_not_ready', health: last }
-}
-
-async function mapPool(items, concurrency, fn) {
-  const out = new Array(items.length)
-  let cursor = 0
-  const n = Math.max(1, Math.min(Number(concurrency) || 1, items.length || 1))
-  async function worker() {
-    while (cursor < items.length) {
-      const index = cursor++
-      out[index] = await fn(items[index], index)
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(n, items.length) }, () => worker()))
-  return out
 }
 
 export function selectFleetTargets(projectRoot, ids = null) {

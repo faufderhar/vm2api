@@ -9,6 +9,7 @@ import { rustKernelHealth } from '../transport/rust-kernel-client.mjs'
 import { vmJsonPath } from '../vm/execution-context.mjs'
 import { slotExec } from '../vm/slot-runtime.mjs'
 import { CREDENTIAL_REFRESH_FAIL } from '../pool/availability.mjs'
+import { mapPool } from '../core/map-pool.mjs'
 
 export const LIVE_CREDENTIAL_SKEW_MS = 5 * 60 * 1000
 export const LIVE_CREDENTIAL_CACHE_MS = 3000
@@ -18,19 +19,6 @@ let cache = { at: 0, map: null }
 
 export function invalidateLiveCredentialCache() {
   cache = { at: 0, map: null }
-}
-
-function mapPool(items, concurrency, fn) {
-  const out = new Array(items.length)
-  let cursor = 0
-  const n = Math.max(1, Math.min(Number(concurrency) || 1, items.length || 1))
-  async function worker() {
-    while (cursor < items.length) {
-      const index = cursor++
-      out[index] = await fn(items[index], index)
-    }
-  }
-  return Promise.all(Array.from({ length: Math.min(n, items.length || 1) }, () => worker())).then(() => out)
 }
 
 function healthUsable(health) {

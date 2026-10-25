@@ -11,6 +11,8 @@ import { isValidVmId } from '../vm/vm-file.mjs'
 import { activeHoursOf, evaluateActiveHours } from '../pool/active-hours.mjs'
 import { fromClaudeToOpenAIChat, fromClaudeToOpenAICompletions, fromClaudeToResponses } from '../protocol/convert.mjs'
 import { detectInboundPlatform } from '../protocol/platform-detect.mjs'
+import { asBool, clampPositiveInt } from '../core/config-values.mjs'
+import { createPeriodicTask } from '../core/periodic-task.mjs'
 
 export const HEALTH_REAL_HEADER = 'x-kin-health-real'
 export const HEALTH_VIA_CACHE = 'health-cache'
@@ -62,21 +64,6 @@ export const DEFAULT_HEALTH_PROBE = Object.freeze({
     sub2api_account_test: true,
   }),
 })
-
-function clampInt(value, min, max, fallback) {
-  const n = Number(value)
-  if (!Number.isFinite(n) || n <= 0) return fallback
-  return Math.min(max, Math.max(min, Math.round(n)))
-}
-
-function asBool(value, fallback) {
-  if (value == null) return fallback
-  if (typeof value === 'boolean') return value
-  const s = String(value).trim().toLowerCase()
-  if (s === 'true' || s === '1' || s === 'yes' || s === 'on') return true
-  if (s === 'false' || s === '0' || s === 'no' || s === 'off') return false
-  return fallback
-}
 
 function normalizePromptList(input, fallback) {
   const src = Array.isArray(input) ? input : fallback
@@ -152,10 +139,10 @@ export function normalizeHealthProbeConfig(raw = {}) {
   const realSrc = src.real && typeof src.real === 'object' ? src.real : {}
   const matchSrc = src.match && typeof src.match === 'object' ? src.match : {}
   const modeRaw = String(realSrc.outbound_mode || DEFAULT_HEALTH_PROBE.real.outbound_mode).toLowerCase()
-  const ttl = clampInt(src.cache_ttl_sec ?? src.max_stale_sec, 30, 172800, DEFAULT_HEALTH_PROBE.cache_ttl_sec)
+  const ttl = clampPositiveInt(src.cache_ttl_sec ?? src.max_stale_sec, 30, 172800, DEFAULT_HEALTH_PROBE.cache_ttl_sec)
   return {
     enabled: asBool(src.enabled, DEFAULT_HEALTH_PROBE.enabled),
-    interval_sec: clampInt(src.interval_sec, 30, 86400, DEFAULT_HEALTH_PROBE.interval_sec),
+    interval_sec: clampPositiveInt(src.interval_sec, 30, 86400, DEFAULT_HEALTH_PROBE.interval_sec),
     cache_ttl_sec: ttl,
     max_stale_sec: ttl,
     cache_models: normalizeCacheModels(src.cache_models),
@@ -167,15 +154,15 @@ export function normalizeHealthProbeConfig(raw = {}) {
     fail_closed: asBool(src.fail_closed, true),
     run_on_start: asBool(src.run_on_start, true),
     probe_all_slots: asBool(src.probe_all_slots, DEFAULT_HEALTH_PROBE.probe_all_slots),
-    concurrency: clampInt(src.concurrency, 1, 8, DEFAULT_HEALTH_PROBE.concurrency),
+    concurrency: clampPositiveInt(src.concurrency, 1, 8, DEFAULT_HEALTH_PROBE.concurrency),
     real: {
       model: String(realSrc.model || DEFAULT_HEALTH_PROBE.real.model).trim() || DEFAULT_HEALTH_PROBE.real.model,
       prompt:
         String(realSrc.prompt ?? DEFAULT_HEALTH_PROBE.real.prompt)
           .trim()
           .slice(0, 200) || DEFAULT_HEALTH_PROBE.real.prompt,
-      max_tokens: clampInt(realSrc.max_tokens, 1, 128000, DEFAULT_HEALTH_PROBE.real.max_tokens),
-      timeout_ms: clampInt(realSrc.timeout_ms, 10_000, 180_000, DEFAULT_HEALTH_PROBE.real.timeout_ms),
+      max_tokens: clampPositiveInt(realSrc.max_tokens, 1, 128000, DEFAULT_HEALTH_PROBE.real.max_tokens),
+      timeout_ms: clampPositiveInt(realSrc.timeout_ms, 10_000, 180_000, DEFAULT_HEALTH_PROBE.real.timeout_ms),
       outbound_mode: modeRaw === 'unofficial' ? 'unofficial' : 'official',
       vm_ids: normalizeVmIds(realSrc.vm_ids),
       openai_model: String(realSrc.openai_model || '')
@@ -186,8 +173,13 @@ export function normalizeHealthProbeConfig(raw = {}) {
         .slice(0, 120),
     },
     match: {
-      max_tokens: clampInt(matchSrc.max_tokens, 1, 4096, DEFAULT_HEALTH_PROBE.match.max_tokens),
-      max_prompt_chars: clampInt(matchSrc.max_prompt_chars, 1, 256, DEFAULT_HEALTH_PROBE.match.max_prompt_chars),
+      max_tokens: clampPositiveInt(matchSrc.max_tokens, 1, 4096, DEFAULT_HEALTH_PROBE.match.max_tokens),
+      max_prompt_chars: clampPositiveInt(
+        matchSrc.max_prompt_chars,
+        1,
+        256,
+        DEFAULT_HEALTH_PROBE.match.max_prompt_chars,
+      ),
       prompts: normalizePromptList(matchSrc.prompts, DEFAULT_HEALTH_PROBE.match.prompts),
       require_no_system: asBool(matchSrc.require_no_system, true),
       require_no_tools: asBool(matchSrc.require_no_tools, true),
@@ -629,7 +621,6 @@ export function createHealthProbeMonitor(opts = {}) {
   const snapshots = { anthropic: null, openai: null, xai: null }
   let lastRunAt = 0
   let inflight = null
-  let timer = null
   const nowFn = opts.now || (() => Date.now())
 
   const getConfig = () => config
@@ -815,27 +806,10 @@ export function createHealthProbeMonitor(opts = {}) {
     return inflight
   }
 
-  const stop = () => {
-    if (timer) {
-      clearInterval(timer)
-      timer = null
-    }
-  }
-
-  const start = ({ immediate = false } = {}) => {
-    stop()
-    if (!config.enabled) return { started: false, reason: 'disabled' }
-    timer = setInterval(() => {
-      runRealProbe().catch(() => {})
-    }, config.interval_sec * 1000)
-    if (typeof timer.unref === 'function') timer.unref()
-    if (immediate && config.run_on_start) {
-      queueMicrotask(() => {
-        runRealProbe().catch(() => {})
-      })
-    }
-    return { started: true, interval_sec: config.interval_sec, run_on_start: config.run_on_start }
-  }
+  const { start, stop } = createPeriodicTask(
+    () => runRealProbe(),
+    () => config,
+  )
 
   const setConfig = (next, { restart = true } = {}) => {
     config = normalizeHealthProbeConfig(next)
