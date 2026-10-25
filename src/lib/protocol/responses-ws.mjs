@@ -12,6 +12,7 @@ import { WebSocket, WebSocketServer } from 'ws'
 import { computedUpstreamTransport, inferenceWebsocketEnabled } from './codex-route.mjs'
 import { detectInboundPlatform } from './platform-detect.mjs'
 import { DEFAULT_MAX_REQUEST_BYTES, inboundBodyLimit } from '../core/config.mjs'
+import { isLoopbackAddress, requestClientAddress } from '../core/security.mjs'
 
 export const RESPONSES_WS_QUEUE_LIMIT = 32
 export const RESPONSES_WS_REPLAY_MAX_ITEMS = 32
@@ -448,6 +449,13 @@ function writeHttpSocket(socket, status, body) {
   socket.destroy()
 }
 
+function wsLimitFromEnv(name, fallback, env = process.env) {
+  const raw = String(env[name] ?? '').trim()
+  if (!raw) return fallback
+  const n = Number(raw)
+  return Number.isInteger(n) && n >= 0 ? n : fallback
+}
+
 export function createResponsesWsHandler({
   handleProtocol,
   requireAuth,
@@ -455,8 +463,35 @@ export function createResponsesWsHandler({
   getRouting,
   maxBodyBytes = DEFAULT_MAX_REQUEST_BYTES,
   heartbeatMs = 30_000,
+  maxPerIp = wsLimitFromEnv('VM2API_RESPONSES_WS_MAX_PER_IP', 128),
+  maxPerKey = wsLimitFromEnv('VM2API_RESPONSES_WS_MAX_PER_KEY', 64),
+  clientAddress = (req) => requestClientAddress(req),
 } = {}) {
   const wss = new WebSocketServer({ noServer: true, maxPayload: maxBodyBytes })
+  // Open connections per client address and per managed key. Inference is
+  // already bounded by concurrency limits; this bounds idle sockets (L-9).
+  const openByIp = new Map()
+  const openByKey = new Map()
+  const bump = (map, k, d) => {
+    if (!k) return
+    const n = (map.get(k) || 0) + d
+    if (n > 0) map.set(k, n)
+    else map.delete(k)
+  }
+  const keyOf = (req) => (req?.apiKeyRecord?.id ? `key:${req.apiKeyRecord.id}` : '')
+
+  function rejectLimit(socket, scope) {
+    const body = {
+      error: {
+        type: 'rate_limit_error',
+        code: 'websocket_limit',
+        message: `Too many open Responses WebSocket connections for this ${scope}`,
+      },
+    }
+    if (typeof json === 'function') json(handshakeRes(socket), 429, body)
+    else writeHttpSocket(socket, 429, body)
+    return true
+  }
 
   function handshakeRes(socket) {
     return {
@@ -773,11 +808,26 @@ export function createResponsesWsHandler({
     if (!isResponsesWsPath(pathname)) return false
     const routing = typeof getRouting === 'function' ? getRouting() || {} : {}
     if (rejectNewWs(socket, routing)) return true
+    // A loopback peer is a local reverse proxy without TRUST_PROXY: every client
+    // would share its address, so only the per-key cap applies there.
+    const peer = String(clientAddress(req) || '')
+    const ip = peer && !isLoopbackAddress(peer) ? peer : ''
+    if (ip && maxPerIp > 0 && (openByIp.get(ip) || 0) >= maxPerIp) return rejectLimit(socket, 'address')
     const res = handshakeRes(socket)
     if (typeof requireAuth === 'function' && !requireAuth(req, res)) return true
-    wss.handleUpgrade(req, socket, head, (ws) => attach(ws, req))
+    const key = keyOf(req)
+    if (key && maxPerKey > 0 && (openByKey.get(key) || 0) >= maxPerKey) return rejectLimit(socket, 'API key')
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      bump(openByIp, ip, 1)
+      bump(openByKey, key, 1)
+      ws.once('close', () => {
+        bump(openByIp, ip, -1)
+        bump(openByKey, key, -1)
+      })
+      attach(ws, req)
+    })
     return true
   }
 
-  return { handleUpgrade, wss }
+  return { handleUpgrade, wss, openConnections: () => ({ byIp: new Map(openByIp), byKey: new Map(openByKey) }) }
 }
