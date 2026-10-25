@@ -593,8 +593,18 @@ async function attachProxy(projectRoot, id, spec, proxyPool, ownerUserId) {
     bindVmProxy(projectRoot, id, proxyPool.getProxyByIdWithAuth(bound.proxy?.id || proxyId))
     return { ok: true }
   }
-  const ensured = proxyPool.ensureSocks(spec.proxy, { ownerUserId, label: spec.proxy.label })
-  if (!ensured.ok) return fail(ensured.error || 'invalid_proxy', 'SOCKS5 无法写入')
+  const ensured = proxyPool.ensureSocksChecked
+    ? await proxyPool.ensureSocksChecked(spec.proxy, { ownerUserId, label: spec.proxy.label })
+    : proxyPool.ensureSocks(spec.proxy, { ownerUserId, label: spec.proxy.label })
+  if (!ensured.ok) {
+    const message =
+      ensured.error === 'proxy_host_blocked'
+        ? 'SOCKS5 地址解析到了本机或内网'
+        : ensured.error === 'proxy_host_unresolvable'
+          ? 'SOCKS5 域名无法解析'
+          : 'SOCKS5 无法写入'
+    return fail(ensured.error || 'invalid_proxy', message)
+  }
   const bound = proxyPool.bind(ensured.proxy.id, id)
   if (!bound.ok) {
     const message = bound.error === 'proxy_bind_limit' ? 'SOCKS5 绑定数量已满' : '绑定 SOCKS5 失败'

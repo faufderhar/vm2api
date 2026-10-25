@@ -116,7 +116,7 @@ test('tenant proxy import cannot bind a slot it does not own', async (t) => {
   claudeVm(root, 'vm-other', 'u-2')
   const calls = []
   const proxyPool = {
-    importLines(...args) {
+    async importLinesChecked(...args) {
       calls.push(['import', ...args])
       return { items: [{ id: 'px-1' }] }
     },

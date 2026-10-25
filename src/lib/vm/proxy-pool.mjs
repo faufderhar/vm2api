@@ -28,7 +28,7 @@ import {
   validDnsPrimary,
 } from './egress.mjs'
 import { normalizeSocksHost, socksEndpoint, socksProxyUrl, socksProxyFamily } from './socks-address.mjs'
-import { proxyBlockedReason, proxyResolvedBlockReason, resolvedProxyDial } from './proxy-policy.mjs'
+import { proxyBlockedReason, proxyResolvedBlockReason, proxyWriteBlockReason, resolvedProxyDial } from './proxy-policy.mjs'
 import { canRevealClusterNodes, annotatePublicLocalProxy } from './local-proxy-nodes.mjs'
 
 export const MAX_VMS_PER_PROXY = 5
@@ -642,7 +642,59 @@ export class ProxyPool extends EventEmitter {
     return { ok: true, created: true, proxy: this._withAuth(row) }
   }
 
+  /**
+   * ensureSocks() with the write-time DNS check: a name that resolves to a
+   * private, loopback or metadata address (or does not resolve) is refused
+   * before a row is created.
+   */
+  async ensureSocksChecked(fields = {}, opts = {}) {
+    const parsed = parseSocks5Fields(fields)
+    if (!parsed) return { ok: false, error: 'invalid_proxy' }
+    if (!this._findSocksRow(parsed)) {
+      const blocked = await proxyWriteBlockReason(parsed, { lookup: this.dnsLookup })
+      if (blocked) return { ok: false, error: blocked }
+    }
+    return this.ensureSocks(fields, opts)
+  }
+
+  /** importLines() plus the write-time DNS check used by the edit route. */
+  async importLinesChecked(text, extra = {}) {
+    const parsed = this._parseImport(text, extra)
+    const kept = []
+    const skipped = []
+    for (const rec of parsed) {
+      if (!rec || rec.__invalid || !rec.host || !rec.port || String(rec.host).trim().toLowerCase() === 'local') {
+        kept.push(rec)
+        continue
+      }
+      const blocked = await proxyWriteBlockReason(rec, { lookup: this.dnsLookup })
+      if (!blocked) {
+        kept.push(rec)
+        continue
+      }
+      skipped.push({
+        line: socksEndpoint(rec.host, rec.port),
+        reason: blocked,
+        message:
+          blocked === 'proxy_host_unresolvable'
+            ? '代理域名无法解析'
+            : '代理域名解析到了本机、内网、链路本地地址或云主机元数据',
+      })
+    }
+    const result = this.importParsed(kept, extra)
+    const details = [...skipped, ...(result.skip_details || [])]
+    return {
+      ...result,
+      skipped: result.skipped + skipped.length,
+      skip_details: details.slice(0, 20),
+    }
+  }
+
   importLines(text, extra = {}) {
+    return this.importParsed(this._parseImport(text, extra), extra)
+  }
+
+  _parseImport(text, extra = {}) {
     const parsed = []
     for (const line of String(text || '').split(/\r?\n/)) {
       if (!String(line || '').trim()) continue
@@ -656,7 +708,7 @@ export class ProxyPool extends EventEmitter {
     if (extra.host || extra.port) {
       parsed.push(parseSocks5Fields(extra) || { __invalid: `${extra.host || ''}:${extra.port || ''}` })
     }
-    return this.importParsed(parsed, extra)
+    return parsed
   }
 
   importParsed(records = [], extra = {}) {

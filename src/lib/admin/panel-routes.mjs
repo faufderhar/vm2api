@@ -242,7 +242,7 @@ import { raiseDockerSlotMemory } from '../vm/docker-slot-memory.mjs'
 import { RUNTIME_KVM } from '../vm/runtime-kind.mjs'
 import { hostProxyUrlForVm, slotHost } from '../vm/slot-host.mjs'
 import { syncIpv6ProxyEgress } from '../vm/proxy-policy-runtime.mjs'
-import { proxyResolvedBlockReason } from '../vm/proxy-policy.mjs'
+import { proxyResolvedBlockReason, proxyWriteBlockReason } from '../vm/proxy-policy.mjs'
 import { normalizeSocksHost } from '../vm/socks-address.mjs'
 import { writeSlotSeedFiles } from '../vm/slot-seed.mjs'
 import {
@@ -6009,7 +6009,8 @@ export function createPanelHandler(ctx) {
         if (bindVmId && userMissesVmId(req, cfg.paths.project, bindVmId)) {
           return json(res, 404, { ok: false, error: { message: 'vm not found' } })
         }
-        const result = proxyPool.importLines(text, {
+        // Same write-time DNS check as the edit route, before anything is bound.
+        const result = await proxyPool.importLinesChecked(text, {
           fields: body.proxies || body.entries || null,
           host: body.host,
           port: body.port,
@@ -6107,11 +6108,20 @@ export function createPanelHandler(ctx) {
         // A public-looking name can resolve to loopback or metadata. The literal
         // check lives in update(); a new hostname is also looked up here.
         if (typeof patch.host === 'string' && patch.host.trim() && !net.isIP(normalizeSocksHost(patch.host.trim()))) {
-          const blocked = await proxyResolvedBlockReason({ host: patch.host.trim(), port: patch.port || 1080 })
-          if (blocked === 'proxy_host_blocked') {
-            return json(res, 409, {
+          const current = proxyPool.state?.proxies?.find?.((row) => row.id === id)
+          const blocked = await proxyWriteBlockReason(
+            { host: patch.host.trim(), port: patch.port ?? current?.port ?? 1080 },
+            { lookup: proxyPool.dnsLookup },
+          )
+          if (blocked) {
+            const unresolvable = blocked === 'proxy_host_unresolvable'
+            return json(res, unresolvable ? 400 : 409, {
               ok: false,
-              error: { type: 'invalid_request_error', code: blocked, message: blocked },
+              error: {
+                type: 'invalid_request_error',
+                code: blocked,
+                message: unresolvable ? 'proxy host does not resolve' : blocked,
+              },
             })
           }
         }
