@@ -11,6 +11,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fingerprintDir } from './slot-computer.mjs'
 import { isKvmRuntime } from '../vm/runtime-kind.mjs'
+import { splitQemuOpts } from './qemu-opts.mjs'
 
 const MAX_FILE_BYTES = 4096
 
@@ -34,23 +35,6 @@ function readInt(file) {
 
 function dmiOrNull(dmi) {
   return Object.values(dmi).some(Boolean) ? dmi : null
-}
-
-/** Split a QEMU option string on single commas; `,,` is a literal comma. */
-function splitQemuOpts(text) {
-  const parts = []
-  let cur = ''
-  for (let i = 0; i < text.length; i++) {
-    if (text[i] === ',' && text[i + 1] === ',') {
-      cur += ','
-      i++
-    } else if (text[i] === ',') {
-      parts.push(cur)
-      cur = ''
-    } else cur += text[i]
-  }
-  parts.push(cur)
-  return parts
 }
 
 /** DMI from qemu-smbios.args (one argv item per line: `-smbios` then `type=1,…`; `-uuid` then the uuid). */

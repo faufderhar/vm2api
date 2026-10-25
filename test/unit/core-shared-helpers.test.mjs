@@ -76,3 +76,10 @@ test('clock helpers', async () => {
   assert.ok(!Number.isNaN(Date.parse(nowIso())))
   assert.match(nowIso(), /^\d{4}-\d\d-\d\dT.*Z$/)
 })
+
+test('splitQemuOpts treats ,, as a literal comma', async () => {
+  const { splitQemuOpts } = await import('../../src/lib/identity/qemu-opts.mjs')
+  assert.deepEqual(splitQemuOpts('type=1,manufacturer=A,,B,serial=x'), ['type=1', 'manufacturer=A,B', 'serial=x'])
+  assert.deepEqual(splitQemuOpts(''), [''])
+  assert.deepEqual(splitQemuOpts('a,'), ['a', ''])
+})
