@@ -33,6 +33,7 @@ import {
 } from './lib/core/security.mjs'
 import { loadModelPolicy } from './lib/protocol/model-policy.mjs'
 import { guardUpgrade, rejectUpgradeSocket } from './lib/core/upgrade-guard.mjs'
+import { createFaultMonitor } from './lib/core/fault-monitor.mjs'
 import { gatewayModelCatalog } from './lib/protocol/models.mjs'
 import {
   createCredentialRefreshMonitor,
@@ -1360,12 +1361,13 @@ const pub = {
 // Never persist the raw API key. Public snapshot only.
 fs.writeFileSync(path.join(cfg.paths.root, 'config', 'gateway-v2.public.json'), JSON.stringify(pub, null, 2))
 
-process.on('uncaughtException', (e) => console.error('[uncaught]', e))
-process.on('unhandledRejection', (e) => console.error('[unhandled]', e))
+// L-11: rate-limited fault logs and counts; VM2API_EXIT_ON_UNCAUGHT=1 restarts via graceful shutdown.
+const faultMonitor = createFaultMonitor({ onFatal: () => shutdown('uncaughtException', 1) }).install()
+stats.faults = faultMonitor.counts
 
 // Graceful shutdown: stop schedulers/watchers, close the DB (WAL checkpoint).
 let _shuttingDown = false
-function shutdown(signal) {
+function shutdown(signal, exitCode = 0) {
   if (_shuttingDown) return
   _shuttingDown = true
   console.log(`[shutdown] ${signal} — closing`)
@@ -1421,7 +1423,7 @@ function shutdown(signal) {
   try {
     closeDatabase()
   } catch {}
-  process.exit(0)
+  process.exit(exitCode)
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'))
 process.on('SIGINT', () => shutdown('SIGINT'))
