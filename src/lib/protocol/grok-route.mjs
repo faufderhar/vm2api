@@ -46,7 +46,15 @@ export const DEFAULT_GROK_ROUTING = Object.freeze({
     unknown: 'allow',
   },
   quota: normalizeGrokQuotaPolicy(),
+  billing: { background: true, min_interval_sec: 1800 },
 })
+
+/**
+ * Background Grok Build billing reads (grok-refresh-monitor). The floor is 30 minutes on
+ * purpose: the Grok CLI reads billing when someone looks, not around the clock. The panel's
+ * refresh button always forces a read regardless of these values.
+ */
+export const GROK_BILLING_LIMITS = Object.freeze({ min_interval_sec: Object.freeze({ min: 1800, max: 86400 }) })
 
 function asObject(raw) {
   return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : null
@@ -140,6 +148,18 @@ export function isGrokBaseUrl(value) {
   }
 }
 
+function normalizeBilling(raw) {
+  const src = asObject(raw) || {}
+  const { min, max } = GROK_BILLING_LIMITS.min_interval_sec
+  const n = Number(src.min_interval_sec)
+  return {
+    background: src.background !== false,
+    min_interval_sec: Number.isInteger(n)
+      ? Math.min(max, Math.max(min, n))
+      : DEFAULT_GROK_ROUTING.billing.min_interval_sec,
+  }
+}
+
 function normalizeBaseUrl(raw) {
   const value = str(raw).replace(/\/+$/, '')
   return value && isGrokBaseUrl(value) ? value : DEFAULT_GROK_BASE_URL
@@ -163,6 +183,7 @@ export function normalizeGrokRouting(raw = {}) {
     protocols,
     clients,
     quota: normalizeGrokQuotaPolicy(src.quota),
+    billing: normalizeBilling(src.billing),
   }
 }
 
@@ -202,6 +223,37 @@ export function validateGrokRoutingPatch(body = {}) {
       if (item?.mode != null && !modes.includes(item.mode)) {
         throw typedError(`grok.protocols.${key}.mode 只能是 ${modes.join(' / ')}`, 'invalid_grok_protocols')
       }
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(grok, 'clients')) {
+    if (!asObject(grok.clients)) throw typedError('grok.clients 必须是对象', 'invalid_grok_clients')
+    for (const [key, value] of Object.entries(grok.clients)) {
+      if (!Object.prototype.hasOwnProperty.call(DEFAULT_GROK_ROUTING.clients, key)) {
+        throw typedError(`grok.clients.${key} 不支持`, 'invalid_grok_clients')
+      }
+      if (value !== 'allow' && value !== 'reject') {
+        throw typedError(`grok.clients.${key} 只能是 allow / reject`, 'invalid_grok_clients')
+      }
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(grok, 'billing')) {
+    const billing = grok.billing
+    if (!asObject(billing)) throw typedError('grok.billing 必须是对象', 'invalid_grok_billing')
+    if (billing.background != null && typeof billing.background !== 'boolean') {
+      throw typedError('grok.billing.background 必须是布尔', 'invalid_grok_billing')
+    }
+    if (billing.min_interval_sec != null) {
+      const { min, max } = GROK_BILLING_LIMITS.min_interval_sec
+      const n = billing.min_interval_sec
+      if (!Number.isInteger(n) || n < min || n > max) {
+        throw typedError(`grok.billing.min_interval_sec 必须是 ${min}–${max} 的整数（秒）`, 'invalid_grok_billing')
+      }
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(grok, 'oauth') && grok.oauth?.refresh_skew_sec != null) {
+    const skew = grok.oauth.refresh_skew_sec
+    if (!Number.isInteger(skew) || skew < 30 || skew > 3600) {
+      throw typedError('grok.oauth.refresh_skew_sec 必须是 30–3600 的整数（秒）', 'invalid_grok_oauth')
     }
   }
   if (Object.prototype.hasOwnProperty.call(grok, 'quota')) {

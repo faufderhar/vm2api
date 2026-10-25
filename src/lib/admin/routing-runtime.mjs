@@ -558,6 +558,9 @@ export function createRoutingRuntime(ctx) {
       if (body.grok.clients && typeof body.grok.clients === 'object') {
         nextGrok.clients = { ...(routingConfig.grok?.clients || {}), ...body.grok.clients }
       }
+      if (body.grok.billing && typeof body.grok.billing === 'object') {
+        nextGrok.billing = { ...(routingConfig.grok?.billing || {}), ...body.grok.billing }
+      }
       routingConfig.grok = normalizeGrokRouting(nextGrok)
     }
     if (body.vm) {

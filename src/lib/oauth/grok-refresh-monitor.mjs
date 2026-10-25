@@ -2,7 +2,8 @@
  * Grok Build billing for the panel. Claude and Codex monitors do not see these slots.
  * The timer uses the same `usage_probe` interval as Claude usage windows (default
  * 60 seconds); a slot's billing is read again only when its sample is older than
- * GROK_BUILD_USAGE_MIN_STALE_MS or `stale_sec`, whichever is longer.
+ * GROK_BUILD_USAGE_MIN_STALE_MS, `stale_sec` or `grok.billing.min_interval_sec`,
+ * whichever is longest. `grok.billing.background: false` turns the background reads off.
  *
  * Tokens are not refreshed here. The slot kernel refreshes on demand before an
  * upstream call (a billing read included), like the Grok CLI, so an idle account
@@ -12,6 +13,7 @@ import { isGrokVm } from '../vm/vm-kind.mjs'
 import { GROK_BUILD_USAGE_MIN_STALE_MS, queryGrokBuildUsage } from './grok-build-usage.mjs'
 import { grokKernelExit } from './grok-kernel-oauth.mjs'
 import { normalizeUsageProbeConfig } from './usage-probe-monitor.mjs'
+import { grokRoutingOf } from '../protocol/grok-route.mjs'
 
 /** Default check interval. Matches `usage_probe.interval_sec`. */
 export const GROK_REFRESH_INTERVAL_MS = normalizeUsageProbeConfig({}).interval_sec * 1000
@@ -52,7 +54,12 @@ export function createGrokRefreshMonitor({
     if (inflight) return inflight
     inflight = (async () => {
       const routing = typeof getRouting === 'function' ? getRouting() || {} : {}
-      const schedule = timing()
+      const timed = timing()
+      const billing = grokRoutingOf(routing).billing
+      // `grok.billing.background: false` stops the timer's reads; the panel refresh button still works.
+      if (!billing.background) return { ok: true, disabled: true, items: [] }
+      const schedule =
+        timed.staleMs == null ? timed : { ...timed, staleMs: Math.max(timed.staleMs, billing.min_interval_sec * 1000) }
       const vms = (typeof listTargets === 'function' ? listTargets() : []) || []
       const items = []
       for (const vm of vms) {
