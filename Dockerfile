@@ -33,6 +33,9 @@ FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS payload
 WORKDIR /src
 COPY deploy/payload.json deploy/payload.json
 COPY scripts/fetch-payload.mjs scripts/fetch-payload.mjs
+# Forks: payload assets come from VM2API_GITHUB_REPO (sha256 still pinned by payload.json).
+ARG VM2API_GITHUB_REPO=
+ARG VM2API_PAYLOAD_BASE_URL=
 RUN node scripts/fetch-payload.mjs --dest /payload
 
 FROM node:22-bookworm-slim

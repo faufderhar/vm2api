@@ -25,6 +25,11 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
+# An installed fork keeps its repo in .env, so `upgrade` works without
+# `sudo VM2API_GITHUB_REPO=...` (which needs a SETENV sudoers rule).
+if [ -z "${VM2API_GITHUB_REPO:-}" ] && [ -f "${VM2API_DIR:-/opt/vm2api}/.env" ]; then
+  VM2API_GITHUB_REPO="$(grep -E '^VM2API_GITHUB_REPO=' "${VM2API_DIR:-/opt/vm2api}/.env" 2>/dev/null | tail -n1 | cut -d= -f2- | tr -d "\"'[:space:]" || true)"
+fi
 GITHUB_REPO="${VM2API_GITHUB_REPO:-dofastted/vm2api}"
 if ! printf '%s' "$GITHUB_REPO" | grep -Eq '^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$' || printf '%s' "$GITHUB_REPO" | grep -q '\.\.'; then
   echo "VM2API_GITHUB_REPO 必须是 owner/repo 形式: ${GITHUB_REPO}" >&2
@@ -414,6 +419,8 @@ ensure_env() {
   # A fork installed with VM2API_GITHUB_REPO keeps checking and upgrading from that fork.
   if [ "$GITHUB_REPO" != "dofastted/vm2api" ]; then
     env_set VM2API_GITHUB_REPO "$GITHUB_REPO"
+    # Pull the fork's image too, not upstream's image at the fork's tag.
+    env_set_if_empty VM2API_IMAGE "ghcr.io/$(printf '%s' "$GITHUB_REPO" | tr '[:upper:]' '[:lower:]')" || true
   fi
   chmod 600 "$envf" || true
 }

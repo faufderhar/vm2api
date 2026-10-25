@@ -7,6 +7,9 @@ services:
     build:
       context: .
       dockerfile: deploy/Dockerfile.arm64-control
+      args:
+        VM2API_GITHUB_REPO: ${VM2API_GITHUB_REPO:-}
+        VM2API_PAYLOAD_BASE_URL: ${VM2API_PAYLOAD_BASE_URL:-}
     environment:
       HOST: ${VM2API_BIND_HOST:-127.0.0.1}
       DOCKER_DEFAULT_PLATFORM: linux/amd64
