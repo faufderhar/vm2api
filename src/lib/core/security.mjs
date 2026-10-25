@@ -769,3 +769,52 @@ export function publicErrorMessage(e) {
   if (e && typeof e === 'object' && Number.isInteger(e.status)) return e.message || String(e)
   return 'internal server error'
 }
+
+/** Gateway routes a panel session may read on the protocol surface: no upstream call, nothing billed. */
+const PANEL_SESSION_PROTOCOL_READS = new Set(['/v1/meta', '/v1/models', '/v1/usage'])
+const UNVERSIONED_PROTOCOL_ROUTES = new Set([
+  '/messages',
+  '/messages/count_tokens',
+  '/chat/completions',
+  '/completions',
+  '/responses',
+  '/alpha/search',
+  '/images/generations',
+  '/images/edits',
+])
+
+/** True for the inference surface (/v1/* and its unversioned aliases), on a normalized pathname. */
+export function isProtocolPath(pathname) {
+  const p = String(pathname || '')
+  return p === '/v1' || p.startsWith('/v1/') || UNVERSIONED_PROTOCOL_ROUTES.has(p)
+}
+
+/**
+ * Panel sessions are not API credentials. Inference made with one would carry
+ * no managed key, so it would skip per-key quota, rate plans and billing, and
+ * an admin/super session would draw on the whole platform pool. Only the
+ * read-only gateway routes (meta, model list, usage) accept a session.
+ *
+ * VM2API_PANEL_SESSION_INFERENCE=admin re-allows inference for admin sessions
+ * only (they can already mint keys and use the master key). Tenants and super
+ * are never allowed: they must use a managed API key, which is metered.
+ *
+ * @returns {null | {code: string, message: string}}
+ */
+export function panelSessionProtocolBlock({ pathname, method = 'GET', role = '' } = {}, env = process.env) {
+  const p = String(pathname || '')
+  if (!isProtocolPath(p)) return null
+  const m = String(method || 'GET').toUpperCase()
+  if ((m === 'GET' || m === 'HEAD') && PANEL_SESSION_PROTOCOL_READS.has(p)) return null
+  const r = String(role || '')
+    .trim()
+    .toLowerCase()
+  const optIn = String(env?.VM2API_PANEL_SESSION_INFERENCE || '')
+    .trim()
+    .toLowerCase()
+  if (r === 'admin' && optIn === 'admin') return null
+  return {
+    code: 'panel_session_not_api_key',
+    message: 'Panel sessions cannot call inference endpoints. Create an API key in the panel and send it instead.',
+  }
+}

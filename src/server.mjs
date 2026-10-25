@@ -19,6 +19,7 @@ import {
   extractPanelToken,
   panelTokenFromCookie,
   panelCookieUseAllowed,
+  panelSessionProtocolBlock,
   attachPanelAuth,
   getPanelAdmin,
   isLoopbackRequest,
@@ -745,6 +746,11 @@ function rejectAuth(req, res, error) {
   return false
 }
 
+/** Normalized pathname, the same one the router dispatches on. */
+function requestPathname(req) {
+  return parseRequestUrl(req)?.pathname || '/'
+}
+
 function isPanelPath(req) {
   const raw = String(req?.url || '/')
   const pathname = raw.split('?')[0]
@@ -808,6 +814,24 @@ function requireAuth(req, res) {
           code: ErrorCode.GATEWAY_RATE_LIMIT,
           message: 'Gateway rate limit exceeded. Retry later.',
           status: 429,
+        }),
+      )
+    }
+    // A session is not an API key: inference with it would skip quota and billing.
+    const sessionBlock = panelSessionProtocolBlock({
+      pathname: requestPathname(req),
+      method: req.method,
+      role: access.role,
+    })
+    if (sessionBlock) {
+      return rejectAuth(
+        req,
+        res,
+        makeError({
+          type: ErrorType.PERMISSION,
+          code: sessionBlock.code,
+          message: sessionBlock.message,
+          status: 403,
         }),
       )
     }

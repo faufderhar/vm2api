@@ -91,7 +91,22 @@ test('a panel cookie cannot drive inference or the Responses WebSocket cross-sit
 
     // Cross-site WebSocket hijacking is refused; same-origin upgrade still authenticates.
     assert.equal(await wsHandshake(gw, { Cookie: cookie, Origin: 'https://evil.example' }), 403)
-    assert.equal(await wsHandshake(gw, { Cookie: cookie, Origin: gw.baseUrl }), 101)
+    // M-2: a panel session is not an API key — even same-origin it cannot open
+    // the metered Responses WebSocket or POST inference (no quota/billing).
+    assert.equal(await wsHandshake(gw, { Cookie: cookie, Origin: gw.baseUrl }), 403)
+    const token = cookie.split('=')[1]
+    for (const headers of [{ cookie }, { 'x-panel-token': token }, { authorization: `Bearer ${token}` }]) {
+      const r = await fetch(gw.baseUrl + '/v1/messages', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify({ model: 'claude-sonnet-4-5', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] }),
+      })
+      const text = await r.text()
+      assert.equal(r.status, 403, text)
+      assert.match(text, /panel_session_not_api_key/)
+    }
+    const models = await get(gw, '/v1/models', { cookie })
+    assert.equal(models.status, 200, models.body)
     assert.equal(await wsHandshake(gw, { Authorization: `Bearer ${gw.apiKey}`, Origin: 'https://evil.example' }), 101)
   } finally {
     await gw.stop()
