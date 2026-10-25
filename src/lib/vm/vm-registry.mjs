@@ -81,7 +81,10 @@ export function listVms(projectRoot, routing = null) {
 }
 
 export function getVm(projectRoot, id) {
-  return readJsonCached(path.join(projectRoot, 'vms', `${id}.json`))
+  // Route ids arrive URL-decoded in some handlers: never let one climb out of vms/.
+  const s = String(id ?? '')
+  if (!s || s === '.' || s === '..' || s.includes('/') || s.includes('\\') || s.includes('\0')) return null
+  return readJsonCached(path.join(projectRoot, 'vms', `${s}.json`))
 }
 
 function credentialSummary(kind, vm, codex, grok) {
