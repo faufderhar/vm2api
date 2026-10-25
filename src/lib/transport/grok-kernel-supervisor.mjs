@@ -20,6 +20,7 @@ import { assertProxyAllowed } from '../vm/proxy-policy.mjs'
 import { writeJsonIfChanged } from '../vm/vm-file.mjs'
 import { isNativeNodeVm } from '../cluster/placement.mjs'
 import { grokPlatformInfo } from '../protocol/grok-client.mjs'
+import { existingBin, pidAlive } from '../core/proc.mjs'
 
 /** Kernel features Node relies on: 2 = /internal/oauth. An older running kernel is replaced. */
 export const GROK_KERNEL_API = 2
@@ -32,17 +33,6 @@ const roots = new Map()
 
 function kernelEnv(env = process.env) {
   return Object.fromEntries(Object.entries(env).filter(([key]) => !/^(https?|all|no)_proxy$/i.test(key)))
-}
-
-function existingBin(candidate) {
-  const bin = String(candidate || '').trim()
-  if (!bin) return ''
-  try {
-    fs.accessSync(bin, fs.constants.X_OK)
-    return bin
-  } catch {
-    return ''
-  }
 }
 
 export function grokKernelBinPath() {
@@ -227,15 +217,6 @@ function orphanKernelPid(paths) {
     return isKernel && cmdline.includes(paths.configPath) ? pid : 0
   } catch {
     return 0
-  }
-}
-
-function pidAlive(pid) {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch {
-    return false
   }
 }
 

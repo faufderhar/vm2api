@@ -19,3 +19,10 @@ export function clampPositiveInt(value, min, max, fallback) {
   if (!Number.isFinite(n) || n <= 0) return fallback
   return Math.min(max, Math.max(min, Math.round(n)))
 }
+
+/** parseInt, clamped to [lo, hi]; non-numbers keep the fallback (zero and negatives clamp). */
+export function clampParsedInt(v, lo, hi, dflt) {
+  const n = Number.parseInt(v, 10)
+  if (!Number.isFinite(n)) return dflt
+  return Math.min(hi, Math.max(lo, n))
+}

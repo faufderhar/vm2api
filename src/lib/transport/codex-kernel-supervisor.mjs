@@ -13,6 +13,7 @@ import { maxRequestBytes } from '../core/config.mjs'
 import { openAIRuntimeSignals } from '../pool/openai-account-runtime.mjs'
 import { codexKernelHealth, codexKernelPaths } from './codex-kernel-client.mjs'
 import { computedUpstreamTransport, normalizeCodexRouting } from '../protocol/codex-route.mjs'
+import { existingBin } from '../core/proc.mjs'
 
 const starts = new Map()
 
@@ -25,17 +26,6 @@ export function kernelEnv(env = process.env) {
   return Object.fromEntries(
     Object.entries(env).filter(([key]) => !/^(https?|all|no)_proxy$/i.test(key) && !GATEWAY_ONLY_ENV.has(key)),
   )
-}
-
-function existingBin(candidate) {
-  const bin = String(candidate || '').trim()
-  if (!bin) return ''
-  try {
-    fs.accessSync(bin, fs.constants.X_OK)
-    return bin
-  } catch {
-    return ''
-  }
 }
 
 export function codexKernelBinPath() {

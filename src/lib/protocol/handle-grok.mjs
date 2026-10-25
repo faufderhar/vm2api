@@ -42,6 +42,7 @@ import { applyOpenaiWashLog } from './openai-wash.mjs'
 import { redactHeaders } from '../admin/request-log.mjs'
 import { sessionIdForLog } from './log-fields.mjs'
 import { grokCliRequestHeaders, grokCliUserAgent, grokRequestId, resolveGrokOutboundSession } from './grok-client.mjs'
+import { clientGoneSignal } from './client-gone.mjs'
 
 export const GROK_VIA = 'grok-kernel'
 
@@ -69,20 +70,6 @@ function waitTimeoutMs(routing) {
 function idleTimeoutMs(routing) {
   const n = Number(routing?.failover?.stream_idle_timeout_ms)
   return Number.isFinite(n) && n >= 5000 ? n : DEFAULT_IDLE_TIMEOUT_MS
-}
-
-function clientGoneSignal(req, res) {
-  const controller = new AbortController()
-  const onGone = () => controller.abort()
-  req?.once?.('aborted', onGone)
-  res?.once?.('close', onGone)
-  return {
-    signal: controller.signal,
-    settle() {
-      req?.off?.('aborted', onGone)
-      res?.off?.('close', onGone)
-    },
-  }
 }
 
 function pinnedVmId(req) {

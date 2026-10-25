@@ -27,6 +27,7 @@ import path from 'node:path'
 import { ensureRemoteOfficialCredentialLink, reconcileSlotCredentials } from '../cluster/remote-slot-files.mjs'
 import { officialCcUidGid } from './vm-runtime.mjs'
 import { startWsHeartbeat, wsHeartbeatMs } from '../core/ws-heartbeat.mjs'
+import { clampParsedInt as clampInt } from '../core/config-values.mjs'
 
 const SHELL_RE = /^\/api\/panel\/vms\/([^/]+)\/shell$/
 const TICKET_TTL_MS = 30_000
@@ -387,12 +388,6 @@ export function panelShellLaunch(cliBin) {
 // Closing the hijacked stream does not end a TTY exec: bash would linger in the
 // slot. Every process of the session inherits the marker, so HUP them by it.
 const REAP_SCRIPT = `for d in /proc/[0-9]*; do tr '\\0' '\\n' < "$d/environ" 2>/dev/null | grep -qx "${SESSION_ENV}=$1" || continue; cmd=$(tr '\\0' ' ' < "$d/cmdline" 2>/dev/null || true); case "$cmd" in *cli-node*) kill -KILL "\${d#/proc/}" 2>/dev/null || true ;; *) kill -HUP "\${d#/proc/}" 2>/dev/null || true ;; esac; done; exit 0`
-
-function clampInt(v, lo, hi, dflt) {
-  const n = Number.parseInt(v, 10)
-  if (!Number.isFinite(n)) return dflt
-  return Math.min(hi, Math.max(lo, n))
-}
 
 function refuse(status, code, message) {
   return { ok: false, status, error: { code, message } }

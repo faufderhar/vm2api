@@ -7,6 +7,7 @@ import { atomicWriteJson, readJsonCached } from './vm-file.mjs'
 import { isCodexVm } from '../protocol/codex-route.mjs'
 import { buildCodexUsageView, extraToCodexSnapshot, hasSpendableCodexCredits } from '../protocol/codex-usage.mjs'
 import { openaiClaimsFromIdToken, openaiIdentityFromOauthTokens } from '../oauth/openai-jwt.mjs'
+import { firstString } from '../oauth/openai-jwt.mjs'
 
 export { isCodexVm }
 
@@ -31,14 +32,6 @@ export function writeCodexAccounts(projectRoot, vmId, accounts) {
     { accounts: Array.isArray(accounts) ? accounts.map(enrichCodexAccountIdentity) : [] },
     { mode: 0o600 },
   )
-}
-
-function firstString(...values) {
-  for (const value of values) {
-    const text = String(value || '').trim()
-    if (text) return text
-  }
-  return ''
 }
 
 function looksLikeClaudeSecret(text) {

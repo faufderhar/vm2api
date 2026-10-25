@@ -604,7 +604,7 @@ export function shouldReplaceSlotContainer({ existing, recreate = false, network
   return !!(wrongNet || wrongImg || wrongRuntime)
 }
 
-function kvmMachineFields(vm) {
+export function kvmMachineFields(vm) {
   const m = vm.machine && typeof vm.machine === 'object' ? vm.machine : {}
   const smbios = m.smbios && typeof m.smbios === 'object' ? m.smbios : {}
   const d = VM_CONFIG_DEFAULTS

@@ -19,6 +19,7 @@ import {
 import { preflightNode, slotImageJob, startSlotImageBuild } from './placement.mjs'
 import { ClusterError } from './ssh-link.mjs'
 import { runtimeKind } from '../vm/runtime-kind.mjs'
+import { clampParsedInt as clampInt } from '../core/config-values.mjs'
 
 function kernelOf(value) {
   const kernel = String(value || '').trim()
@@ -30,12 +31,6 @@ const PREFIX = '/api/panel/cluster'
 const NODE_RE = /^\/api\/panel\/cluster\/nodes\/([a-z0-9-]{1,64})(\/.*)?$/
 const SHELL_RE = /^\/api\/panel\/cluster\/nodes\/([a-z0-9-]{1,64})\/shell$/
 const MAX_BODY = 64 * 1024
-
-function clampInt(v, lo, hi, dflt) {
-  const n = Number.parseInt(v, 10)
-  if (!Number.isFinite(n)) return dflt
-  return Math.min(hi, Math.max(lo, n))
-}
 
 export function createClusterRoutes({ manager, json, readBody, ok, stepUp, heartbeatMs = wsHeartbeatMs() }) {
   function fail(res, err) {

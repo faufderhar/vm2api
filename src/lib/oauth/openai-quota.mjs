@@ -17,6 +17,8 @@ import {
 } from '../protocol/codex-usage.mjs'
 import { CODEX_OAUTH_ORIGINATOR, makeProxyFetch, refreshCodexAccessToken } from '../protocol/codex-models.mjs'
 import { openaiIdentityFromJwt } from './openai-jwt.mjs'
+import { firstString } from './openai-jwt.mjs'
+import { num } from '../protocol/codex-usage.mjs'
 
 export const CHATGPT_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
 export const CHATGPT_RESET_CREDITS_URL = 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits'
@@ -24,23 +26,9 @@ export const CHATGPT_RESET_CONSUME_URL = `${CHATGPT_RESET_CREDITS_URL}/consume`
 export const OPENAI_QUOTA_TIMEOUT_MS = 20_000
 const CODEX_BETA = 'codex-1'
 
-function num(value) {
-  if (value == null || value === '') return null
-  const n = Number(value)
-  return Number.isFinite(n) ? n : null
-}
-
 function int(value) {
   const n = num(value)
   return n == null ? null : Math.trunc(n)
-}
-
-function firstString(...values) {
-  for (const value of values) {
-    const text = String(value || '').trim()
-    if (text) return text
-  }
-  return ''
 }
 
 function accountIdFromToken(accessToken) {

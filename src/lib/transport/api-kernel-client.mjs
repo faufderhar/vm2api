@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import crypto from 'node:crypto'
+import { pidAlive } from '../core/proc.mjs'
 
 const MAX_BODY = 64 * 1024 * 1024
 
@@ -42,15 +43,6 @@ function readPid(pidPath) {
     return Number.isInteger(pid) && pid > 1 && pid !== process.pid ? pid : 0
   } catch {
     return 0
-  }
-}
-
-function pidAlive(pid) {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch {
-    return false
   }
 }
 

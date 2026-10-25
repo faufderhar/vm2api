@@ -51,6 +51,9 @@ import { atomicWriteJson, listVmRecordFiles } from '../vm/vm-file.mjs'
 import { CONTAINER_CLI_NODE_BIN, normalizeOfficialCcInference, resolveOfficialCcInference } from '../vm/slot-engine.mjs'
 import { getVm } from '../vm/vm-registry.mjs'
 import { slotHost } from '../vm/slot-host.mjs'
+import { sameMemoryLimit } from '../vm/docker-slot-memory.mjs'
+
+export { sameMemoryLimit }
 
 export { officialCcUidGid } from '../vm/vm-runtime.mjs'
 export const DEFAULT_HELLO_PROMPT = 'hello'
@@ -153,17 +156,6 @@ export function officialCcQuotaSucceeded(usage) {
 
 export function slotIdleMemory(vm, routing) {
   return slotMemory(vm, routing)
-}
-
-export function sameMemoryLimit(a, b) {
-  return (
-    String(a || '')
-      .trim()
-      .toLowerCase() ===
-    String(b || '')
-      .trim()
-      .toLowerCase()
-  )
 }
 
 export function formatMemoryLimit(bytes) {

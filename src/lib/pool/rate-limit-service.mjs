@@ -39,7 +39,7 @@ export function normalizeRateLimitConfig(raw = {}) {
   }
 }
 
-function header(headers, name) {
+export function header(headers, name) {
   const target = String(name).toLowerCase()
   for (const [key, value] of Object.entries(headers || {})) {
     if (String(key).toLowerCase() === target) return Array.isArray(value) ? value[0] : value

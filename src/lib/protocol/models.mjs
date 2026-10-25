@@ -17,6 +17,9 @@ import { hasClaudeCode1mSuffix, stripClaudeCode1mSuffix } from './context-1m.mjs
 import { isGptSeriesId } from './gpt-ids.mjs'
 import { listGptPolicyModels, listImageToolModels } from './gpt-model-policy.mjs'
 import { listGrokPolicyModels } from './grok-model-policy.mjs'
+import { isCatalogModelId } from './model-policy.mjs'
+
+export { isCatalogModelId }
 
 const FAMILY_ALIASES = new Map([
   ['sonnet', 'sonnet'],
@@ -115,15 +118,6 @@ export function gatewayModelCatalog({ groupType = 'all' } = {}) {
     data: [...gpt, ...grok, ...claude],
     source: cache.source || 'model-policy',
   }
-}
-
-export function isCatalogModelId(id) {
-  const s = String(id || '')
-  if (s.endsWith('-') || s.endsWith('.')) return false
-  if (/\.md$/i.test(s)) return false
-  if (/^(gpt-[a-z0-9.-]+|codex-[a-z0-9.-]+)$/i.test(s)) return s.split(/[-.]/).length >= 2
-  if (!/^claude-(opus|sonnet|haiku|fable|3)[a-z0-9.-]*$/i.test(s)) return false
-  return s.split('-').length >= 3
 }
 
 export function isCodexCatalogModel(id) {
