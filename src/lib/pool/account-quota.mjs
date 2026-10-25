@@ -1496,15 +1496,6 @@ function statusFromUtil(u) {
   return 'active'
 }
 
-function windowIsFull(status, utilization) {
-  const ratio = officialUtilToExtra(utilization)
-  const percent = Number(utilization) > 1.5
-  if (percent && ratio != null && ratio < 1) return false
-  if (ratio != null && ratio >= 1) return true
-  const s = String(status || '').toLowerCase()
-  return s === 'rejected' || s === 'rate_limited'
-}
-
 function statusFromProbeWindow(utilization, incomingStatus) {
   const ratio = officialUtilToExtra(utilization)
   const percent = Number(utilization) > 1.5

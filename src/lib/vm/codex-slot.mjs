@@ -1,7 +1,6 @@
 /**
  * Codex slot metadata. Tokens stay in vms/<id>/codex-credentials.json.
  */
-import fs from 'node:fs'
 import path from 'node:path'
 import { atomicWriteJson, readJsonCached } from './vm-file.mjs'
 import { isCodexVm } from '../protocol/codex-route.mjs'
@@ -169,8 +168,6 @@ export function parseCodexCredentialInput(input, opts = {}) {
   if (mode === 'access_token' || mode === 'refresh_token') {
     if (typeof input === 'string') return parseTokenList(input, mode)
     const tokens = extractOauthTokens(input)
-    const access = mode === 'access_token' ? tokens.access : ''
-    const refresh = mode === 'refresh_token' ? tokens.refresh : tokens.refresh
     if (mode === 'access_token' && !tokens.access) {
       return { ok: false, error: 'missing_token', message: '请粘贴 Access Token' }
     }

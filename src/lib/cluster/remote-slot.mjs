@@ -210,12 +210,6 @@ function migrationBackupName(name, stamp = Date.now()) {
   return `${String(name).slice(0, Math.max(1, 63 - suffix.length))}${suffix}`
 }
 
-function hasBindDestination(info, destination, source = '') {
-  return (info?.Mounts || []).some(
-    (mount) => mount.Destination === destination && mount.RW === false && (!source || mount.Source === source),
-  )
-}
-
 function hasLiveServiceMount(info, { sourceDir = '' } = {}) {
   return (info?.Mounts || []).some(
     (mount) =>

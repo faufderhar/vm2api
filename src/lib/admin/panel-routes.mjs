@@ -215,15 +215,7 @@ import { downloadReleaseKernel, kernelReleaseHttpStatus } from './release-kernel
 import { clearActiveVmFromDb, removeVmFromDb } from '../vm/vm-db-sync.mjs'
 import { normalizeCredentialMode } from '../oauth/credential-mode.mjs'
 import { reloadActiveVm } from '../core/config.mjs'
-import {
-  OS_CATALOG,
-  kernelForIndex,
-  normalizeTimezone,
-  nextNumericIndex,
-  padVm,
-  STANDARD_LOCALE,
-  syncWorkerTelemetry,
-} from '../vm/vm-runtime.mjs'
+import { OS_CATALOG, kernelForIndex, nextNumericIndex, padVm, STANDARD_LOCALE } from '../vm/vm-runtime.mjs'
 import {
   startSlotReady,
   reloadSlotReady,
@@ -292,8 +284,6 @@ import { apiKeyBetaHeader, setupTokenBetaHeader } from '../protocol/claude-code-
 import { rustKernelHealth, toPublicKernelHealth } from '../transport/rust-kernel-client.mjs'
 import { codexKernelHealth } from '../transport/codex-kernel-client.mjs'
 import { setManualScheduleWins } from '../pool/schedule-policy.mjs'
-import { normalizeHealthProbeConfig } from './health-probe.mjs'
-import { normalizeUsageProbeConfig } from '../oauth/usage-probe-monitor.mjs'
 import { mergeNotifyConfig, publicNotifyConfig, publicRoutingNotify, sendNotifyTest } from './notify.mjs'
 import { UsageLogsView } from '../db/repos/usage-logs-view.mjs'
 import {
@@ -4350,8 +4340,6 @@ export function createPanelHandler(ctx) {
         const explicitSessions = Object.prototype.hasOwnProperty.call(body, 'max_sessions')
         const readField = (snake, camel) =>
           Object.prototype.hasOwnProperty.call(body, snake) ? body[snake] : body[camel]
-        const hasField = (snake, camel) =>
-          Object.prototype.hasOwnProperty.call(body, snake) || Object.prototype.hasOwnProperty.call(body, camel)
         const rawConcurrency = readField('max_concurrency', 'maxConcurrency')
         const rawRpm = readField('max_rpm', 'maxRpm')
         const rawSessions = body.max_sessions

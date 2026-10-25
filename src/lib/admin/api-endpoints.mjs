@@ -6,7 +6,6 @@ import {
   modelsUrl,
   parseUpstreamModels,
   resolvePreset,
-  trimBaseUrl,
   upstreamAuthHeaders,
 } from '../pool/api-presets.mjs'
 import { forwardApi, readApiJson } from '../transport/api-kernel-client.mjs'
@@ -17,10 +16,6 @@ import { nowIso } from '../core/clock.mjs'
 
 function nid(prefix) {
   return prefix + crypto.randomBytes(6).toString('hex')
-}
-
-function trimUrl(url) {
-  return trimBaseUrl(url)
 }
 
 function assertEndpointBaseUrl(baseUrl) {

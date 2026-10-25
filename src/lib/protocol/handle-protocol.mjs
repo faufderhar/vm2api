@@ -135,7 +135,6 @@ import {
   hidePersonaUsageInSseLine,
   hidePersonaUsageOnMessage,
   personaHideForUnofficial,
-  personaHideForCliZero,
 } from '../identity/crs-persona-usage.mjs'
 import {
   applyCacheTtlToUsage,
@@ -159,14 +158,7 @@ import {
 } from '../pool/thinking-owner.mjs'
 import { getVm } from '../vm/vm-registry.mjs'
 import { credentialModeFromOauth, isApiKeyMode } from '../oauth/credential-mode.mjs'
-import {
-  prepareAnthropicRequest,
-  enforceCacheLimit,
-  rewriteToolNames,
-  restoreToolNames,
-  restoreToolNamesInSSELine,
-  wantsFastMode,
-} from './anthropic-policy.mjs'
+import { enforceCacheLimit, restoreToolNames, restoreToolNamesInSSELine, wantsFastMode } from './anthropic-policy.mjs'
 import { materializeRemoteImageSources } from './images.mjs'
 import { applyMinMaxTokens } from './min-max-tokens.mjs'
 import { detectWarmupIntercept, formatWarmupSse, warmupMockMessage } from './warmup-intercept.mjs'
