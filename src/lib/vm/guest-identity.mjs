@@ -8,7 +8,7 @@ import path from 'node:path'
 import { atomicWriteJson } from './vm-file.mjs'
 import { runtimeKind, isKvmRuntime } from './runtime-kind.mjs'
 import { slotExec } from './slot-runtime.mjs'
-import { readGuestIdentity, normalizeGuestHardware } from './guest-identity-reader.mjs'
+import { DMI_KEYS, intOrNull, normalizeGuestHardware, readGuestIdentity, textOrNull } from './guest-identity-reader.mjs'
 import { OFFICIAL_STAINLESS } from '../identity/vm-identity.mjs'
 import { applyOfficialFingerprintToVm } from '../identity/official-fingerprint.mjs'
 import { isHostKernel } from '../identity/workstation-profile.mjs'
@@ -20,21 +20,6 @@ import { slotExecContainer } from './slot-exec.mjs'
 import { inspectContainerOrNull } from '../cluster/docker-remote.mjs'
 
 export const GUEST_IDENTITY_SCHEMA = '1'
-
-const DMI_KEYS = Object.freeze(['manufacturer', 'product', 'version', 'family', 'serial', 'uuid'])
-
-function textOrNull(value) {
-  if (value == null) return null
-  const text = String(value).trim()
-  return text ? text : null
-}
-
-function intOrNull(value) {
-  if (value == null || value === '') return null
-  const n = typeof value === 'number' ? value : Number.parseInt(String(value), 10)
-  if (!Number.isFinite(n) || n < 0) return null
-  return Math.trunc(n)
-}
 
 function pickText(next, prev) {
   return textOrNull(next) ?? textOrNull(prev)
