@@ -215,7 +215,9 @@ test('codex kernel starts without inherited proxy variables', async (t) => {
     .map((line) => line.split('=')[0])
   assert.ok(keys.includes('KIN_CODEX_KERNEL_BIN'))
   assert.deepEqual(
-    keys.filter((k) => /_proxy$/i.test(k)),
+    keys.filter((k) => /^(https?|all|no|ftp)_proxy$/i.test(k)),
     [],
   )
+  // The fixture sets VM2API_ALLOW_PRIVATE_PROXY=1 for the gateway; the kernel must not inherit it.
+  assert.ok(!keys.includes('VM2API_ALLOW_PRIVATE_PROXY'))
 })
