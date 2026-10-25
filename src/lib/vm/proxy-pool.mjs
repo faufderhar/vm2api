@@ -28,7 +28,12 @@ import {
   validDnsPrimary,
 } from './egress.mjs'
 import { normalizeSocksHost, socksEndpoint, socksProxyUrl, socksProxyFamily } from './socks-address.mjs'
-import { proxyBlockedReason, proxyResolvedBlockReason, proxyWriteBlockReason, resolvedProxyDial } from './proxy-policy.mjs'
+import {
+  proxyBlockedReason,
+  proxyResolvedBlockReason,
+  proxyWriteBlockReason,
+  resolvedProxyDial,
+} from './proxy-policy.mjs'
 import { canRevealClusterNodes, annotatePublicLocalProxy } from './local-proxy-nodes.mjs'
 
 export const MAX_VMS_PER_PROXY = 5

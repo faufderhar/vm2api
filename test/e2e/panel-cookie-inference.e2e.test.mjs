@@ -122,7 +122,11 @@ test('a panel cookie cannot drive inference or the Responses WebSocket cross-sit
       const r = await fetch(gw.baseUrl + '/v1/messages', {
         method: 'POST',
         headers: { 'content-type': 'application/json', ...headers },
-        body: JSON.stringify({ model: 'claude-sonnet-4-5', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] }),
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-5',
+          max_tokens: 8,
+          messages: [{ role: 'user', content: 'hi' }],
+        }),
       })
       const text = await r.text()
       assert.equal(r.status, 403, text)

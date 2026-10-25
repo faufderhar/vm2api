@@ -26,7 +26,10 @@ test('M-2: read-only gateway routes and panel routes stay open to sessions', () 
     assert.equal(panelSessionProtocolBlock({ pathname, method: 'GET', role: 'user' }, {}), null)
   }
   assert.equal(panelSessionProtocolBlock({ pathname: '/api/panel/me', method: 'POST', role: 'user' }, {}), null)
-  assert.equal(panelSessionProtocolBlock({ pathname: '/admin/models/refresh', method: 'POST', role: 'admin' }, {}), null)
+  assert.equal(
+    panelSessionProtocolBlock({ pathname: '/admin/models/refresh', method: 'POST', role: 'admin' }, {}),
+    null,
+  )
 })
 
 test('M-2: VM2API_PANEL_SESSION_INFERENCE=admin re-allows admin only, never super or tenants', () => {

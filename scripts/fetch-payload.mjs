@@ -93,10 +93,9 @@ if (opts.pin) {
   }
   console.log(`payload ok (${manifest.release}, ${manifest.files.length} files)`)
 } else {
-  const base = (process.env.VM2API_PAYLOAD_BASE_URL || `https://github.com/${payloadRepo(manifest)}/releases/download`).replace(
-    /\/+$/,
-    '',
-  )
+  const base = (
+    process.env.VM2API_PAYLOAD_BASE_URL || `https://github.com/${payloadRepo(manifest)}/releases/download`
+  ).replace(/\/+$/, '')
   const downloads = new Map()
   for (const file of manifest.files) {
     const target = path.join(opts.dest, file.path)

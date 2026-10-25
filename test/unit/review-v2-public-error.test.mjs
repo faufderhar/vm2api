@@ -14,12 +14,17 @@ test('L-4: PublicError keeps its operator message and code', () => {
   assert.equal(e.status, 503)
   assert.equal(e.expose, true)
   assert.equal(publicErrorMessage(e), '计算机服务未安装。')
-  assert.equal(publicErrorMessage(publicError(409, 'proxy_required', 'slot SOCKS5 proxy is required')), 'slot SOCKS5 proxy is required')
+  assert.equal(
+    publicErrorMessage(publicError(409, 'proxy_required', 'slot SOCKS5 proxy is required')),
+    'slot SOCKS5 proxy is required',
+  )
 })
 
 test('L-4: exposed text loses stack frames and absolute paths, URLs survive', () => {
   const msg = operatorErrorMessage(
-    new Error('failed to read /home/kin/.vm2api/vms/abc/token (see https://api.example.com/v1/models)\n    at foo (/app/x.mjs:1:2)')
+    new Error(
+      'failed to read /home/kin/.vm2api/vms/abc/token (see https://api.example.com/v1/models)\n    at foo (/app/x.mjs:1:2)',
+    ),
   )
   assert.equal(msg, 'failed to read <path> (see https://api.example.com/v1/models)')
   assert.equal(publicErrorMessage(Object.assign(new Error('bad /etc/passwd'), { status: 400 })), 'bad <path>')

@@ -71,7 +71,10 @@ test('L-8: a half-open cluster shell client is dropped and its SSH stream closed
   let data = ''
   sock.on('data', (c) => (data += c.toString('latin1')))
   const closed = new Promise((r) => sock.on('close', r))
-  const outcome = await Promise.race([closed.then(() => 'closed'), new Promise((r) => setTimeout(() => r('timeout'), 3000))])
+  const outcome = await Promise.race([
+    closed.then(() => 'closed'),
+    new Promise((r) => setTimeout(() => r('timeout'), 3000)),
+  ])
   for (let i = 0; i < 50 && !streamClosed; i++) await new Promise((r) => setTimeout(r, 20))
   server.close()
   sock.destroy()

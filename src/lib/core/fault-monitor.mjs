@@ -25,7 +25,8 @@ export function createFaultMonitor({
     const t = now()
     let w = windows.get(kind)
     if (!w || t - w.start >= windowMs) {
-      if (w?.suppressed) logger.error?.(`[${kind}] ${w.suppressed} more suppressed in the last ${Math.round(windowMs / 1000)}s`)
+      if (w?.suppressed)
+        logger.error?.(`[${kind}] ${w.suppressed} more suppressed in the last ${Math.round(windowMs / 1000)}s`)
       w = { start: t, logged: 0, suppressed: 0 }
       windows.set(kind, w)
     }

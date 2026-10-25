@@ -85,8 +85,14 @@ test('M-3: ensureSocksChecked (VM package import) refuses a name resolving to lo
 
 test('L-3: DNS failure is reported apart from a policy block at write time only', async (t) => {
   withStrictPolicy(t)
-  assert.equal(await proxyWriteBlockReason({ host: 'nxdomain.example', port: 1080 }, { lookup }), 'proxy_host_unresolvable')
-  assert.equal(await proxyWriteBlockReason({ host: 'evil-loopback.example', port: 1080 }, { lookup }), 'proxy_host_blocked')
+  assert.equal(
+    await proxyWriteBlockReason({ host: 'nxdomain.example', port: 1080 }, { lookup }),
+    'proxy_host_unresolvable',
+  )
+  assert.equal(
+    await proxyWriteBlockReason({ host: 'evil-loopback.example', port: 1080 }, { lookup }),
+    'proxy_host_blocked',
+  )
   assert.equal(await proxyWriteBlockReason({ host: 'good.example', port: 1080 }, { lookup }), null)
   // Dial-time callers keep the single fail-closed code they already handle.
   const dial = await resolvedProxyDial({ host: 'nxdomain.example', port: 1080 }, { lookup })

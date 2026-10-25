@@ -1,8 +1,15 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { originMatchesRequestHost, panelCookieUseAllowed, panelCookieWriteAllowed } from '../../src/lib/core/security.mjs'
+import {
+  originMatchesRequestHost,
+  panelCookieUseAllowed,
+  panelCookieWriteAllowed,
+} from '../../src/lib/core/security.mjs'
 
-const req = (host, extra = {}) => ({ method: 'POST', headers: { host, cookie: 'kin_panel_token=kin-panel-x', ...extra } })
+const req = (host, extra = {}) => ({
+  method: 'POST',
+  headers: { host, cookie: 'kin_panel_token=kin-panel-x', ...extra },
+})
 
 test('L-2: same hostname on another port is a different origin', () => {
   assert.equal(originMatchesRequestHost('http://gw.example:8787', req('gw.example:8787'), {}), true)

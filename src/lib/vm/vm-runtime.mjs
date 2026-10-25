@@ -540,7 +540,8 @@ export function writeWorkerFiles(vm, projectRoot, { transparent, routing } = {})
     transparent === true || (transparent !== false && (wantNet.startsWith('kin-eg-') || liveNet.startsWith('kin-eg-')))
   const local = isLocalEgressProxy(vm.proxy)
   const proxyUrl = onEgress || local ? '' : workerProxyUrl(vm) || ''
-  if (!onEgress && !local && vm.proxy_required !== false && !proxyUrl) throw new PublicError('slot SOCKS5 proxy is required', { status: 409, code: 'proxy_required' })
+  if (!onEgress && !local && vm.proxy_required !== false && !proxyUrl)
+    throw new PublicError('slot SOCKS5 proxy is required', { status: 409, code: 'proxy_required' })
   const testEndpoints = process.env.KIN_WORKER_TEST_ENDPOINTS === '1'
   const resolvedRouting = resolveSlotRouting(projectRoot, routing)
   const nodePaths = slotHost(vm).slotPaths?.(vm) || null

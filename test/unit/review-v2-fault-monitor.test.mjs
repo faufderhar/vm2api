@@ -12,7 +12,14 @@ test('L-11: default keeps serving, counts every fault, rate-limits the log', () 
   let t = 0
   const log = logger()
   let fatal = 0
-  const m = createFaultMonitor({ env: {}, logger: log, onFatal: () => fatal++, now: () => t, logsPerWindow: 2, windowMs: 1000 })
+  const m = createFaultMonitor({
+    env: {},
+    logger: log,
+    onFatal: () => fatal++,
+    now: () => t,
+    logsPerWindow: 2,
+    windowMs: 1000,
+  })
   for (let i = 0; i < 10; i++) m.onUncaughtException(new Error(`boom ${i}`))
   m.onUnhandledRejection(new Error('rej'))
   assert.equal(m.counts.uncaughtException, 10)
