@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
 import { atomicWriteJson } from '../vm/vm-file.mjs'
+import { isExposedError, operatorErrorMessage } from './public-error.mjs'
 
 export function hashKey(key) {
   return crypto.createHash('sha256').update(String(key)).digest('hex')
@@ -786,11 +787,12 @@ export function clearPanelSessionCookie({ secure = true, sameSite = 'Lax' } = {}
 
 /**
  * Text for the catch-all error response. A thrown error that set its own
- * `status` was raised on purpose and keeps its message; anything else is an
+ * `status`, or a PublicError (`expose: true`), was raised on purpose and keeps
+ * its message (minus stack frames and absolute paths); anything else is an
  * unexpected fault whose text (paths, SQL, upstream bodies) stays in the log.
  */
 export function publicErrorMessage(e) {
-  if (e && typeof e === 'object' && Number.isInteger(e.status)) return e.message || String(e)
+  if (isExposedError(e)) return operatorErrorMessage(e)
   return 'internal server error'
 }
 

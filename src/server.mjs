@@ -1293,7 +1293,9 @@ const server = http.createServer(async (req, res) => {
     const status = e.status || 500
     if (!Number.isInteger(e?.status)) console.error('[request]', req.method, String(req.url || '').split('?')[0], e)
     if (!res.headersSent) {
-      json(res, status, { error: { message: publicErrorMessage(e), type: 'server_error' } })
+      const error = { message: publicErrorMessage(e), type: 'server_error' }
+      if (e?.expose === true && typeof e.code === 'string') error.code = e.code
+      json(res, status, { error })
     } else {
       try {
         res.end()
