@@ -932,6 +932,9 @@ export class ProxyPool extends EventEmitter {
       password: has('password') ? patch.password : username ? p.password : null,
     })
     if (!next) return { ok: false, error: 'invalid_proxy' }
+    // Same host rule as importParsed(): an edit must not turn a public row into
+    // loopback, RFC1918 or cloud metadata.
+    if (proxyBlockedReason(next, true) === 'proxy_host_blocked') return { ok: false, error: 'proxy_host_blocked' }
     p.host = next.host
     p.port = next.port
     p.username = next.username

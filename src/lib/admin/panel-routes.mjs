@@ -3,6 +3,7 @@
  * envelopes are unchanged; slot start/reload go through startSlotReady.
  */
 import fs from 'node:fs'
+import net from 'node:net'
 import path from 'node:path'
 import {
   verifyPanelLogin,
@@ -242,6 +243,7 @@ import { RUNTIME_KVM } from '../vm/runtime-kind.mjs'
 import { hostProxyUrlForVm, slotHost } from '../vm/slot-host.mjs'
 import { syncIpv6ProxyEgress } from '../vm/proxy-policy-runtime.mjs'
 import { proxyResolvedBlockReason } from '../vm/proxy-policy.mjs'
+import { normalizeSocksHost } from '../vm/socks-address.mjs'
 import { writeSlotSeedFiles } from '../vm/slot-seed.mjs'
 import {
   egressEnabled,
@@ -6102,9 +6104,20 @@ export function createPanelHandler(ctx) {
         for (const key of ['host', 'port', 'username', 'password', 'label', 'domain_forward']) {
           if (Object.prototype.hasOwnProperty.call(body, key)) patch[key] = body[key]
         }
+        // A public-looking name can resolve to loopback or metadata. The literal
+        // check lives in update(); a new hostname is also looked up here.
+        if (typeof patch.host === 'string' && patch.host.trim() && !net.isIP(normalizeSocksHost(patch.host.trim()))) {
+          const blocked = await proxyResolvedBlockReason({ host: patch.host.trim(), port: patch.port || 1080 })
+          if (blocked === 'proxy_host_blocked') {
+            return json(res, 409, {
+              ok: false,
+              error: { type: 'invalid_request_error', code: blocked, message: blocked },
+            })
+          }
+        }
         const result = proxyPool.update(id, patch)
         if (!result.ok) {
-          const status = result.error === 'proxy_not_found' ? 404 : 400
+          const status = result.error === 'proxy_not_found' ? 404 : result.error === 'proxy_host_blocked' ? 409 : 400
           const type = status === 404 ? 'not_found_error' : 'invalid_request_error'
           return json(res, status, { ok: false, error: { type, code: result.error, message: result.error } })
         }
