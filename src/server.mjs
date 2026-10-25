@@ -26,6 +26,7 @@ import {
   revokePanelSession,
   assertEnvAdminPassword,
   warnPanelCookieScheme,
+  warnPublicPlainListen,
 } from './lib/core/security.mjs'
 import { loadModelPolicy } from './lib/protocol/model-policy.mjs'
 import { gatewayModelCatalog } from './lib/protocol/models.mjs'
@@ -1398,6 +1399,7 @@ await bootApiKernel(cfg)
 apiKernelSupervisor = superviseApiKernel(cfg)
 
 server.listen(cfg.port, cfg.host, () => {
+  warnPublicPlainListen(cfg.host)
   backfillSlotSubscriptionTypes().catch((e) =>
     console.warn('[credential-subscription] backfill failed', e?.message || e),
   )

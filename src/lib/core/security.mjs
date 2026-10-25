@@ -702,6 +702,26 @@ export function warnPanelCookieScheme(env = process.env, warn = console.warn) {
   warn('kin-security: TLS 反代必须设置 PUBLIC_SCHEME 或 PUBLIC_BASE_URL，否则登录 Cookie 不会带 Secure')
 }
 
+/**
+ * Warn once when the gateway listens on every interface with no TLS in front.
+ * Panel passwords, API keys and session cookies would then cross the network in clear text.
+ */
+export function warnPublicPlainListen(host, env = process.env, warn = console.warn) {
+  const h = String(host || '').trim()
+  if (h === '127.0.0.1' || h === '::1' || h === 'localhost') return false
+  const base = String(env.PUBLIC_BASE_URL || '')
+    .trim()
+    .toLowerCase()
+  const scheme = String(env.PUBLIC_SCHEME || '')
+    .trim()
+    .toLowerCase()
+  if (base.startsWith('https://') || scheme === 'https') return false
+  warn(
+    `kin-security: 正在以明文 HTTP 监听 ${h || '0.0.0.0'}。公网部署请放到 TLS 反代后面，并设 VM2API_BIND_HOST=127.0.0.1（compose）或 HOST=127.0.0.1`,
+  )
+  return true
+}
+
 /** Startup check for VM2API_ADMIN_PASSWORD / KIN_ADMIN_PASSWORD. Does not rewrite stored hashes. */
 export function assertEnvAdminPassword(password) {
   const pass = String(password ?? '')

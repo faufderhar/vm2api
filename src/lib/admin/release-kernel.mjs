@@ -9,6 +9,9 @@ import crypto from 'node:crypto'
 import { inspectLinuxAmd64Elf } from '../vm/wrap-cli-runtime.mjs'
 import { GITHUB_REPO, githubApiHeaders, isReleaseTag, normalizeTag, normalizeVersion } from './release.mjs'
 
+// VM2API_GITHUB_REPO may contain dots; match them literally in the allowlist.
+const GITHUB_REPO_RE = GITHUB_REPO.replace(/[.]/g, '\\.')
+
 export const KERNEL_RELEASE_ASSET = 'kin-kernel'
 export const CLI_NODE_RELEASE_ASSET = 'cli-node'
 export const CC_NODE_RELEASE_ASSET = 'cc-node'
@@ -89,13 +92,13 @@ export function isAllowedKernelUrl(raw, { redirect = false } = {}) {
   }
   if (url.protocol !== 'https:' || url.username || url.password) return false
   if (url.hostname === 'api.github.com') {
-    return new RegExp(`^/repos/${GITHUB_REPO}/releases/(?:latest|tags/v\\d+\\.\\d+\\.\\d+|assets/\\d+)$`).test(
+    return new RegExp(`^/repos/${GITHUB_REPO_RE}/releases/(?:latest|tags/v\\d+\\.\\d+\\.\\d+|assets/\\d+)$`).test(
       url.pathname,
     )
   }
   if (url.hostname === 'github.com') {
     return new RegExp(
-      `^/${GITHUB_REPO}/releases/download/v\\d+\\.\\d+\\.\\d+/(?:${KERNEL_RELEASE_ASSET}|${CLI_NODE_RELEASE_ASSET}|${CC_NODE_RELEASE_ASSET}|${KERNEL_CRAG_RELEASE_ASSET})$`,
+      `^/${GITHUB_REPO_RE}/releases/download/v\\d+\\.\\d+\\.\\d+/(?:${KERNEL_RELEASE_ASSET}|${CLI_NODE_RELEASE_ASSET}|${CC_NODE_RELEASE_ASSET}|${KERNEL_CRAG_RELEASE_ASSET})$`,
     ).test(url.pathname)
   }
   return (

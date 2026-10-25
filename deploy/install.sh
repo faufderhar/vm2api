@@ -26,6 +26,10 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 GITHUB_REPO="${VM2API_GITHUB_REPO:-dofastted/vm2api}"
+if ! printf '%s' "$GITHUB_REPO" | grep -Eq '^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$' || printf '%s' "$GITHUB_REPO" | grep -q '\.\.'; then
+  echo "VM2API_GITHUB_REPO 必须是 owner/repo 形式: ${GITHUB_REPO}" >&2
+  exit 1
+fi
 INSTALL_DIR="${VM2API_DIR:-/opt/vm2api}"
 SERVICE_NAME="vm2api"
 DEFAULT_PORT="${PORT:-8787}"
@@ -397,6 +401,10 @@ ensure_env() {
   fi
   env_set_if_empty VM2API_API_KEY "$(gen_secret)" || true
   env_set_if_empty VM2API_DB_SECRET "$(gen_secret)" || true
+  # A fork installed with VM2API_GITHUB_REPO keeps checking and upgrading from that fork.
+  if [ "$GITHUB_REPO" != "dofastted/vm2api" ]; then
+    env_set VM2API_GITHUB_REPO "$GITHUB_REPO"
+  fi
   chmod 600 "$envf" || true
 }
 

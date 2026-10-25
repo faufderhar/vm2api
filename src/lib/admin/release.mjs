@@ -16,7 +16,15 @@ const MODULE_PROJECT = path.resolve(__dirname, '..', '..', '..')
 const execFileAsync = promisify(execFile)
 const UPGRADE_SCRIPT = fs.readFileSync(path.join(MODULE_PROJECT, 'scripts', 'panel-upgrade.sh'), 'utf8')
 
-export const GITHUB_REPO = 'dofastted/vm2api'
+export const DEFAULT_GITHUB_REPO = 'dofastted/vm2api'
+
+/** owner/repo for release checks and upgrades. Same variable as deploy/install.sh. */
+export function resolveGithubRepo(env = process.env) {
+  const raw = String(env.VM2API_GITHUB_REPO || '').trim()
+  return /^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/.test(raw) && !raw.includes('..') ? raw : DEFAULT_GITHUB_REPO
+}
+
+export const GITHUB_REPO = resolveGithubRepo()
 export const INSTALL_SCRIPT_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/main/deploy/install.sh`
 export const DOCKER_SOCK = '/var/run/docker.sock'
 
@@ -198,7 +206,9 @@ export function changelogSince(entries, currentVersion) {
 export function upgradeCommand(target) {
   const tag = normalizeTag(target)
   const flag = tag ? ` --version ${tag}` : ''
-  return `curl -sSL ${INSTALL_SCRIPT_URL} | sudo bash -s -- upgrade${flag}`
+  // A fork's install.sh still defaults to upstream; carry the repo into the script.
+  const repoEnv = GITHUB_REPO === DEFAULT_GITHUB_REPO ? '' : ` VM2API_GITHUB_REPO=${GITHUB_REPO}`
+  return `curl -sSL ${INSTALL_SCRIPT_URL} | sudo${repoEnv} bash -s -- upgrade${flag}`
 }
 
 export function defaultUpgradeCommand() {
