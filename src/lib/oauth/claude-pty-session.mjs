@@ -7,12 +7,9 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { sleep } from '../core/clock.mjs'
+import { codedError } from '../core/errors.mjs'
 
-export function codedError(code, message) {
-  const err = new Error(message)
-  err.code = code
-  return err
-}
+export { codedError }
 
 /** Repository scripts/ (the PTY drivers live there). */
 export function scriptsDir() {

@@ -6,6 +6,7 @@ import { isGptSeriesId } from './gpt-ids.mjs'
 import { isGptModelEnabled } from './gpt-model-policy.mjs'
 import { canonicalImageToolModel } from './image-tool-models.mjs'
 import { detectInboundPlatform } from './platform-detect.mjs'
+import { typedError } from '../core/errors.mjs'
 
 /** Recommended secondary default when an operator clears the primary auto-review target. */
 export const DEFAULT_CODEX_MODEL_MAPPING_FALLBACK = 'gpt-6.1-sol'
@@ -104,12 +105,6 @@ export function validateCodexModelMappingsPatch(raw, path = 'codex.model_mapping
     const check = validateCodexModelMappingTarget(value.trim())
     if (!check.ok) throw typedError(`${path}.${alias}: ${check.message}`, check.code)
   }
-}
-
-function typedError(message, code) {
-  const error = new TypeError(message)
-  error.code = code
-  return error
 }
 
 function rewriteModelField(model, upstreamId) {

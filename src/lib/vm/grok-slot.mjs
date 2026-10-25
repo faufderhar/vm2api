@@ -6,6 +6,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { atomicWriteJson, readJsonCached } from './vm-file.mjs'
 import { grokIdentityFromTokens, grokTokenTier } from '../oauth/grok-oauth.mjs'
+import { codedError as fail } from '../core/errors.mjs'
 
 export function grokCredentialPath(projectRoot, vmId) {
   return path.join(projectRoot, 'vms', vmId, 'grok-credentials.json')
@@ -33,12 +34,6 @@ export function writeGrokAccounts(projectRoot, vmId, accounts) {
 
 function str(value) {
   return typeof value === 'string' ? value.trim() : ''
-}
-
-function fail(code, message) {
-  const err = new Error(message)
-  err.code = code
-  return err
 }
 
 function expiresAtOf(src) {

@@ -4,6 +4,7 @@
  */
 import { flattenOauthIdentity } from './oauth-identity.mjs'
 import { isCodexVm } from '../vm/vm-kind.mjs'
+import { codedError as fail } from '../core/errors.mjs'
 
 export const CREDENTIAL_OAUTH = 'oauth'
 export const CREDENTIAL_SETUP_TOKEN = 'setup-token'
@@ -127,12 +128,6 @@ export function canClaudeResetCredits(vm = {}, { hasToken } = {}) {
     .join(' ')
   if (/(^|\s)user:profile(\s|$)/.test(scope)) return true
   return !isSetupTokenMode(mode)
-}
-
-function fail(code, message) {
-  const err = new Error(message)
-  err.code = code
-  return err
 }
 
 /** Relabel a live OAuth grant as setup-token. Keep refresh and real expiry. */

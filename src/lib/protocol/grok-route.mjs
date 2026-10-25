@@ -5,6 +5,7 @@
  * an operator explicitly overrides token_url.
  */
 import { normalizeGrokQuotaPolicy, validateGrokQuotaPatch } from '../pool/openai-quota-policy.mjs'
+import { typedError } from '../core/errors.mjs'
 
 /** Grok Build CLI chat proxy. Paths append `/v1/chat/completions` and `/v1/responses`. */
 export const DEFAULT_GROK_BASE_URL = 'https://cli-chat-proxy.grok.com'
@@ -58,12 +59,6 @@ export const GROK_BILLING_LIMITS = Object.freeze({ min_interval_sec: Object.free
 
 function asObject(raw) {
   return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : null
-}
-
-function typedError(message, code) {
-  const error = new TypeError(message)
-  error.code = code
-  return error
 }
 
 function str(value) {

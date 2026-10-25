@@ -13,6 +13,20 @@
  * }
  */
 
+/** An Error carrying a machine-readable `code`. */
+export function codedError(code, message) {
+  const err = new Error(message)
+  err.code = code
+  return err
+}
+
+/** A TypeError carrying a machine-readable `code`. */
+export function typedError(message, code) {
+  const error = new TypeError(message)
+  error.code = code
+  return error
+}
+
 export const ErrorType = {
   AUTH: 'authentication_error',
   PERMISSION: 'permission_error',

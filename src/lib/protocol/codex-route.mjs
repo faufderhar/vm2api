@@ -4,6 +4,7 @@
 import { isCodexVm } from '../vm/vm-kind.mjs'
 import { normalizeOpenAIQuotaPolicy } from '../pool/openai-quota-policy.mjs'
 import { normalizeCodexModelMappings, validateCodexModelMappingsPatch } from './codex-model-mapping.mjs'
+import { typedError } from '../core/errors.mjs'
 
 export { isCodexVm, normalizeVmKind } from '../vm/vm-kind.mjs'
 
@@ -41,12 +42,6 @@ export const DEFAULT_CODEX_ROUTING = Object.freeze({
   },
   quota: normalizeOpenAIQuotaPolicy(),
 })
-
-function typedError(message, code) {
-  const error = new TypeError(message)
-  error.code = code
-  return error
-}
 
 function asObject(raw) {
   return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : null
