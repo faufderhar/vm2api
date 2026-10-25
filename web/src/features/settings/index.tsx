@@ -24,6 +24,10 @@ import { dashboardQueryOptions } from '@/features/overview/queries'
 import { AboutPane } from '@/features/settings/about-pane'
 import { BackupPane } from '@/features/settings/backup-pane'
 import { GrokPane } from '@/features/settings/grok-pane'
+import {
+  asBlock as asGrokBlock,
+  grokIssues,
+} from '@/features/settings/grok-settings-model'
 import { HealthPane } from '@/features/settings/health-pane'
 import { LogsPane } from '@/features/settings/logs-pane'
 import {
@@ -127,6 +131,9 @@ export function SettingsPage() {
           session_idle_ttl_seconds: sessionIdleTtlFromInference(inference),
         }
       }
+      // 整份草稿一起 PUT：Grok 段不合法时后端会整单拒绝，先在本地拦下并说清楚。
+      const grokIssue = grokIssues(asGrokBlock(body.grok))[0]
+      if (grokIssue) throw new Error(`Grok 设置有误：${grokIssue.message}`)
       return api<RoutingSaveResult>('/api/panel/routing', {
         method: 'PUT',
         body: JSON.stringify(body),
@@ -223,7 +230,7 @@ export function SettingsPage() {
           : tab === 'openai'
             ? 'GPT 传输、准入、配额与客户端画像。全局 WebSocket 只作用于推理，不影响终端或集群。'
             : tab === 'grok'
-              ? 'Grok 的 OAuth、上游地址、协议和配额。端点没填齐时，导入会提示去这里补。'
+              ? 'Grok 网关：开关与上游、入站协议、客户端准入、槽位配额默认值、xAI OAuth 与 Grok Build 用量同步。'
               : undefined
       }
     >

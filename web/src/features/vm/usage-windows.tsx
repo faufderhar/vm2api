@@ -8,7 +8,7 @@ import {
 import { fmtNum, fmtUsd } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { isCodexVm, isGrokVm } from '@/lib/vm-kind'
-import { vmCostLedger } from '@/lib/vm-usage'
+import { ledgerRowTitle, vmCostLedger } from '@/lib/vm-usage'
 import { useNow } from '@/hooks/use-now'
 import { ClaudeResetActions } from '@/features/vm/claude-reset-actions'
 import { OpenaiQuotaActions } from '@/features/vm/openai-quota-actions'
@@ -140,8 +140,8 @@ const LEDGER_GRID =
   'grid grid-cols-[2.25rem_minmax(max-content,1fr)_max-content] items-center gap-x-2 gap-y-1'
 
 /**
- * 成本账：5H / 7D / 总计 × 费用 · token。整页每台槽位的费用与 token
- * 只在这里出现一次，官方价口径。
+ * 成本账：5H / 7D / 总计 × 费用 · token（Grok：今日 / 7D / 总计）。
+ * 整页每台槽位的费用与 token 只在这里出现一次，官方价口径。
  */
 export function VmCostLedger({
   vm,
@@ -156,9 +156,12 @@ export function VmCostLedger({
     <div className={cn(LEDGER_GRID, 'min-w-0', className)}>
       {vmCostLedger(vm, accounts).map((r) => {
         const total = r.key === 'total'
+        const today = r.key === 'today'
         return (
           <div
             key={r.key}
+            title={ledgerRowTitle(r)}
+            data-ledger-row={r.key}
             className={cn(
               'col-span-3 grid grid-cols-subgrid items-center',
               METRIC_ROW,
@@ -168,7 +171,7 @@ export function VmCostLedger({
             <span
               className={cn(
                 'text-xs font-medium',
-                total ? 'text-foreground' : 'text-muted-foreground'
+                total || today ? 'text-foreground' : 'text-muted-foreground'
               )}
             >
               {r.label}
@@ -180,7 +183,9 @@ export function VmCostLedger({
                   ? MUTED_NUM
                   : total
                     ? 'font-semibold text-foreground'
-                    : 'text-foreground/80'
+                    : today
+                      ? 'font-medium text-foreground'
+                      : 'text-foreground/80'
               )}
             >
               {fmtUsd(r.cost, 2)}

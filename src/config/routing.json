@@ -172,6 +172,10 @@
       "max_concurrency": 2,
       "max_rpm": 0,
       "max_sessions": 0
+    },
+    "billing": {
+      "background": true,
+      "min_interval_sec": 1800
     }
   },
 

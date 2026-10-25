@@ -259,6 +259,8 @@ export function rackTotals(
     }
     // Grok 没有 5H 行，按 key 相加；混排机架里 5H 只合计有这一窗口的槽。
     for (const row of vmCostLedger(vm, accounts)) {
+      // 「今日」只在 Grok 槽单台展示；混排机架里只合计 Grok 会被误读成全队今日，不进合计。
+      if (row.key === 'today') continue
       const hit = t.ledger.find((r) => r.key === row.key)
       if (hit) {
         hit.cost += row.cost
@@ -273,6 +275,7 @@ export function rackTotals(
 }
 
 const LEDGER_ORDER: Record<VmLedgerRow['key'], number> = {
+  today: -1,
   '5h': 0,
   '7d': 1,
   total: 2,

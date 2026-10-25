@@ -269,15 +269,21 @@ export function vmTotalTokens(vm: Vm, accounts?: UsageAccountRow[]): number {
 }
 
 export type VmLedgerRow = {
-  key: '5h' | '7d' | 'total'
+  key: 'today' | '5h' | '7d' | 'total'
   label: string
   cost: number
   tokens: number
+  /** 只有「今日」行带：今日请求数，给提示用。 */
+  requests?: number
 }
+
+/** 「今日」与 `billing.today`、统计弹窗同一天界：网关按上海自然日（UTC+8）切日。 */
+export const TODAY_DAY_BOUNDARY = '上海自然日（UTC+8）'
 
 /**
  * 一台槽位的费用与 token 只走这一份：5H / 7D 窗口 + 账号总计。
- * Grok 只有周额度，没有 5H 窗口，成本账也不列 5H。
+ * Grok 只有周额度，没有 5H 窗口；它的第一行改放「今日」（上海自然日），
+ * 与请求列的「今日」行对齐，三行高度和 Claude / GPT 的 5H / 7D / 总计一致。
  */
 export function vmCostLedger(
   vm: Vm,
@@ -285,10 +291,23 @@ export function vmCostLedger(
 ): VmLedgerRow[] {
   const cost = vmWindowCosts(vm, accounts)
   const tok = vmWindowTokens(vm, accounts)
+  let head: VmLedgerRow[]
+  if (isGrokVm(vm)) {
+    const today = vmTodayStats(vm, accounts)
+    head = [
+      {
+        key: 'today',
+        label: '今日',
+        cost: today.today,
+        tokens: today.tok,
+        requests: today.req,
+      },
+    ]
+  } else {
+    head = [{ key: '5h', label: '5H', cost: cost.h5, tokens: tok.h5 }]
+  }
   return [
-    ...(isGrokVm(vm)
-      ? []
-      : [{ key: '5h', label: '5H', cost: cost.h5, tokens: tok.h5 } as const]),
+    ...head,
     { key: '7d', label: '7D', cost: cost.d7, tokens: tok.d7 },
     {
       key: 'total',
@@ -354,4 +373,14 @@ export function formatWindowSpend(
     remainText: remain,
     tooltip,
   }
+}
+
+/** 「今日」行的提示：天界、请求数与口径。其它行不带提示。 */
+export function ledgerRowTitle(r: VmLedgerRow): string | undefined {
+  if (r.key !== 'today') return undefined
+  return [
+    `今日（${TODAY_DAY_BOUNDARY}）`,
+    `${fmtNum(r.requests ?? 0)} 次请求 · ${fmtUsd(r.cost, 4)} · ${fmtNum(r.tokens)} tok`,
+    '官方价口径，按网关请求日志汇总',
+  ].join('\n')
 }
