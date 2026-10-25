@@ -7,14 +7,11 @@
  */
 
 import { isOfficialUsageRateLimited } from './crs-usage-probe.mjs'
+import { sleep } from '../core/clock.mjs'
 
 export const API_CACHE_TTL_MS = 3 * 60_000
 export const API_ERROR_CACHE_TTL_MS = 60_000
 export const API_QUERY_MAX_JITTER_MS = 800
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
 
 function asError(result) {
   const err = new Error(result?.error || result?.usage_error || 'usage_probe_failed')

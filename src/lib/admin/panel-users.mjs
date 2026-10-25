@@ -10,6 +10,7 @@ import { resolveStoreDb } from '../db/database.mjs'
 import { UsersRepo } from '../db/repos/users-repo.mjs'
 import { clampVmCreateQuota } from './resource-owner.mjs'
 import { reclaimAssignedVms } from '../vm/vm-registry.mjs'
+import { nowIso } from '../core/clock.mjs'
 
 export const PANEL_ROLES = ['admin', 'super', 'user']
 
@@ -18,10 +19,6 @@ const SCRYPT_R = 8
 const SCRYPT_P = 1
 const KEYLEN = 32
 const USERNAME_RE = /^[a-zA-Z][a-zA-Z0-9._-]{1,31}$/
-
-function nowIso() {
-  return new Date().toISOString()
-}
 
 export function normalizeUsername(username) {
   return String(username || '').trim()

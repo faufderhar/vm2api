@@ -22,6 +22,7 @@ import { getVm } from '../vm/vm-registry.mjs'
 import { slotHost } from '../vm/slot-host.mjs'
 import { FULL_OAUTH_SCOPE } from './oauth-contract.mjs'
 import { flattenOauthIdentity } from './oauth-identity.mjs'
+import { sleep } from '../core/clock.mjs'
 
 export const AUTH_LOGIN_SESSION_TTL_MS = 30 * 60 * 1000
 export const AUTH_LOGIN_SOURCE = 'claude-auth-login'
@@ -109,10 +110,6 @@ export function readAuthLoginSession(projectRoot, vmId) {
 export function isPersistentAuthLoginSession(session, { force = false } = {}) {
   if (force || !session) return false
   return !!(session.alive && session.auth_url && !session.expired && session.status !== 'login_ready')
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 async function waitFor(fn, timeoutMs, intervalMs = 200) {

@@ -26,6 +26,7 @@ import {
   waitPortReleased,
 } from './egress.mjs'
 import { mapPool } from '../core/map-pool.mjs'
+import { sleep } from '../core/clock.mjs'
 
 const ACTIONS = new Set(['collect', 'reload', 'roll', 'telemetry'])
 
@@ -75,10 +76,6 @@ function normalizeTelemetryRefresh(changed, vm) {
     String(vm?.runtime?.container || '').trim() || (vm?.id ? `kin-${String(vm.id).replace(/^vm-/, '')}` : '')
   logTelemetryContainerSkip('fleet', vm.id, container, message)
   return telemetryContainerSkip(container, message)
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 export function isWorkerProcessUp(health) {

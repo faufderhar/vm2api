@@ -12,6 +12,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { GROK_OAUTH_DEVICE_GRANT, grokOauthConfig } from '../protocol/grok-route.mjs'
 import { atomicWriteJson } from '../vm/vm-file.mjs'
+import { sleep } from '../core/clock.mjs'
 
 export const GROK_OAUTH_SESSION_TTL_MS = 10 * 60 * 1000
 const DEVICE_POLL_FLOOR_SEC = 5
@@ -40,10 +41,6 @@ function sweepExpired(now = Date.now()) {
   for (const [id, session] of deviceSessions) {
     if (now > session.expiresAt) deviceSessions.delete(id)
   }
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function deviceSessionPath(projectRoot) {

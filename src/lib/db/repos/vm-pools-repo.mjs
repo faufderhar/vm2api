@@ -4,10 +4,7 @@
  */
 import crypto from 'node:crypto'
 import { getDb, withTransaction } from '../database.mjs'
-
-function nowIso() {
-  return new Date().toISOString()
-}
+import { nowIso } from '../../core/clock.mjs'
 
 function rowToPool(row, vmIds) {
   if (!row) return null

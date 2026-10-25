@@ -15,6 +15,7 @@ import { OFFICIAL_CLI_VERSION } from '../identity/vm-identity.mjs'
 import { slotExecArgv } from '../vm/slot-exec.mjs'
 import { getVm } from '../vm/vm-registry.mjs'
 import { slotHost } from '../vm/slot-host.mjs'
+import { sleep } from '../core/clock.mjs'
 
 export const SETUP_TOKEN_SESSION_TTL_MS = 30 * 60 * 1000
 export const SETUP_TOKEN_SOURCE = 'claude-setup-token'
@@ -215,10 +216,6 @@ export async function stopClaudeSetupTokenSession(projectRoot, vmId, { spawn = s
     } catch {}
   }
   return { ok: true }
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 async function waitFor(fn, timeoutMs, intervalMs = 200) {

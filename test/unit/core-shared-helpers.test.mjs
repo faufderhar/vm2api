@@ -67,3 +67,12 @@ test('createPeriodicTask honours enabled/run_on_start and stop', async () => {
   await new Promise((r) => setImmediate(r))
   failing.stop()
 })
+
+test('clock helpers', async () => {
+  const { sleep, nowIso } = await import('../../src/lib/core/clock.mjs')
+  const t0 = Date.now()
+  await sleep(15)
+  assert.ok(Date.now() - t0 >= 10)
+  assert.ok(!Number.isNaN(Date.parse(nowIso())))
+  assert.match(nowIso(), /^\d{4}-\d\d-\d\dT.*Z$/)
+})
