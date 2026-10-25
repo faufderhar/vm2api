@@ -17,6 +17,8 @@ import {
   createRateLimiter,
   verifyPanelSession,
   extractPanelToken,
+  panelTokenFromCookie,
+  panelCookieUseAllowed,
   attachPanelAuth,
   getPanelAdmin,
   isLoopbackRequest,
@@ -103,7 +105,7 @@ import { normalizeCredentialMode } from './lib/oauth/credential-mode.mjs'
 import { ensureWorkerCredential } from './lib/transport/go-worker-client.mjs'
 import { stopAllRustKernels } from './lib/transport/rust-kernel-supervisor.mjs'
 import { createRespond, parseRequestUrl } from './lib/http/respond.mjs'
-import { corsHeadersForRequest } from './lib/http/cors.mjs'
+import { corsHeadersForRequest, parsePanelCorsOrigins } from './lib/http/cors.mjs'
 import { isConsoleEntry, tryServeWebDist } from './lib/http/web-dist.mjs'
 import { createRoutingRuntime } from './lib/admin/routing-runtime.mjs'
 import { createImportCommit } from './lib/oauth/import-commit.mjs'
@@ -740,9 +742,30 @@ function rejectAuth(req, res, error) {
   return false
 }
 
+function isPanelPath(req) {
+  const raw = String(req?.url || '/')
+  const pathname = raw.split('?')[0]
+  return pathname.startsWith('/admin') || pathname.startsWith('/api/panel')
+}
+
 function requireAuth(req, res) {
   req.presentedApiKey = extractApiKey(req)
-  const token = extractPanelToken(req) || req.presentedApiKey
+  // Outside the panel, a Cookie is ambient: an explicit API key wins over it,
+  // and a cookie alone must come from this host or an allowlisted panel origin.
+  const cookieOnly = !isPanelPath(req) && panelTokenFromCookie(req)
+  const token = cookieOnly && req.presentedApiKey ? req.presentedApiKey : extractPanelToken(req) || req.presentedApiKey
+  if (cookieOnly && !req.presentedApiKey && !panelCookieUseAllowed(req, parsePanelCorsOrigins())) {
+    return rejectAuth(
+      req,
+      res,
+      makeError({
+        type: ErrorType.PERMISSION,
+        code: 'cross_site_request',
+        message: 'Cross-site requests cannot use the panel session. Send an API key instead.',
+        status: 403,
+      }),
+    )
+  }
   if (!token) {
     return rejectAuth(
       req,

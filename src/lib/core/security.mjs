@@ -659,6 +659,41 @@ export function panelCookieWriteAllowed(req, allowedOrigins) {
   return allowed.has(origin)
 }
 
+/** True when the panel token on this request came only from a Cookie, not from a header. */
+export function panelTokenFromCookie(req) {
+  const auth = req?.headers?.authorization || ''
+  if (
+    typeof auth === 'string' &&
+    auth.toLowerCase().startsWith('bearer ') &&
+    auth.slice(7).trim().startsWith('kin-panel-')
+  ) {
+    return false
+  }
+  if (String(req?.headers?.['x-panel-token'] || '').trim()) return false
+  const cookies = parseCookie(req?.headers?.cookie)
+  return !!(cookies.kin_panel_token || cookies.kin_console_token)
+}
+
+/**
+ * A panel Cookie used outside /admin and /api/panel (inference routes, the
+ * Responses WebSocket). Unlike panelCookieWriteAllowed this covers every
+ * method, because a WebSocket upgrade is a GET that the browser sends with
+ * cookies from any site. A browser always sends Origin on a cross-origin POST
+ * and on every WebSocket handshake; a client with no Origin and no
+ * Sec-Fetch-Site is not a browser and cannot be driven cross-site.
+ */
+export function panelCookieUseAllowed(req, allowedOrigins) {
+  const fetchSite = String(req?.headers?.['sec-fetch-site'] || '')
+    .trim()
+    .toLowerCase()
+  if (fetchSite === 'cross-site') return false
+  const origin = String(req?.headers?.origin || '').trim()
+  if (!origin) return fetchSite === '' || fetchSite === 'same-origin' || fetchSite === 'none'
+  if (originMatchesRequestHost(origin, req)) return true
+  const allowed = allowedOrigins instanceof Set ? allowedOrigins : new Set(allowedOrigins || [])
+  return allowed.has(origin)
+}
+
 /** Warn once at startup when a TLS proxy would otherwise leave the cookie without Secure. */
 export function warnPanelCookieScheme(env = process.env, warn = console.warn) {
   const scheme = String(env.PUBLIC_SCHEME || '').trim()
