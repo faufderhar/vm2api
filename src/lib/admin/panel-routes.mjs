@@ -257,7 +257,7 @@ import {
   boundProxyUrl,
   dnsUpstreamChain,
 } from '../vm/egress.mjs'
-import { collectSlotIdentity } from '../vm/guest-identity.mjs'
+import { collectSlotIdentityOnce, scheduleIdentityAutoCollect } from '../vm/guest-identity.mjs'
 import { applyOfficialFingerprintToVm, reconcileOfficialFingerprints } from '../identity/official-fingerprint.mjs'
 import { personaPreviewVars } from '../identity/crs-persona.mjs'
 import {
@@ -727,6 +727,14 @@ export function createPanelHandler(ctx) {
   const requireAuth = (...args) => ctx.requireAuth(...args)
   const cfg = ctx.cfg
   const routingConfigPath = ctx.routingConfigPath
+  // After a successful slot start: one background guest-identity collect if the slot never had one.
+  const autoCollectIdentity = (id) => {
+    try {
+      return (ctx.scheduleIdentityAutoCollect || scheduleIdentityAutoCollect)(cfg.paths.project, id, { getVm })
+    } catch {
+      return { scheduled: false, reason: 'error' }
+    }
+  }
   const stickyRouter = ctx.stickyRouter
   const accountQuota = ctx.accountQuota
   const proxyPool = ctx.proxyPool
@@ -849,13 +857,14 @@ export function createPanelHandler(ctx) {
         vm,
         force: true,
         manual: true,
-        collectIdentity: collectSlotIdentity,
+        collectIdentity: collectSlotIdentityOnce,
         onStats: officialCcStatsHandler(id, vm.claude?.account_uuid),
         routingFile: routingConfigPath,
         config: ctx.routingConfig?.official_cc,
         credentialMode: credentialModeOfVm(vm),
       })
     }
+    if (!startError && !bootstrap?.scheduled) autoCollectIdentity(id)
     const probed = await panel.buildProbeOne({ cfg, accountQuota, id, routingConfig: ctx.routingConfig })
     const probe = probed?.status
       ? { ok: false, error: probed.body?.error?.message || probed.body?.error?.code || 'probe_failed' }
@@ -2808,9 +2817,9 @@ export function createPanelHandler(ctx) {
         const id = p.split('/')[4]
         const vm = getVm(cfg.paths.project, id)
         if (!vm) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
-        const collected = await collectSlotIdentity(cfg.paths.project, vm)
+        const collected = await collectSlotIdentityOnce(cfg.paths.project, vm)
         if (!collected.ok) {
-          return json(res, 502, {
+          return json(res, collected.status || 502, {
             ok: false,
             error: { message: collected.error || 'collect failed', code: collected.code },
           })
@@ -3619,6 +3628,7 @@ export function createPanelHandler(ctx) {
               schedulable: mode === 'keep' ? vm.schedulable !== false && !vm.schedule_disabled_reason : false,
               schedule_disabled_reason: mode === 'keep' ? vm.schedule_disabled_reason || null : 'no_credential',
             }) || vm
+          autoCollectIdentity(id)
           return json(
             res,
             200,
@@ -4004,7 +4014,7 @@ export function createPanelHandler(ctx) {
           vmId: id,
           projectRoot: cfg.paths.project,
           force: body.force !== false,
-          collectIdentity: collectSlotIdentity,
+          collectIdentity: collectSlotIdentityOnce,
           onStats: officialCcStatsHandler(id, vm.claude?.account_uuid),
           routingFile: routingConfigPath,
           config: ctx.routingConfig.official_cc,
@@ -4470,6 +4480,7 @@ export function createPanelHandler(ctx) {
             startError = boot.error || 'runtime start failed'
           } else {
             patchVmRecord(cfg.paths.project, id, { status: 'running' })
+            autoCollectIdentity(id)
           }
         } else if (startNow) {
           patchVmRecord(cfg.paths.project, id, { status: 'stopped' })
@@ -4504,6 +4515,7 @@ export function createPanelHandler(ctx) {
           return json(res, started.status, { ok: false, error: { code: started.code, message: started.error } })
         }
         const { vm, bound, boot } = started
+        autoCollectIdentity(id)
         return json(
           res,
           200,

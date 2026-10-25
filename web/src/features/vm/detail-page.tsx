@@ -66,6 +66,7 @@ import { VmTestTab } from '@/features/vm/detail-test-tab'
 import { bootOutcome, vmTodayCounts } from '@/features/vm/detail-today'
 import { GrokCliCard } from '@/features/vm/grok-cli-card'
 import { NodeChip } from '@/features/vm/node-chip'
+import { START_AND_COLLECT_KEY } from '@/features/vm/physical-features-view'
 import { probeOutcome, type ProbeCheck } from '@/features/vm/probe-status'
 import {
   vmQueryOptions,
@@ -200,7 +201,11 @@ function VmDetailBody({
       j.done?.(data)
       await refreshAll()
     },
-    onError: (error: Error) => toast.error(error.message),
+    // A failed action can still change the record (e.g. a persisted collect failure).
+    onError: async (error: Error) => {
+      toast.error(error.message)
+      await refreshAll()
+    },
   })
   const pendingKeys = useMutationState({
     filters: { mutationKey: jobKey, status: 'pending' },
@@ -229,6 +234,15 @@ function VmDetailBody({
           toast.success('已执行 ' + path)
         }
       },
+    })
+  const startAndCollect = () =>
+    runJob({
+      key: START_AND_COLLECT_KEY,
+      run: async () => {
+        await postVm(id, '/start')
+        return postVm(id, '/collect-identity')
+      },
+      done: () => toast.success('已开机并采集物理特征'),
     })
   const saveTimezone = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
@@ -584,6 +598,7 @@ function VmDetailBody({
                 refreshBlocked={refreshBlocked}
                 savingTimezone={saveTimezone.isPending}
                 onAction={act}
+                onStartAndCollect={startAndCollect}
                 busy={busy}
                 onRefresh={() => void refreshAll()}
                 onTimezoneSave={(timezone) => saveTimezone.mutate({ timezone })}

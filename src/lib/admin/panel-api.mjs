@@ -95,6 +95,7 @@ import { effectiveOpenAIPolicy, normalizeOpenAIQuotaPolicy } from '../pool/opena
 import { openAIRuntimeSignals } from '../pool/openai-account-runtime.mjs'
 import { normalizeVmConfig, memoryMiB } from '../vm/machine-spec.mjs'
 import { runtimeKind } from '../vm/runtime-kind.mjs'
+import { readSlotIdentityProfile } from '../identity/slot-identity-profile.mjs'
 import { telemetryUploadInterval } from '../vm/worker-telemetry.mjs'
 import { normalizeGrokRouting } from '../protocol/grok-route.mjs'
 
@@ -216,23 +217,52 @@ function presentBytes(value) {
   return Math.round(n)
 }
 
-function publicDmi(hardware, smbios) {
-  const nested = hardware?.dmi && typeof hardware.dmi === 'object' ? hardware.dmi : {}
-  const machine = smbios && typeof smbios === 'object' ? smbios : {}
-  const pick = (key, flat) => presentText(nested[key]) || presentText(hardware?.[flat]) || presentText(machine[key])
-  const out = {
-    manufacturer: pick('manufacturer', 'dmi_manufacturer'),
-    product: pick('product', 'dmi_product'),
-    version: pick('version', 'dmi_version'),
-    family: pick('family', 'dmi_family'),
-    serial: pick('serial', 'dmi_serial'),
-    uuid: pick('uuid', 'dmi_uuid'),
+const DMI_FIELDS = Object.freeze([
+  ['manufacturer', 'dmi_manufacturer'],
+  ['product', 'dmi_product'],
+  ['version', 'dmi_version'],
+  ['family', 'dmi_family'],
+  ['serial', 'dmi_serial'],
+  ['uuid', 'dmi_uuid'],
+])
+
+/** One DMI group from one record: never fills a missing key from another source. */
+function dmiGroup(record, { flat = false } = {}) {
+  if (!record || typeof record !== 'object') return null
+  const nested = record.dmi && typeof record.dmi === 'object' ? record.dmi : flat ? {} : record
+  const out = {}
+  for (const [key, flatKey] of DMI_FIELDS) {
+    out[key] = presentText(nested[key]) || (flat ? presentText(record[flatKey]) : null)
   }
   return Object.values(out).some(Boolean) ? out : null
 }
 
-/** Sanitized guest facts for panel VM projections. Never copies tokens, IDs, or host paths. */
-export function publicPhysicalFeatures(vm) {
+function publicCollectError(runtime) {
+  const err = runtime?.identity_collect_error
+  if (!err || typeof err !== 'object') return null
+  const message = presentText(err.message)
+  if (!message) return null
+  return { code: presentText(err.code), message: message.slice(0, 300), at: presentText(err.at) }
+}
+
+function pickSourced(candidates) {
+  for (const [value, source] of candidates) {
+    if (value != null && value !== '') return [value, source]
+  }
+  return [null, null]
+}
+
+/**
+ * Sanitized guest facts for panel VM projections. Never copies tokens, IDs, or host paths.
+ *
+ * Each hardware fact carries its source in `sources`: `collected` (guest collect),
+ * `profile` (kin-computer identity files on the host, see readSlotIdentityProfile),
+ * or `spec` (vm.machine). Docker slots never fall back to vm.machine for MAC, CPU,
+ * disk, SMBIOS or vcpus: those values are not what the container exposes (it gets
+ * kin-computer's MAC/DMI); only the applied memory / --cpus limits are real. DMI is
+ * taken as a whole group from a single source: collected > profile > spec (KVM only).
+ */
+export function publicPhysicalFeatures(vm, { profile = null } = {}) {
   const empty = {
     observed_at: null,
     runtime_type: null,
@@ -253,39 +283,104 @@ export function publicPhysicalFeatures(vm) {
     shell: null,
     package_managers: null,
     runtimes: null,
+    sources: {},
+    collect_error: null,
   }
   if (!vm || typeof vm !== 'object') return empty
   const fp = vm.fingerprint && typeof vm.fingerprint === 'object' ? vm.fingerprint : {}
   const hw = fp.hardware && typeof fp.hardware === 'object' ? fp.hardware : {}
   const machine = vm.machine && typeof vm.machine === 'object' ? vm.machine : {}
   const runtime = vm.runtime && typeof vm.runtime === 'object' ? vm.runtime : {}
+  const prof = profile && typeof profile === 'object' ? profile : {}
+  const kind = vm.runtime_type || runtimeKind(vm) || null
+  const kvm = kind === 'kvm'
   const specMiB = machine.memory ? memoryMiB(machine.memory) : 0
+  const specMemory = specMiB > 0 ? specMiB * 1024 * 1024 : null
+  const dockerCpus = typeof machine.docker_cpus === 'number' && machine.docker_cpus > 0 ? machine.docker_cpus : 0
+  const observedAt =
+    presentText(hw.observed_at) || presentText(fp.collected_at) || presentText(runtime.identity_collected_at)
+  const guestMachineId = !!(
+    presentText(fp.guest_machine_id) ||
+    presentText(fp.machine_id) ||
+    presentText(hw.machine_id)
+  )
+
+  const [cpuModel, cpuModelSrc] = pickSourced([
+    [presentText(hw.cpu_model), 'collected'],
+    [presentText(prof.cpu_model), 'profile'],
+    [kvm ? presentText(machine.cpu_model) : null, 'spec'],
+  ])
+  const [cpuCores, cpuCoresSrc] = pickSourced([
+    [presentInt(hw.cpu_cores), 'collected'],
+    [kvm ? presentInt(machine.vcpus) : dockerCpus ? Math.ceil(dockerCpus) : null, 'spec'],
+    [presentInt(prof.cpu_cores), 'profile'],
+  ])
+  const [memory, memorySrc] = pickSourced([
+    [presentBytes(hw.memory_bytes), 'collected'],
+    [specMemory, 'spec'],
+    [presentBytes(prof.memory_bytes), 'profile'],
+  ])
+  const [rootDisk, rootDiskSrc] = pickSourced([
+    [presentText(hw.root_disk), 'collected'],
+    [kvm ? presentText(machine.disk_serial) : null, 'spec'],
+  ])
+  const [mac, macSrc] = pickSourced([
+    [presentText(hw.mac), 'collected'],
+    [presentText(prof.mac), 'profile'],
+    [kvm ? presentText(machine.mac) : null, 'spec'],
+  ])
+  const [dmi, dmiSrc] = pickSourced([
+    [dmiGroup(hw, { flat: true }), 'collected'],
+    [dmiGroup(prof.dmi), 'profile'],
+    [kvm ? dmiGroup(machine.smbios) : null, 'spec'],
+  ])
+  const [hostname, hostnameSrc] = pickSourced([
+    [observedAt ? presentText(fp.hostname) : null, 'collected'],
+    [presentText(prof.hostname), 'profile'],
+    [presentText(fp.hostname), 'config'],
+  ])
+  const machineIdPresent = guestMachineId || prof.machine_id_present === true
+  const machineIdSrc = guestMachineId ? (observedAt ? 'collected' : 'config') : machineIdPresent ? 'profile' : null
   return {
-    observed_at:
-      presentText(hw.observed_at) || presentText(fp.collected_at) || presentText(runtime.identity_collected_at),
-    runtime_type: vm.runtime_type || runtimeKind(vm) || null,
-    hostname: presentText(fp.hostname),
+    observed_at: observedAt,
+    runtime_type: kind,
+    hostname,
     os_id: presentText(fp.os_id),
     os_pretty: presentText(fp.os_pretty),
     kernel_release: presentText(fp.guest_kernel_release) || presentText(fp.kernel_release),
     arch: presentText(fp.stainless_arch) || presentText(fp.arch),
-    machine_id_present: !!(
-      presentText(fp.guest_machine_id) ||
-      presentText(fp.machine_id) ||
-      presentText(hw.machine_id)
-    ),
+    machine_id_present: machineIdPresent,
     timezone: presentText(fp.timezone) || presentText(vm.timezone),
     locale: presentText(fp.locale) || presentText(vm.locale),
-    cpu_model: presentText(hw.cpu_model) || presentText(machine.cpu_model),
-    cpu_cores: presentInt(hw.cpu_cores) ?? presentInt(machine.vcpus),
-    memory_bytes: presentBytes(hw.memory_bytes) ?? (specMiB > 0 ? specMiB * 1024 * 1024 : null),
-    root_disk: presentText(hw.root_disk) || presentText(machine.disk_serial),
-    mac: presentText(hw.mac) || presentText(machine.mac),
-    dmi: publicDmi(hw, machine.smbios),
+    cpu_model: cpuModel,
+    cpu_cores: cpuCores,
+    memory_bytes: memory,
+    root_disk: rootDisk,
+    mac,
+    dmi,
     shell: presentList(hw.shell) || presentList(fp.shell),
     package_managers: presentList(hw.package_managers) || presentList(fp.package_managers),
     runtimes: presentList(hw.runtimes) || presentList(fp.runtimes),
+    sources: {
+      hostname: hostnameSrc,
+      machine_id: machineIdSrc,
+      cpu_model: cpuModelSrc,
+      cpu_cores: cpuCoresSrc,
+      memory_bytes: memorySrc,
+      root_disk: rootDiskSrc,
+      mac: macSrc,
+      dmi: dmiSrc,
+    },
+    collect_error: publicCollectError(runtime),
   }
+}
+
+/** Host identity files are only read while the slot has no collected hardware. */
+function physicalFeaturesFor(v, projectRoot) {
+  const hw = v?.fingerprint?.hardware
+  const collected = hw && typeof hw === 'object' && presentText(hw.observed_at)
+  const profile = collected ? null : readSlotIdentityProfile(projectRoot, v)
+  return publicPhysicalFeatures(v, { profile })
 }
 
 /** Clear runtime cooldown, leftover /usage 429 flag, and sticky pins for a slot. */
@@ -2070,7 +2165,7 @@ export function enrichVm(v, accountQuota, active, extras = {}) {
       : (u5 != null && gateZone(u5, safety, quotaGate) !== GATE_OPEN) ||
         (u7 != null && gateZone(u7, weeklySafety, quotaGate) !== GATE_OPEN),
     fingerprint: v.fingerprint || null,
-    physical_features: publicPhysicalFeatures(v),
+    physical_features: physicalFeaturesFor(v, extras.projectRoot),
     runtime: v.runtime || null,
     ip: v.ip || v.runtime?.ip || null,
     pid: v.pid || v.runtime?.pid || null,

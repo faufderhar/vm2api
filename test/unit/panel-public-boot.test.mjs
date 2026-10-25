@@ -214,9 +214,9 @@ test('publicPhysicalFeatures exposes observed hardware without secrets', () => {
   )
 })
 
-test('publicPhysicalFeatures falls back to public machine spec', () => {
+test('publicPhysicalFeatures falls back to public machine spec on KVM slots', () => {
   const features = publicPhysicalFeatures({
-    runtime: { type: 'docker' },
+    runtime: { type: 'kvm' },
     timezone: 'America/Los_Angeles',
     machine: {
       memory: '2g',
@@ -228,7 +228,7 @@ test('publicPhysicalFeatures falls back to public machine spec', () => {
     },
     fingerprint: {},
   })
-  assert.equal(features.runtime_type, 'docker')
+  assert.equal(features.runtime_type, 'kvm')
   assert.equal(features.cpu_model, 'qemu64')
   assert.equal(features.cpu_cores, 4)
   assert.equal(features.memory_bytes, 2 * 1024 * 1024 * 1024)

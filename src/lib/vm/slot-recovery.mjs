@@ -216,6 +216,16 @@ async function containerCheck(vm, probes, internal) {
   const label = '槽位容器'
   const st = await probes.container(vm)
   if (st.running) return check('container', label, 'ok', null, '运行中')
+  // Grok inference runs on the host api-kernel: no container only costs the ops shell and guest collect.
+  if (!st.exists && isGrokVm(vm)) {
+    return check(
+      'container',
+      label,
+      'warn',
+      'container_missing',
+      '容器不存在（Grok 推理不依赖容器，服务不受影响；终端和物理特征采集需先开机）',
+    )
+  }
   if (!st.exists) return check('container', label, 'error', 'container_missing', '容器不存在')
   const bits = [`状态 ${st.status || 'unknown'}`]
   if (st.exit_code != null) bits.push(`退出码 ${st.exit_code}`)
