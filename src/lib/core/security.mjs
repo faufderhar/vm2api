@@ -626,7 +626,19 @@ export function panelSessionCookieOptions(req, allowedOrigins, env = process.env
   return { sameSite, secure }
 }
 
-function originMatchesRequestHost(origin, req) {
+function defaultPort(protocol) {
+  return protocol === 'https:' ? '443' : '80'
+}
+
+/**
+ * Origin is this gateway: same hostname AND same port. A different port on the
+ * same host is a different origin (another app there must not ride the cookie).
+ * The scheme is not compared: behind a TLS proxy the gateway itself sees http.
+ * When the Host header carries no port and TRUST_PROXY=1, the proxy may have
+ * stripped it ($host), so only the hostname is compared. PUBLIC_BASE_URL and
+ * PANEL_CORS_ORIGINS are matched separately through the allowlist.
+ */
+export function originMatchesRequestHost(origin, req, env = process.env) {
   let parsed
   try {
     parsed = new URL(origin)
@@ -634,8 +646,20 @@ function originMatchesRequestHost(origin, req) {
     return false
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false
+  const raw = String(req?.headers?.host || '').trim()
   const host = requestHostname(req).toLowerCase()
-  return !!host && parsed.hostname.toLowerCase() === host
+  if (!host || parsed.hostname.toLowerCase() !== host) return false
+  let hostPort = ''
+  try {
+    hostPort = new URL(`http://${raw}`).port
+  } catch {
+    hostPort = (raw.match(/:(\d+)$/) || [])[1] || ''
+  }
+  if (/:\d+$/.test(raw) && !hostPort) hostPort = '80' // URL drops :80 under http:
+  const originPort = parsed.port || defaultPort(parsed.protocol)
+  if (hostPort) return hostPort === originPort
+  if (trustProxy(env)) return true
+  return originPort === defaultPort(parsed.protocol)
 }
 
 /**
