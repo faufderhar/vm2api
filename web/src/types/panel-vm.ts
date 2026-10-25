@@ -226,6 +226,29 @@ export type VmPhysicalFeatures = {
   shell?: string | null
   package_managers?: string | null
   runtimes?: string | null
+  /** Where each hardware fact came from (server: publicPhysicalFeatures). */
+  sources?: Partial<Record<PhysicalFactKey, PhysicalFactSource | null>>
+  /** Last failed collect; cleared on the next successful one. */
+  collect_error?: VmCollectError | null
+}
+
+/** collected = guest collect, profile = kin-computer identity files, spec = vm.machine, config = slot record. */
+export type PhysicalFactSource = 'collected' | 'profile' | 'spec' | 'config'
+
+export type PhysicalFactKey =
+  | 'hostname'
+  | 'machine_id'
+  | 'cpu_model'
+  | 'cpu_cores'
+  | 'memory_bytes'
+  | 'root_disk'
+  | 'mac'
+  | 'dmi'
+
+export type VmCollectError = {
+  code?: string | null
+  message: string
+  at?: string | null
 }
 
 export type Vm = {

@@ -23,6 +23,7 @@ import { Field } from '@/features/vm/detail-section-primitives'
 import { VmEnvironmentCard } from '@/features/vm/environment-card'
 import { NodeChip } from '@/features/vm/node-chip'
 import { VmPhysicalFeaturesCard } from '@/features/vm/physical-features-card'
+import { START_AND_COLLECT_KEY } from '@/features/vm/physical-features-view'
 import { isRemoteVm, REMOTE_UNSUPPORTED_TEXT } from '@/features/vm/placement'
 import { VmOwnerAdminCard } from '@/features/vm/vm-owner-admin-card'
 import { VmShellCard } from '@/features/vm/vm-shell-card'
@@ -36,6 +37,8 @@ type VmOpsTabProps = {
   refreshBlocked: string
   savingTimezone: boolean
   onAction: (path: string, body?: unknown) => void
+  /** 开机后采集物理特征（没有运行中容器的槽）。 */
+  onStartAndCollect?: () => void
   /** 该路径的操作正在进行。 */
   busy: (path: string) => boolean
   /** 终端快捷指令执行后刷新详情。 */
@@ -58,6 +61,7 @@ export function VmOpsTab(props: VmOpsTabProps) {
     refreshBlocked,
     savingTimezone,
     onAction,
+    onStartAndCollect,
     busy,
     onRefresh,
     onTimezoneSave,
@@ -113,7 +117,9 @@ export function VmOpsTab(props: VmOpsTabProps) {
       <VmPhysicalFeaturesCard
         vm={vm}
         collecting={busy('/collect-identity')}
+        starting={busy(START_AND_COLLECT_KEY)}
         onCollect={() => onAction('/collect-identity')}
+        onStartAndCollect={onStartAndCollect}
       />
       <VmEnvironmentCard
         vm={vm}
