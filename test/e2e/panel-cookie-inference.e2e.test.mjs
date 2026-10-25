@@ -69,6 +69,29 @@ test('a panel cookie cannot drive inference or the Responses WebSocket cross-sit
     const sameSite = await get(gw, '/v1/models', { cookie, 'sec-fetch-site': 'same-site' })
     assert.equal(sameSite.status, 403, sameSite.body)
 
+    // L-1: a dot-segment path is judged on the path the router serves, so it
+    // cannot pass as a panel path and skip the cross-site cookie check.
+    const dotted = await new Promise((resolve, reject) => {
+      const r = http.request(
+        {
+          host: '127.0.0.1',
+          port: gw.port,
+          method: 'GET',
+          path: '/api/panel/../../v1/models',
+          headers: { cookie, origin: 'https://evil.example' },
+        },
+        (res) => {
+          let body = ''
+          res.on('data', (d) => (body += d))
+          res.on('end', () => resolve({ status: res.statusCode, body }))
+        },
+      )
+      r.on('error', reject)
+      r.end()
+    })
+    assert.equal(dotted.status, 403, dotted.body)
+    assert.match(dotted.body, /cross_site_request/)
+
     // Same-origin panel use keeps working.
     const same = await get(gw, '/v1/meta', { cookie, origin: gw.baseUrl })
     assert.equal(same.status, 200, same.body)

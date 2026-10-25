@@ -770,6 +770,12 @@ export function publicErrorMessage(e) {
   return 'internal server error'
 }
 
+/** Panel surface on a normalized pathname. Mirrors the router's dispatch test exactly. */
+export function isPanelPathname(pathname) {
+  const p = String(pathname || '')
+  return p.startsWith('/admin') || p.startsWith('/api/panel')
+}
+
 /** Gateway routes a panel session may read on the protocol surface: no upstream call, nothing billed. */
 const PANEL_SESSION_PROTOCOL_READS = new Set(['/v1/meta', '/v1/models', '/v1/usage'])
 const UNVERSIONED_PROTOCOL_ROUTES = new Set([

@@ -48,3 +48,14 @@ test('isProtocolPath works on normalized pathnames', () => {
   assert.equal(isProtocolPath('/api/panel/v1'), false)
   assert.equal(isProtocolPath('/v1x'), false)
 })
+
+test('L-1: isPanelPathname mirrors the router on normalized paths', async () => {
+  const { isPanelPathname } = await import('../../src/lib/core/security.mjs')
+  const { parseRequestUrl } = await import('../../src/lib/http/respond.mjs')
+  const norm = (url) => parseRequestUrl({ url, headers: {} }).pathname
+  assert.equal(isPanelPathname(norm('/api/panel/../../v1/chat/completions')), false)
+  assert.equal(norm('/api/panel/../../v1/chat/completions'), '/v1/chat/completions')
+  assert.equal(isPanelPathname(norm('/api/panel/%2e%2e/%2e%2e/v1/messages')), false)
+  assert.equal(isPanelPathname(norm('/api/panel/me?x=1')), true)
+  assert.equal(isPanelPathname(norm('/admin/models/refresh')), true)
+})

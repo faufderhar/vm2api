@@ -20,6 +20,7 @@ import {
   panelTokenFromCookie,
   panelCookieUseAllowed,
   panelSessionProtocolBlock,
+  isPanelPathname,
   attachPanelAuth,
   getPanelAdmin,
   isLoopbackRequest,
@@ -752,9 +753,9 @@ function requestPathname(req) {
 }
 
 function isPanelPath(req) {
-  const raw = String(req?.url || '/')
-  const pathname = raw.split('?')[0]
-  return pathname.startsWith('/admin') || pathname.startsWith('/api/panel')
+  // Same normalized path the router dispatches on: a raw-url check would treat
+  // /api/panel/../v1/... as a panel path while the router serves /v1/...
+  return isPanelPathname(requestPathname(req))
 }
 
 function requireAuth(req, res) {
@@ -1170,7 +1171,7 @@ const server = http.createServer(async (req, res) => {
       )
     }
 
-    if (p.startsWith('/admin') || p.startsWith('/api/panel')) {
+    if (isPanelPathname(p)) {
       const handled = await handlePanel(req, res, url)
       if (handled !== false) return
     }
