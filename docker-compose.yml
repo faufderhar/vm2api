@@ -4,6 +4,8 @@
 # 本地开发要构建镜像：docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 services:
   vm2api:
+    # 镜像来源与版本都可在 .env 覆盖：自建镜像设 VM2API_IMAGE，生产请把 VM2API_IMAGE_TAG
+    # 固定到具体版本（一键脚本会自动写入），不要长期跟随可变的 latest。
     image: ${VM2API_IMAGE:-ghcr.io/dofastted/vm2api}:${VM2API_IMAGE_TAG:-latest}
     container_name: ${VM2API_CONTAINER_NAME:-vm2api}
     restart: unless-stopped
@@ -28,7 +30,9 @@ services:
       # 自省容器名；VM2API_HOST_ROOT 可显式覆盖宿主安装目录。
       VM2API_CONTAINER_NAME: ${VM2API_CONTAINER_NAME:-vm2api}
       VM2API_HOST_ROOT: ${VM2API_HOST_ROOT:-}
-      HOST: 0.0.0.0
+      # 默认监听全部网卡（与文档一致）；前面有 TLS 反代时在 .env 设 VM2API_BIND_HOST=127.0.0.1，
+      # 不要把明文 8787 直接暴露到公网。
+      HOST: ${VM2API_BIND_HOST:-0.0.0.0}
       PORT: ${PORT:-8787}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

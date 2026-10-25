@@ -26,6 +26,10 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 GITHUB_REPO="${VM2API_GITHUB_REPO:-dofastted/vm2api}"
+if ! printf '%s' "$GITHUB_REPO" | grep -Eq '^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$' || printf '%s' "$GITHUB_REPO" | grep -q '\.\.'; then
+  echo "VM2API_GITHUB_REPO 必须是 owner/repo 形式: ${GITHUB_REPO}" >&2
+  exit 1
+fi
 INSTALL_DIR="${VM2API_DIR:-/opt/vm2api}"
 SERVICE_NAME="vm2api"
 DEFAULT_PORT="${PORT:-8787}"
@@ -275,15 +279,25 @@ env_get() {
   grep -E "^${name}=" "$envf" 2>/dev/null | tail -n1 | cut -d= -f2- | tr -d "'" | tr -d '"' | tr -d '\r'
 }
 
+# No sed here: a value may hold & | \ / that sed would treat as syntax.
 env_set() {
   local name="$1"
   local value="$2"
   local envf="${INSTALL_DIR}/.env"
-  if grep -qE "^${name}=" "$envf" 2>/dev/null; then
-    sed -i "s|^${name}=.*|${name}=${value}|" "$envf"
-  else
-    printf '%s=%s\n' "$name" "$value" >>"$envf"
-  fi
+  local tmp="${envf}.tmp.$$"
+  touch "$envf"
+  (
+    umask 077
+    ENV_LINE_NAME="$name" ENV_LINE_VALUE="$value" awk '
+      BEGIN { n = ENVIRON["ENV_LINE_NAME"]; v = ENVIRON["ENV_LINE_VALUE"]; done = 0 }
+      index($0, n "=") == 1 { if (!done) { print n "=" v; done = 1 }; next }
+      { print }
+      END { if (!done) print n "=" v }
+    ' "$envf" >"$tmp"
+  ) && cat "$tmp" >"$envf"
+  local rc=$?
+  rm -f "$tmp"
+  return $rc
 }
 
 env_set_if_empty() {
@@ -397,6 +411,10 @@ ensure_env() {
   fi
   env_set_if_empty VM2API_API_KEY "$(gen_secret)" || true
   env_set_if_empty VM2API_DB_SECRET "$(gen_secret)" || true
+  # A fork installed with VM2API_GITHUB_REPO keeps checking and upgrading from that fork.
+  if [ "$GITHUB_REPO" != "dofastted/vm2api" ]; then
+    env_set VM2API_GITHUB_REPO "$GITHUB_REPO"
+  fi
   chmod 600 "$envf" || true
 }
 

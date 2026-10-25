@@ -454,6 +454,7 @@ export function createResponsesWsHandler({
   json,
   getRouting,
   maxBodyBytes = DEFAULT_MAX_REQUEST_BYTES,
+  heartbeatMs = 30_000,
 } = {}) {
   const wss = new WebSocketServer({ noServer: true, maxPayload: maxBodyBytes })
 
@@ -507,6 +508,26 @@ export function createResponsesWsHandler({
     let currentReq = null
     let activeResponseId = null
     let activeHopCompleted = false
+
+    // A half-open peer never sends close: ping it and drop it after one missed pong.
+    let alive = true
+    ws.on('pong', () => {
+      alive = true
+    })
+    const heartbeat =
+      heartbeatMs > 0
+        ? setInterval(() => {
+            if (!alive) {
+              ws.terminate()
+              return
+            }
+            alive = false
+            try {
+              ws.ping()
+            } catch {}
+          }, heartbeatMs)
+        : null
+    heartbeat?.unref?.()
 
     const abortCurrent = () => {
       try {
@@ -731,6 +752,7 @@ export function createResponsesWsHandler({
     })
     ws.on('close', () => {
       closed = true
+      if (heartbeat) clearInterval(heartbeat)
       queue.length = 0
       queuedBytes = 0
       abortCurrent()

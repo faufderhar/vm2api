@@ -659,12 +659,67 @@ export function panelCookieWriteAllowed(req, allowedOrigins) {
   return allowed.has(origin)
 }
 
+/** True when the panel token on this request came only from a Cookie, not from a header. */
+export function panelTokenFromCookie(req) {
+  const auth = req?.headers?.authorization || ''
+  if (
+    typeof auth === 'string' &&
+    auth.toLowerCase().startsWith('bearer ') &&
+    auth.slice(7).trim().startsWith('kin-panel-')
+  ) {
+    return false
+  }
+  if (String(req?.headers?.['x-panel-token'] || '').trim()) return false
+  const cookies = parseCookie(req?.headers?.cookie)
+  return !!(cookies.kin_panel_token || cookies.kin_console_token)
+}
+
+/**
+ * A panel Cookie used outside /admin and /api/panel (inference routes, the
+ * Responses WebSocket). Unlike panelCookieWriteAllowed this covers every
+ * method, because a WebSocket upgrade is a GET that the browser sends with
+ * cookies from any site. A browser always sends Origin on a cross-origin POST
+ * and on every WebSocket handshake; a client with no Origin and no
+ * Sec-Fetch-Site is not a browser and cannot be driven cross-site.
+ */
+export function panelCookieUseAllowed(req, allowedOrigins) {
+  const fetchSite = String(req?.headers?.['sec-fetch-site'] || '')
+    .trim()
+    .toLowerCase()
+  if (fetchSite === 'cross-site') return false
+  const origin = String(req?.headers?.origin || '').trim()
+  if (!origin) return fetchSite === '' || fetchSite === 'same-origin' || fetchSite === 'none'
+  if (originMatchesRequestHost(origin, req)) return true
+  const allowed = allowedOrigins instanceof Set ? allowedOrigins : new Set(allowedOrigins || [])
+  return allowed.has(origin)
+}
+
 /** Warn once at startup when a TLS proxy would otherwise leave the cookie without Secure. */
 export function warnPanelCookieScheme(env = process.env, warn = console.warn) {
   const scheme = String(env.PUBLIC_SCHEME || '').trim()
   const base = String(env.PUBLIC_BASE_URL || '').trim()
   if (scheme || base) return
   warn('kin-security: TLS 反代必须设置 PUBLIC_SCHEME 或 PUBLIC_BASE_URL，否则登录 Cookie 不会带 Secure')
+}
+
+/**
+ * Warn once when the gateway listens on every interface with no TLS in front.
+ * Panel passwords, API keys and session cookies would then cross the network in clear text.
+ */
+export function warnPublicPlainListen(host, env = process.env, warn = console.warn) {
+  const h = String(host || '').trim()
+  if (h === '127.0.0.1' || h === '::1' || h === 'localhost') return false
+  const base = String(env.PUBLIC_BASE_URL || '')
+    .trim()
+    .toLowerCase()
+  const scheme = String(env.PUBLIC_SCHEME || '')
+    .trim()
+    .toLowerCase()
+  if (base.startsWith('https://') || scheme === 'https') return false
+  warn(
+    `kin-security: 正在以明文 HTTP 监听 ${h || '0.0.0.0'}。公网部署请放到 TLS 反代后面，并设 VM2API_BIND_HOST=127.0.0.1（compose）或 HOST=127.0.0.1`,
+  )
+  return true
 }
 
 /** Startup check for VM2API_ADMIN_PASSWORD / KIN_ADMIN_PASSWORD. Does not rewrite stored hashes. */
@@ -703,4 +758,14 @@ export function clearPanelSessionCookie({ secure = true, sameSite = 'Lax' } = {}
   const parts = ['kin_panel_token=', 'Path=/', 'Max-Age=0', 'HttpOnly', `SameSite=${site}`]
   if (lockedSecure) parts.push('Secure')
   return parts.join('; ')
+}
+
+/**
+ * Text for the catch-all error response. A thrown error that set its own
+ * `status` was raised on purpose and keeps its message; anything else is an
+ * unexpected fault whose text (paths, SQL, upstream bodies) stays in the log.
+ */
+export function publicErrorMessage(e) {
+  if (e && typeof e === 'object' && Number.isInteger(e.status)) return e.message || String(e)
+  return 'internal server error'
 }

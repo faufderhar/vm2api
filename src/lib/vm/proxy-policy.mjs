@@ -87,6 +87,12 @@ function ipv4Kind(host) {
   if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return 'private'
   if (parts[0] === 169 && parts[1] === 254) return 'linklocal'
   if (parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127) return 'cgnat'
+  // IETF protocol assignments (192.0.0.0/24). The benchmarking block 198.18.0.0/15
+  // is left alone on purpose: fake-ip DNS (Clash and similar) maps every public
+  // name into it, so blocking it would reject real upstreams after DNS checks.
+  if (parts[0] === 192 && parts[1] === 0 && parts[2] === 0) return 'private'
+  // Multicast, reserved 240/4 and broadcast are never a proxy.
+  if (parts[0] >= 224) return 'reserved'
   return ''
 }
 
@@ -116,8 +122,20 @@ function embeddedIpv4(g) {
   const translated = zero(0, 4) && g[4] === 0xffff && g[5] === 0
   const compatible = zero(0, 6) && (g[6] !== 0 || g[7] > 1)
   const nat64 = g[0] === 0x64 && g[1] === 0xff9b && zero(2, 6)
-  if (!mapped && !translated && !compatible && !nat64) return ''
-  return [g[6] >> 8, g[6] & 0xff, g[7] >> 8, g[7] & 0xff].join('.')
+  // RFC 8215 local-use NAT64 prefix 64:ff9b:1::/48 keeps the IPv4 in the last 32 bits.
+  const nat64Local = g[0] === 0x64 && g[1] === 0xff9b && g[2] === 1
+  if (mapped || translated || compatible || nat64 || nat64Local) {
+    return [g[6] >> 8, g[6] & 0xff, g[7] >> 8, g[7] & 0xff].join('.')
+  }
+  // 6to4 (2002::/16) carries the relay's IPv4 in groups 1–2.
+  if (g[0] === 0x2002) return [g[1] >> 8, g[1] & 0xff, g[2] >> 8, g[2] & 0xff].join('.')
+  // Teredo (2001:0::/32) carries the client IPv4, bit-inverted, in groups 6–7.
+  if (g[0] === 0x2001 && g[1] === 0) {
+    const a = ~g[6] & 0xffff
+    const b = ~g[7] & 0xffff
+    return [a >> 8, a & 0xff, b >> 8, b & 0xff].join('.')
+  }
+  return ''
 }
 
 function ipv6Kind(host) {
@@ -128,6 +146,11 @@ function ipv6Kind(host) {
   if (v4) return v4 === '100.100.100.200' ? 'metadata' : ipv4Kind(v4)
   if ((g[0] & 0xffc0) === 0xfe80) return 'linklocal'
   if ((g[0] & 0xfe00) === 0xfc00) return 'ula'
+  // Deprecated site-local fec0::/10 is still routed inside some networks.
+  if ((g[0] & 0xffc0) === 0xfec0) return 'ula'
+  // Multicast and discard-only 100::/64.
+  if ((g[0] & 0xff00) === 0xff00) return 'reserved'
+  if (g[0] === 0x100 && g.slice(1, 4).every((x) => x === 0)) return 'reserved'
   return ''
 }
 
@@ -151,7 +174,7 @@ function legacyIpv4(host) {
   return [value >>> 24, (value >>> 16) & 0xff, (value >>> 8) & 0xff, value & 0xff].join('.')
 }
 
-const HARD_BLOCK = new Set(['unspecified', 'linklocal', 'metadata'])
+const HARD_BLOCK = new Set(['unspecified', 'linklocal', 'metadata', 'reserved'])
 const PRIVATE_BLOCK = new Set(['loopback', 'private', 'cgnat', 'ula'])
 
 /**
@@ -161,9 +184,11 @@ const PRIVATE_BLOCK = new Set(['loopback', 'private', 'cgnat', 'ula'])
  */
 export function isUnsafeProxyHost(proxy) {
   if (platformLocalEgress(proxy)) return false
+  // A trailing dot is the same name to the resolver: `127.0.0.1.`, `localhost.`.
   let host = String(proxyHost(proxy) || '')
     .trim()
     .toLowerCase()
+    .replace(/\.+$/, '')
   if (!host) return false
   if (host === 'localhost' || host.endsWith('.localhost')) return !privateProxyAllowed()
   if (
