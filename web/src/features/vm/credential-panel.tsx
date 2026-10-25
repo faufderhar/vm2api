@@ -43,6 +43,7 @@ import { type LoginTerminalHandle, WsTerminal } from '@/components/ws-terminal'
 import { dashboardQueryOptions } from '@/features/overview/queries'
 import { CodexCredentialPanel } from '@/features/vm/codex-credential-panel'
 import { ConvertOauthToSetupButton } from '@/features/vm/convert-oauth-button'
+import { Hint, Seg } from '@/features/vm/credential-panel-parts'
 import { GrokCredentialPanel } from '@/features/vm/grok-credential-panel'
 import { prepareLoginTerminal } from '@/features/vm/login-terminal-start'
 import { vmQueryOptions } from '@/features/vm/queries'
@@ -85,47 +86,6 @@ function useCountdown(expiresAt: number) {
   if (left <= 0) return '已过期'
   const m = Math.floor(left / 60)
   return `${m}:${String(left % 60).padStart(2, '0')}`
-}
-
-function Seg<T extends string>({
-  label,
-  value,
-  options,
-  onChange,
-  disabled,
-}: {
-  label: string
-  value: T
-  options: { id: T; label: string }[]
-  onChange: (next: T) => void
-  disabled?: boolean
-}) {
-  return (
-    <div
-      role='tablist'
-      aria-label={label}
-      className='flex flex-wrap items-center gap-1.5'
-    >
-      {options.map((o) => (
-        <Button
-          key={o.id}
-          type='button'
-          role='tab'
-          size='sm'
-          aria-selected={value === o.id}
-          disabled={disabled}
-          variant={value === o.id ? 'default' : 'outline'}
-          onClick={() => onChange(o.id)}
-        >
-          {o.label}
-        </Button>
-      ))}
-    </div>
-  )
-}
-
-function Hint({ children }: { children: React.ReactNode }) {
-  return <p className='text-xs text-muted-foreground'>{children}</p>
 }
 
 export function CredentialPanel({

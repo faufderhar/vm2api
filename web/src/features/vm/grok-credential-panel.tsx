@@ -1,16 +1,21 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { Vm } from '@/types/panel-vm'
-import { Copy, ExternalLink, Upload } from 'lucide-react'
+import { Copy, ExternalLink } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { proxyNamedLabel } from '@/lib/vm-status'
 import { Button } from '@/components/ui/button'
-import { Label } from '@/components/ui/label'
-import { Textarea } from '@/components/ui/textarea'
 import { dashboardQueryOptions } from '@/features/overview/queries'
 import type { CommitResult } from '@/features/vm/credential-panel'
+import {
+  AccountFileField,
+  Hint,
+  type PickedFile,
+  Seg,
+} from '@/features/vm/credential-panel-parts'
 import { vmQueryOptions } from '@/features/vm/queries'
+import { useMmSsCountdown } from '@/features/vm/use-mmss-countdown'
 
 type GrokImportMode = 'oauth' | 'json' | 'refresh_token' | 'access_token'
 
@@ -39,61 +44,6 @@ const EMPTY_LINK: AuthLink = {
   proxyHint: '',
 }
 
-function Seg({
-  value,
-  onChange,
-  disabled,
-}: {
-  value: GrokImportMode
-  onChange: (next: GrokImportMode) => void
-  disabled?: boolean
-}) {
-  return (
-    <div
-      role='tablist'
-      aria-label='账号添加方式'
-      className='flex flex-wrap items-center gap-1.5'
-    >
-      {MODES.map((option) => (
-        <Button
-          key={option.id}
-          type='button'
-          role='tab'
-          size='sm'
-          aria-selected={value === option.id}
-          disabled={disabled}
-          variant={value === option.id ? 'default' : 'outline'}
-          onClick={() => onChange(option.id)}
-        >
-          {option.label}
-        </Button>
-      ))}
-    </div>
-  )
-}
-
-function Hint({ children }: { children: React.ReactNode }) {
-  return <p className='text-xs text-muted-foreground'>{children}</p>
-}
-
-function fileSizeLabel(bytes: number) {
-  if (bytes < 1024) return `${bytes} B`
-  return `${Math.max(0.1, bytes / 1024).toFixed(1)} KB`
-}
-
-function useCountdown(expiresAt: number) {
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    if (!expiresAt) return
-    const timer = window.setInterval(() => setNow(Date.now()), 1000)
-    return () => window.clearInterval(timer)
-  }, [expiresAt])
-  const left = Math.max(0, Math.floor((expiresAt - now) / 1000))
-  const mm = String(Math.floor(left / 60)).padStart(2, '0')
-  const ss = String(left % 60).padStart(2, '0')
-  return `${mm}:${ss}`
-}
-
 export function GrokCredentialPanel({
   vm,
   onCommitted,
@@ -102,20 +52,16 @@ export function GrokCredentialPanel({
   onCommitted?: (data: CommitResult, vmId: string, what: string) => void
 }) {
   const qc = useQueryClient()
-  const fileRef = useRef<HTMLInputElement>(null)
   const [mode, setMode] = useState<GrokImportMode>('oauth')
   const [text, setText] = useState('')
   const [link, setLink] = useState<AuthLink>(EMPTY_LINK)
   const [fileError, setFileError] = useState('')
-  const [pickedFile, setPickedFile] = useState<{
-    name: string
-    size: number
-  } | null>(null)
+  const [pickedFile, setPickedFile] = useState<PickedFile | null>(null)
   const pollInterval = useRef(5)
   const committedRef = useRef(onCommitted)
   committedRef.current = onCommitted
 
-  const remaining = useCountdown(link.expiresAt)
+  const remaining = useMmSsCountdown(link.expiresAt)
   const linkReady = !!(link.sessionId && link.userCode)
   const proxyHint =
     link.proxyHint || (vm.proxy?.host ? proxyNamedLabel(vm.proxy) : '')
@@ -251,26 +197,19 @@ export function GrokCredentialPanel({
         ? '粘贴 xAI refresh_token，导入时会立即换一次 access_token'
         : '粘贴或上传含 access_token / refresh_token 的 JSON 账号文件'
 
-  async function onPickFile(file: File | undefined) {
-    setFileError('')
-    if (!file) return
-    try {
-      const raw = await file.text()
-      setText(raw)
-      setPickedFile({ name: file.name, size: file.size })
-    } catch {
-      setPickedFile(null)
-      setFileError('文件读取失败')
-    }
-  }
-
   return (
     <div className='space-y-3'>
       <Hint>
         xAI OAuth 授权或账号文件。不要用 Claude sessionKey、Codex auth.json 或
         xAI API Key。一槽一号，换票与推理都经槽代理。
       </Hint>
-      <Seg value={mode} onChange={setMode} disabled={busy} />
+      <Seg
+        label='账号添加方式'
+        value={mode}
+        options={MODES}
+        onChange={setMode}
+        disabled={busy}
+      />
       {mode === 'oauth' ? (
         linkReady ? (
           <div className='space-y-2'>
@@ -357,72 +296,20 @@ export function GrokCredentialPanel({
         )
       ) : (
         <div className='space-y-2'>
-          <div className='flex flex-wrap items-center justify-between gap-2'>
-            <Label htmlFor='grok-import-text'>{textLabel}</Label>
-            {mode === 'json' ? (
-              <>
-                <input
-                  ref={fileRef}
-                  type='file'
-                  accept='application/json,.json'
-                  className='hidden'
-                  onChange={(event) => {
-                    const file = event.target.files?.[0]
-                    event.target.value = ''
-                    void onPickFile(file)
-                  }}
-                />
-                <Button
-                  type='button'
-                  size='sm'
-                  variant='outline'
-                  disabled={busy}
-                  onClick={() => fileRef.current?.click()}
-                >
-                  <Upload className='size-3.5' aria-hidden='true' />
-                  上传文件
-                </Button>
-              </>
-            ) : null}
-          </div>
-          {pickedFile ? (
-            <div className='flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2'>
-              <div className='min-w-0'>
-                <p className='truncate text-sm'>{pickedFile.name}</p>
-                <p className='text-xs text-muted-foreground'>
-                  {fileSizeLabel(pickedFile.size)} · 已读取，不展示原文
-                </p>
-              </div>
-              <Button
-                type='button'
-                size='sm'
-                variant='ghost'
-                disabled={busy}
-                onClick={() => {
-                  setPickedFile(null)
-                  setText('')
-                  setFileError('')
-                }}
-              >
-                清除
-              </Button>
-            </div>
-          ) : (
-            <Textarea
-              id='grok-import-text'
-              rows={mode === 'json' ? 8 : 4}
-              value={text}
-              disabled={busy}
-              onChange={(event) => {
-                setFileError('')
-                setText(event.target.value)
-              }}
-              placeholder={placeholder}
-            />
-          )}
-          {fileError ? (
-            <p className='text-xs text-destructive'>{fileError}</p>
-          ) : null}
+          <AccountFileField
+            id='grok-import-text'
+            label={textLabel}
+            allowUpload={mode === 'json'}
+            rows={mode === 'json' ? 8 : 4}
+            placeholder={placeholder}
+            busy={busy}
+            text={text}
+            setText={setText}
+            pickedFile={pickedFile}
+            setPickedFile={setPickedFile}
+            fileError={fileError}
+            setFileError={setFileError}
+          />
           {mode === 'access_token' ? (
             <Hint>只有 access_token 时无法自动续期，过期后需要重新导入。</Hint>
           ) : null}
