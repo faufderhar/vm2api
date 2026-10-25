@@ -1,70 +1,115 @@
-import { KeyRound, ShieldCheck, Waypoints } from 'lucide-react'
+import { useState, type ComponentProps } from 'react'
+import { Link } from '@tanstack/react-router'
+import {
+  Gauge,
+  Info,
+  KeyRound,
+  Receipt,
+  RotateCcw,
+  ShieldCheck,
+  Users,
+  Waypoints,
+} from 'lucide-react'
+import { cn } from '@/lib/utils'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { SettingRow } from '@/components/setting-row'
+import {
+  fmtInterval,
+  GROK_CLIENTS,
+  GROK_DEFAULT_BASE_URL,
+  GROK_DEFAULT_CLIENT_ID,
+  GROK_DEFAULT_SCOPE,
+  GROK_LIMITS,
+  GROK_MODE_LABEL,
+  GROK_PROTOCOLS,
+  grokIssues,
+  grokView,
+  setClient,
+  setProtocolMode,
+  setSub,
+} from './grok-settings-model'
+import { settleInt, typingInt } from './int-input'
 import { PaneSection } from './scheduler-controls'
 
 type Block = Record<string, unknown>
 
-function asBlock(value: unknown): Block {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Block)
-    : {}
-}
-
-function textOf(value: unknown) {
-  return typeof value === 'string' ? value : ''
-}
-
-function NumberField({
-  id,
-  label,
+/** 输入中不夹值（输 5 不会跳成 30），失焦时再按范围收口。 */
+function IntField({
   value,
   min,
   max,
-  disabled,
+  fallback,
   onCommit,
-}: {
-  id: string
-  label: string
+  className,
+  ...props
+}: Omit<ComponentProps<typeof Input>, 'value' | 'onChange' | 'onBlur'> & {
   value: number
   min: number
   max: number
-  disabled?: boolean
+  fallback: number
   onCommit: (next: number) => void
 }) {
+  const [text, setText] = useState<string | null>(null)
   return (
     <Input
-      id={id}
-      className='w-28'
+      {...props}
+      className={cn('w-28 tabular-nums', className)}
       type='number'
+      inputMode='numeric'
       min={min}
       max={max}
-      value={Number.isFinite(value) ? value : min}
-      disabled={disabled}
-      aria-label={label}
+      value={text ?? String(value)}
       onChange={(event) => {
-        const next = Math.round(Number(event.target.value))
-        if (!Number.isFinite(next)) return
-        onCommit(Math.min(max, Math.max(min, next)))
+        setText(event.target.value)
+        const n = typingInt(event.target.value)
+        if (n !== null && n >= min && n <= max) onCommit(n)
+      }}
+      onBlur={() => {
+        if (text === null) return
+        const settled = settleInt(text, min, max, fallback)
+        setText(null)
+        if (settled !== value) onCommit(settled)
       }}
     />
   )
 }
 
-const PROTOCOL_ROWS: { key: string; label: string; modes: string[] }[] = [
-  { key: 'openai.responses', label: 'Responses', modes: ['native', 'reject'] },
-  {
-    key: 'openai.chat',
-    label: 'Chat Completions',
-    modes: ['native', 'reject'],
-  },
-  {
-    key: 'anthropic.messages',
-    label: 'Claude Messages',
-    modes: ['native', 'convert', 'reject'],
-  },
-]
+function FieldError({ id, message }: { id: string; message?: string }) {
+  if (!message) return null
+  return (
+    <p id={id} role='alert' className='text-xs text-destructive'>
+      {message}
+    </p>
+  )
+}
+
+function Hint({ children }: { children: React.ReactNode }) {
+  return (
+    <span className='font-mono text-[11px] text-(--text-tertiary)'>
+      {children}
+    </span>
+  )
+}
+
+function SettingsLink({
+  tab,
+  children,
+}: {
+  tab: 'pool' | 'sticky'
+  children: React.ReactNode
+}) {
+  return (
+    <Link
+      to='/settings/$tab'
+      params={{ tab }}
+      className='text-primary underline-offset-2 hover:underline'
+    >
+      {children}
+    </Link>
+  )
+}
 
 export function GrokPane({
   grok,
@@ -75,30 +120,24 @@ export function GrokPane({
   onChange: (next: Block) => void
   saving?: boolean
 }) {
-  const oauth = asBlock(grok.oauth)
-  const protocols = asBlock(grok.protocols)
-  const quota = asBlock(grok.quota)
-  const enabled = grok.enabled === true
+  const view = grokView(grok)
+  const issues = grokIssues(grok)
+  const issueOf = (field: string) =>
+    issues.find((i) => i.field === field)?.message
   const update = (patch: Block) => onChange({ ...grok, ...patch })
-  const setProtocol = (key: string, mode: string) => {
-    const current = asBlock(protocols[key])
-    update({
-      protocols: {
-        ...protocols,
-        [key]: { ...current, mode, enabled: mode !== 'reject' },
-      },
-    })
-  }
+  const L = GROK_LIMITS
+  const baseUrlError = issueOf('base_url')
+  const tokenUrlError = issueOf('token_url')
 
   return (
     <div className='space-y-4'>
       <PaneSection
         icon={Waypoints}
-        title='Grok 路由'
-        desc='关掉之后 grok-* 请求直接拒绝，不会落到 Claude 或 GPT 池。'
+        title='路由与上游'
+        desc='关闭后所有 grok-* 请求直接返回 grok_disabled，不会落到 Claude 或 GPT 池。'
         aside={
           <Switch
-            checked={enabled}
+            checked={view.enabled}
             disabled={saving}
             onCheckedChange={(next) => update({ enabled: next })}
             aria-label='启用 Grok 路由'
@@ -108,14 +147,171 @@ export function GrokPane({
         <div className='divide-y'>
           <SettingRow
             label='上游地址'
-            desc='默认 https://cli-chat-proxy.grok.com，这是 Grok Build 的对话上游。必须是 https。'
+            desc={
+              <>
+                Grok Build 对话上游，对话与 /v1/billing 账单都经 Grok kernel
+                发到这里。只能是 https 的 *.grok.com 或 *.x.ai（会携带槽位
+                access token）。默认 <Hint>{GROK_DEFAULT_BASE_URL}</Hint>
+              </>
+            }
           >
-            <Input
-              className='w-72'
-              value={textOf(grok.base_url)}
+            <div className='flex items-center gap-1.5'>
+              <Input
+                className={cn(
+                  'w-72 font-mono text-xs',
+                  baseUrlError && 'border-destructive'
+                )}
+                value={view.baseUrl}
+                placeholder={GROK_DEFAULT_BASE_URL}
+                disabled={saving}
+                aria-invalid={!!baseUrlError}
+                aria-describedby={
+                  baseUrlError ? 'grok-base-url-err' : undefined
+                }
+                onChange={(event) => update({ base_url: event.target.value })}
+                aria-label='Grok 上游地址'
+              />
+              <Button
+                type='button'
+                variant='ghost'
+                size='icon'
+                className='size-8'
+                disabled={saving || view.baseUrl === GROK_DEFAULT_BASE_URL}
+                title='恢复默认上游地址'
+                aria-label='恢复默认上游地址'
+                onClick={() => update({ base_url: GROK_DEFAULT_BASE_URL })}
+              >
+                <RotateCcw className='size-3.5' aria-hidden />
+              </Button>
+            </div>
+          </SettingRow>
+          <FieldError id='grok-base-url-err' message={baseUrlError} />
+        </div>
+      </PaneSection>
+
+      <PaneSection
+        icon={ShieldCheck}
+        title='入站协议'
+        desc='按入站路径决定 Grok 怎么接：原生转发给上游、转换后再转发，或直接拒绝。'
+      >
+        <div className='divide-y'>
+          {GROK_PROTOCOLS.map((row) => {
+            const fixed = row.modes.length === 1
+            return (
+              <SettingRow
+                key={row.key}
+                label={row.label}
+                desc={
+                  <>
+                    <Hint>{row.path}</Hint>
+                    {row.note ? ` · ${row.note}` : null}
+                  </>
+                }
+              >
+                <select
+                  className='h-8 w-40 rounded-md border bg-background px-2 text-sm disabled:opacity-60'
+                  value={view.protocols[row.key]}
+                  disabled={saving || fixed}
+                  aria-label={`${row.label} 处理方式`}
+                  onChange={(event) =>
+                    onChange(
+                      setProtocolMode(
+                        grok,
+                        row.key,
+                        event.target.value as (typeof row.modes)[number]
+                      )
+                    )
+                  }
+                >
+                  {row.modes.map((mode) => (
+                    <option key={mode} value={mode}>
+                      {GROK_MODE_LABEL[mode]}
+                    </option>
+                  ))}
+                </select>
+              </SettingRow>
+            )
+          })}
+          <SettingRow
+            label='Responses WebSocket'
+            desc='Grok 上游不支持；WS 入口对 grok-* 模型一律拒绝，客户端会回落到 HTTP。'
+          >
+            <span className='text-xs text-muted-foreground'>不支持</span>
+          </SettingRow>
+        </div>
+      </PaneSection>
+
+      <PaneSection
+        icon={Users}
+        title='客户端准入'
+        desc='按请求头和请求体识别客户端，关闭的类型返回 403 client_not_allowed。'
+      >
+        <div className='divide-y'>
+          {GROK_CLIENTS.map((row) => (
+            <SettingRow
+              key={row.key}
+              label={row.label}
+              desc={`${row.desc} 默认${row.fallback === 'allow' ? '放行' : '拒绝'}。`}
+            >
+              <Switch
+                checked={view.clients[row.key] === 'allow'}
+                disabled={saving}
+                onCheckedChange={(next) =>
+                  onChange(setClient(grok, row.key, next))
+                }
+                aria-label={`放行 ${row.label}`}
+              />
+            </SettingRow>
+          ))}
+        </div>
+      </PaneSection>
+
+      <PaneSection
+        icon={Gauge}
+        title='槽位配额默认值'
+        desc='保存后下发到所有 Grok 槽；在单台槽位里改过的值（槽位覆写）优先，不会被这里覆盖。'
+      >
+        <div className='divide-y'>
+          <SettingRow
+            label='并发上限'
+            desc={`每个 Grok 槽同时进行中的请求数，${L.max_concurrency.min}–${L.max_concurrency.max}，默认 ${L.max_concurrency.fallback}。`}
+          >
+            <IntField
+              aria-label='Grok 并发上限'
+              {...L.max_concurrency}
+              value={view.maxConcurrency}
               disabled={saving}
-              onChange={(event) => update({ base_url: event.target.value })}
-              aria-label='Grok 上游地址'
+              onCommit={(next) =>
+                onChange(setSub(grok, 'quota', { max_concurrency: next }))
+              }
+            />
+          </SettingRow>
+          <SettingRow
+            label='每分钟请求（RPM）'
+            desc='每个 Grok 槽每分钟最多接的请求数，0 表示不限。'
+          >
+            <IntField
+              aria-label='Grok 每分钟请求'
+              {...L.max_rpm}
+              value={view.maxRpm}
+              disabled={saving}
+              onCommit={(next) =>
+                onChange(setSub(grok, 'quota', { max_rpm: next }))
+              }
+            />
+          </SettingRow>
+          <SettingRow
+            label='会话上限'
+            desc={`每个 Grok 槽同时粘住的会话数，0 表示不限，最大 ${L.max_sessions.max}。`}
+          >
+            <IntField
+              aria-label='Grok 会话上限'
+              {...L.max_sessions}
+              value={view.maxSessions}
+              disabled={saving}
+              onCommit={(next) =>
+                onChange(setSub(grok, 'quota', { max_sessions: next }))
+              }
             />
           </SettingRow>
         </div>
@@ -124,96 +320,134 @@ export function GrokPane({
       <PaneSection
         icon={KeyRound}
         title='xAI OAuth'
-        desc='使用 Grok 官方客户端做设备码登录。不用填 client id、授权地址或回调地址。换票地址留空时，会从 auth.x.ai 的发现文档读取。'
+        desc='槽位登录走 Grok 官方客户端的设备码流程（auth.x.ai），token 由 Grok kernel 自动续期。下列高级项一般保持留空。'
       >
         <div className='divide-y'>
-          <div className='space-y-1.5'>
-            <SettingRow
-              label='提前刷新'
-              desc='access token 到期前多少秒开始换票。'
-            >
-              <NumberField
-                id='grok-refresh-skew'
-                label='Grok 提前刷新秒数'
-                min={30}
-                max={3600}
-                value={Number(oauth.refresh_skew_sec ?? 300)}
-                disabled={saving}
-                onCommit={(next) =>
-                  update({ oauth: { ...oauth, refresh_skew_sec: next } })
-                }
-              />
-            </SettingRow>
-          </div>
+          <SettingRow
+            label='提前续期'
+            desc={`access token 到期前多少秒开始换票，${L.refresh_skew_sec.min}–${L.refresh_skew_sec.max} 秒，默认 ${L.refresh_skew_sec.fallback}。`}
+          >
+            <IntField
+              aria-label='Grok 提前续期秒数'
+              {...L.refresh_skew_sec}
+              value={view.refreshSkewSec}
+              disabled={saving}
+              onCommit={(next) =>
+                onChange(setSub(grok, 'oauth', { refresh_skew_sec: next }))
+              }
+            />
+          </SettingRow>
+          <SettingRow
+            label='换票地址（token_url）'
+            desc='留空则读 auth.x.ai 的 OIDC 发现文档。只能填 https://*.x.ai，或本机回环地址（本地 mock）。'
+          >
+            <Input
+              className={cn(
+                'w-72 font-mono text-xs',
+                tokenUrlError && 'border-destructive'
+              )}
+              value={view.tokenUrl}
+              placeholder='自动发现'
+              disabled={saving}
+              aria-invalid={!!tokenUrlError}
+              aria-label='Grok 换票地址'
+              onChange={(event) =>
+                onChange(
+                  setSub(grok, 'oauth', { token_url: event.target.value })
+                )
+              }
+            />
+          </SettingRow>
+          <FieldError id='grok-token-url-err' message={tokenUrlError} />
+          <SettingRow label='Client ID' desc='留空使用 Grok CLI 官方客户端。'>
+            <Input
+              className='w-72 font-mono text-xs'
+              value={view.clientId}
+              placeholder={GROK_DEFAULT_CLIENT_ID}
+              disabled={saving}
+              aria-label='Grok OAuth Client ID'
+              onChange={(event) =>
+                onChange(
+                  setSub(grok, 'oauth', { client_id: event.target.value })
+                )
+              }
+            />
+          </SettingRow>
+          <SettingRow label='Scope' desc='留空使用官方默认 scope。'>
+            <Input
+              className='w-72 font-mono text-xs'
+              value={view.scope}
+              placeholder={GROK_DEFAULT_SCOPE}
+              disabled={saving}
+              aria-label='Grok OAuth Scope'
+              onChange={(event) =>
+                onChange(setSub(grok, 'oauth', { scope: event.target.value }))
+              }
+            />
+          </SettingRow>
         </div>
       </PaneSection>
 
       <PaneSection
-        icon={ShieldCheck}
-        title='协议与配额'
-        desc='默认只放行 Responses 和 Chat。Messages 可以改成原生转发或转成 Responses。'
+        icon={Receipt}
+        title='Grok Build 用量同步'
+        desc='后台定时读取每个槽的 Grok Build 账单（周额度与用量），用于虚拟机页的用量窗口。槽位上的「刷新」按钮不受这里限制，随时可强制读取。'
+        aside={
+          <Switch
+            checked={view.billingBackground}
+            disabled={saving}
+            onCheckedChange={(next) =>
+              onChange(setSub(grok, 'billing', { background: next }))
+            }
+            aria-label='后台同步 Grok Build 用量'
+          />
+        }
       >
         <div className='divide-y'>
-          {PROTOCOL_ROWS.map((row) => {
-            const mode = String(asBlock(protocols[row.key]).mode || 'reject')
-            return (
-              <SettingRow key={row.key} label={row.label} desc={row.key}>
-                <select
-                  className='h-8 rounded-md border bg-background px-2 text-sm'
-                  value={row.modes.includes(mode) ? mode : 'reject'}
-                  disabled={saving}
-                  aria-label={`${row.label} 模式`}
-                  onChange={(event) => setProtocol(row.key, event.target.value)}
-                >
-                  {row.modes.map((item) => (
-                    <option key={item} value={item}>
-                      {item}
-                    </option>
-                  ))}
-                </select>
-              </SettingRow>
-            )
-          })}
-          <SettingRow label='并发' desc='每个 Grok 槽同时进行中的请求数。'>
-            <NumberField
-              id='grok-concurrency'
-              label='Grok 并发'
-              min={1}
-              max={256}
-              value={Number(quota.max_concurrency ?? 2)}
-              disabled={saving}
+          <SettingRow
+            label='最短同步间隔'
+            desc={`同一个槽两次后台读取之间至少隔多久，${L.billing_interval_min.min}–${L.billing_interval_min.max} 分钟（当前 ${fmtInterval(view.billingIntervalMin)}）。与 routing.json 的 usage_probe.stale_sec 取较大值。`}
+          >
+            <IntField
+              aria-label='Grok 用量同步间隔（分钟）'
+              {...L.billing_interval_min}
+              value={view.billingIntervalMin}
+              disabled={saving || !view.billingBackground}
               onCommit={(next) =>
-                update({ quota: { ...quota, max_concurrency: next } })
-              }
-            />
-          </SettingRow>
-          <SettingRow label='每分钟请求' desc='0 表示不限制。'>
-            <NumberField
-              id='grok-rpm'
-              label='Grok 每分钟请求'
-              min={0}
-              max={1000000}
-              value={Number(quota.max_rpm ?? 0)}
-              disabled={saving}
-              onCommit={(next) =>
-                update({ quota: { ...quota, max_rpm: next } })
-              }
-            />
-          </SettingRow>
-          <SettingRow label='会话数' desc='0 表示不限制。'>
-            <NumberField
-              id='grok-sessions'
-              label='Grok 会话数'
-              min={0}
-              max={256}
-              value={Number(quota.max_sessions ?? 0)}
-              disabled={saving}
-              onCommit={(next) =>
-                update({ quota: { ...quota, max_sessions: next } })
+                onChange(
+                  setSub(grok, 'billing', { min_interval_sec: next * 60 })
+                )
               }
             />
           </SettingRow>
         </div>
+      </PaneSection>
+
+      <PaneSection
+        icon={Info}
+        title='在别处设置'
+        desc='这些行为 Grok 与 Claude / GPT 共用一套配置。'
+      >
+        <ul className='space-y-1.5 text-xs leading-5 text-muted-foreground'>
+          <li>
+            排队等待、流空闲超时、失败重试与换号次数：
+            <SettingsLink tab='pool'>账号池</SettingsLink>
+          </li>
+          <li>
+            出站会话 ID（重建 / 透传）：
+            <SettingsLink tab='sticky'>粘性</SettingsLink>
+          </li>
+          <li>
+            对外 Grok 模型目录与同步：
+            <Link
+              to='/models'
+              className='text-primary underline-offset-2 hover:underline'
+            >
+              模型
+            </Link>
+          </li>
+          <li>单台槽位的并发 / RPM / 会话覆写：虚拟机详情页</li>
+        </ul>
       </PaneSection>
     </div>
   )
