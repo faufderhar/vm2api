@@ -5,6 +5,7 @@
  */
 
 import { WebSocketServer } from 'ws'
+import { startWsHeartbeat, wsHeartbeatMs } from '../core/ws-heartbeat.mjs'
 import { selectTicketProtocol, ticketFromUpgrade } from '../http/ws-ticket.mjs'
 import { rejectUpgradeSocket } from '../core/upgrade-guard.mjs'
 import {
@@ -36,7 +37,7 @@ function clampInt(v, lo, hi, dflt) {
   return Math.min(hi, Math.max(lo, n))
 }
 
-export function createClusterRoutes({ manager, json, readBody, ok, stepUp }) {
+export function createClusterRoutes({ manager, json, readBody, ok, stepUp, heartbeatMs = wsHeartbeatMs() }) {
   function fail(res, err) {
     const status = err instanceof ClusterError ? err.status : 500
     const code = err instanceof ClusterError ? err.code : 'cluster_error'
@@ -221,6 +222,7 @@ export function createClusterRoutes({ manager, json, readBody, ok, stepUp }) {
     const pending = []
     let stream = null
     let closed = false
+    startWsHeartbeat(ws, heartbeatMs)
     const apply = (msg) => {
       if (msg?.t === 'd' && typeof msg.d === 'string') stream.write(msg.d)
       else if (msg?.t === 'r') stream.setWindow(clampInt(msg.r, 5, 200, 24), clampInt(msg.c, 10, 500, 80), 0, 0)

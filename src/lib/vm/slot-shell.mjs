@@ -26,6 +26,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { ensureRemoteOfficialCredentialLink, reconcileSlotCredentials } from '../cluster/remote-slot-files.mjs'
 import { officialCcUidGid } from './vm-runtime.mjs'
+import { startWsHeartbeat, wsHeartbeatMs } from '../core/ws-heartbeat.mjs'
 
 const SHELL_RE = /^\/api\/panel\/vms\/([^/]+)\/shell$/
 const TICKET_TTL_MS = 30_000
@@ -403,6 +404,7 @@ export function createSlotShell({
   importOauth = null,
   authLoginReady = null,
   upgradeLoginReady = null,
+  heartbeatMs = wsHeartbeatMs(),
 } = {}) {
   const tickets = new Map()
   const liveTokens = new Set()
@@ -549,6 +551,7 @@ export function createSlotShell({
       liveTokens.delete(token)
       sessions -= 1
     }
+    startWsHeartbeat(ws, heartbeatMs)
     const send = (data) => ws.readyState === ws.OPEN && ws.send(data)
     const resize = (cols, rows) => {
       resizeExec(connect, session.execId, { cols, rows }).catch(() => {})
