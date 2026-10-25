@@ -6,6 +6,7 @@
 
 import { WebSocketServer } from 'ws'
 import { selectTicketProtocol, ticketFromUpgrade } from '../http/ws-ticket.mjs'
+import { rejectUpgradeSocket } from '../core/upgrade-guard.mjs'
 import {
   containerAction,
   containerLogs,
@@ -180,13 +181,27 @@ export function createClusterRoutes({ manager, json, readBody, ok, stepUp }) {
   })
 
   function rejectUpgrade(socket, status, text) {
-    socket.write(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`)
-    socket.destroy()
+    rejectUpgradeSocket(socket, status, text)
   }
 
   /** @returns {boolean} whether this upgrade belonged to the cluster shell */
   function handleUpgrade(req, socket, head) {
-    const url = new URL(req.url || '/', 'http://local')
+    try {
+      return handleUpgradeUnsafe(req, socket, head)
+    } catch (err) {
+      console.warn(`[cluster-shell] upgrade failed: ${err?.name || 'Error'}`)
+      rejectUpgrade(socket, err instanceof URIError ? 400 : 500)
+      return true
+    }
+  }
+
+  function handleUpgradeUnsafe(req, socket, head) {
+    let url
+    try {
+      url = new URL(req.url || '/', 'http://local')
+    } catch {
+      return false
+    }
     const sm = SHELL_RE.exec(url.pathname)
     if (!sm) return false
     const id = sm[1]

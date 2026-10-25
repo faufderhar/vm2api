@@ -30,6 +30,7 @@ import {
   publicErrorMessage,
 } from './lib/core/security.mjs'
 import { loadModelPolicy } from './lib/protocol/model-policy.mjs'
+import { guardUpgrade, rejectUpgradeSocket } from './lib/core/upgrade-guard.mjs'
 import { gatewayModelCatalog } from './lib/protocol/models.mjs'
 import {
   createCredentialRefreshMonitor,
@@ -1276,15 +1277,21 @@ const server = http.createServer(async (req, res) => {
   }
 })
 
-server.on('upgrade', (req, socket, head) => {
-  if (backupService.isRestoring && /^\/(?:v1\/)?responses(?:\?|$)/.test(String(req.url || ''))) {
-    socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
-    return
-  }
-  if (responsesWs.handleUpgrade(req, socket, head)) return
-  if (clusterRoutes.handleUpgrade(req, socket, head)) return
-  if (!slotShell.handleUpgrade(req, socket, head)) socket.destroy()
-})
+// Every upgrade path ends with an answered + destroyed socket on any error:
+// a throw here would otherwise go to uncaughtException and leak the socket.
+server.on(
+  'upgrade',
+  guardUpgrade([
+    (req, socket) => {
+      if (!backupService.isRestoring || !/^\/(?:v1\/)?responses(?:\?|$)/.test(String(req.url || ''))) return false
+      rejectUpgradeSocket(socket, 503)
+      return true
+    },
+    (req, socket, head) => responsesWs.handleUpgrade(req, socket, head),
+    (req, socket, head) => clusterRoutes.handleUpgrade(req, socket, head),
+    (req, socket, head) => slotShell.handleUpgrade(req, socket, head),
+  ]),
+)
 
 server.on('clientError', (err, socket) => {
   try {
