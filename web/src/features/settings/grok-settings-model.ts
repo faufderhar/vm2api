@@ -284,3 +284,11 @@ export function fmtInterval(min: number): string {
     ? `${Math.floor(min / 60)} 小时 ${min % 60} 分钟`
     : `${min} 分钟`
 }
+
+/**
+ * GET /api/panel/routing 里有没有 `grok` 段。没有说明后端版本早于修复（旧版从不回传），
+ * 面板只能显示默认值；保存其实写进去了，但刷新后看不到。
+ */
+export function routingHasGrok(routing: unknown): boolean {
+  return Object.prototype.hasOwnProperty.call(asBlock(routing), 'grok')
+}

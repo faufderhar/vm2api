@@ -96,6 +96,7 @@ import { openAIRuntimeSignals } from '../pool/openai-account-runtime.mjs'
 import { normalizeVmConfig, memoryMiB } from '../vm/machine-spec.mjs'
 import { runtimeKind } from '../vm/runtime-kind.mjs'
 import { telemetryUploadInterval } from '../vm/worker-telemetry.mjs'
+import { normalizeGrokRouting } from '../protocol/grok-route.mjs'
 
 export function ok(data, meta) {
   const out = { ok: true, data }
@@ -1457,6 +1458,8 @@ export function buildRouting({ routingConfig, stickyRouter }) {
     inference: presentInference(routingConfig?.inference),
     websocket: normalizeInferenceWebsocket(routingConfig?.websocket),
     codex: normalizeCodexRouting(routingConfig?.codex),
+    // Settings › Grok hydrates from this; without it the pane always showed defaults after a save.
+    grok: normalizeGrokRouting(routingConfig?.grok),
     official_cc: normalizeOfficialCcConfig(routingConfig?.official_cc),
     health_probe: normalizeHealthProbeConfig(routingConfig?.health_probe),
     usage_probe: normalizeUsageProbeConfig(routingConfig?.usage_probe),

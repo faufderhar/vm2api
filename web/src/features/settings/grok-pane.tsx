@@ -115,10 +115,13 @@ export function GrokPane({
   grok,
   onChange,
   saving = false,
+  serverMissing = false,
 }: {
   grok: Block
   onChange: (next: Block) => void
   saving?: boolean
+  /** 服务端 GET 没回传 grok 段：下面显示的是默认值，不是已保存的配置。 */
+  serverMissing?: boolean
 }) {
   const view = grokView(grok)
   const issues = grokIssues(grok)
@@ -131,6 +134,15 @@ export function GrokPane({
 
   return (
     <div className='space-y-4'>
+      {serverMissing ? (
+        <p
+          role='alert'
+          className='rounded-lg border border-[color:var(--status-warn)]/50 px-3 py-2 text-xs leading-5 text-[color:var(--status-warn)]'
+        >
+          服务端没有返回 Grok 配置，下面显示的是默认值，不代表已保存的设置。
+          通常是后端还在跑旧版本：升级后请重启 vm2api 服务。
+        </p>
+      ) : null}
       <PaneSection
         icon={Waypoints}
         title='路由与上游'
