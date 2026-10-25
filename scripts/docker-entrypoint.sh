@@ -101,6 +101,27 @@ env_get_file() {
   grep -E "^${name}=" "$file" 2>/dev/null | tail -n1 | cut -d= -f2- | tr -d "'" | tr -d '"' | tr -d '\r'
 }
 
+# Rewrite NAME=VALUE without sed: a password may hold & | \ / that sed would
+# treat as syntax. awk reads both from the environment, so nothing is unescaped.
+env_write_line() {
+  name="$1"
+  value="$2"
+  file="$3"
+  tmp="$file.tmp.$$"
+  (
+    umask 077
+    ENV_LINE_NAME="$name" ENV_LINE_VALUE="$value" awk '
+      BEGIN { n = ENVIRON["ENV_LINE_NAME"]; v = ENVIRON["ENV_LINE_VALUE"]; done = 0 }
+      index($0, n "=") == 1 { if (!done) { print n "=" v; done = 1 }; next }
+      { print }
+      END { if (!done) print n "=" v }
+    ' "$file" >"$tmp"
+  ) && cat "$tmp" >"$file"
+  rc=$?
+  rm -f "$tmp"
+  return $rc
+}
+
 env_set() {
   name="$1"
   value="$2"
@@ -108,11 +129,7 @@ env_set() {
   [ -n "$file" ] || return 0
   mkdir -p "$(dirname "$file")"
   touch "$file"
-  if grep -qE "^${name}=" "$file"; then
-    sed -i "s|^${name}=.*|${name}=${value}|" "$file"
-  else
-    printf '%s=%s\n' "$name" "$value" >>"$file"
-  fi
+  env_write_line "$name" "$value" "$file"
 }
 
 read_secret_file() {
@@ -143,11 +160,7 @@ env_upsert_if_empty() {
     if [ -n "$current" ]; then
       return 0
     fi
-    if grep -qE "^${name}=" "$file"; then
-      sed -i "s|^${name}=.*|${name}=${value}|" "$file"
-    else
-      printf '%s=%s\n' "$name" "$value" >>"$file"
-    fi
+    env_write_line "$name" "$value" "$file"
   fi
 }
 

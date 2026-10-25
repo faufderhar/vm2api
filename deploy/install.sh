@@ -279,15 +279,25 @@ env_get() {
   grep -E "^${name}=" "$envf" 2>/dev/null | tail -n1 | cut -d= -f2- | tr -d "'" | tr -d '"' | tr -d '\r'
 }
 
+# No sed here: a value may hold & | \ / that sed would treat as syntax.
 env_set() {
   local name="$1"
   local value="$2"
   local envf="${INSTALL_DIR}/.env"
-  if grep -qE "^${name}=" "$envf" 2>/dev/null; then
-    sed -i "s|^${name}=.*|${name}=${value}|" "$envf"
-  else
-    printf '%s=%s\n' "$name" "$value" >>"$envf"
-  fi
+  local tmp="${envf}.tmp.$$"
+  touch "$envf"
+  (
+    umask 077
+    ENV_LINE_NAME="$name" ENV_LINE_VALUE="$value" awk '
+      BEGIN { n = ENVIRON["ENV_LINE_NAME"]; v = ENVIRON["ENV_LINE_VALUE"]; done = 0 }
+      index($0, n "=") == 1 { if (!done) { print n "=" v; done = 1 }; next }
+      { print }
+      END { if (!done) print n "=" v }
+    ' "$envf" >"$tmp"
+  ) && cat "$tmp" >"$envf"
+  local rc=$?
+  rm -f "$tmp"
+  return $rc
 }
 
 env_set_if_empty() {
