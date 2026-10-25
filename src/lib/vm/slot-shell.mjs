@@ -473,13 +473,24 @@ export function createSlotShell({
         rejectUpgrade(socket, 429, 'Too Many Requests')
         return
       }
+      // The login check is async: the client may already be gone. ws drops a
+      // dead socket without calling back, so attach()/release() would never
+      // run and the slot would leak until restart.
+      if (socket.destroyed) return
       sessions += 1
+      let attached = false
+      socket.once('close', () => {
+        if (!attached) sessions -= 1
+      })
       const size = {
         cols: clampInt(url.searchParams.get('cols'), 10, 500, 80),
         rows: clampInt(url.searchParams.get('rows'), 5, 200, 24),
         login,
       }
-      wss.handleUpgrade(req, socket, head, (ws) => attach(ws, vm, size))
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        attached = true
+        attach(ws, vm, size)
+      })
     }
     if (!login) {
       accept()
