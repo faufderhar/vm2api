@@ -13,7 +13,7 @@
 import { getDb } from '../database.mjs'
 import { reportTimezone, zonedDayStartMs, zonedParts, zonedWallToMs } from '../../core/timezone.mjs'
 import { ERROR_PRED, PROMPT_TOKENS_SQL, SUCCESS_PRED, TOTAL_TOKENS_SQL, ownerPred } from './usage-log-preds.mjs'
-import { lookupNames } from './usage-logs-view.mjs'
+import { lookupNames, num } from './usage-logs-view.mjs'
 
 export const STATS_RANGES = ['today', '7days', '30days', 'thisMonth']
 export const STATS_DIMENSIONS = ['user', 'key', 'model', 'vm']
@@ -35,11 +35,6 @@ const TOKENS_SQL = TOTAL_TOKENS_SQL
 
 /** created_at (`YYYY-MM-DDTHH:MM:SS.sssZ`) floored to its 15-minute UTC slot. */
 const SLOT_SQL = "substr(created_at, 1, 14) || printf('%02d', (CAST(substr(created_at, 15, 2) AS INTEGER) / 15) * 15)"
-
-function num(v) {
-  const n = Number(v)
-  return Number.isFinite(n) ? n : 0
-}
 
 function avgOrNull(v) {
   return v == null ? null : Math.round(Number(v))

@@ -4,6 +4,7 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import crypto from 'node:crypto'
 import { pidAlive } from '../core/proc.mjs'
+import { sleep } from '../core/clock.mjs'
 
 const MAX_BODY = 64 * 1024 * 1024
 
@@ -18,8 +19,6 @@ export function apiKernelPaths(cfg = {}) {
     pidPath: path.join(path.dirname(socketPath), 'api-kernel.pid'),
   }
 }
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 function readToken(tokenPath) {
   try {

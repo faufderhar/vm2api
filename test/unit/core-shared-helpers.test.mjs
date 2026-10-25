@@ -125,3 +125,10 @@ test('proc, client-gone, parsed clamp and JSON column helpers', async () => {
   assert.equal(parseJsonColumn(null, 7), 7)
   assert.equal(parseJsonColumn('{bad', 'fb'), 'fb')
 })
+
+test('b64url is unpadded base64url', async () => {
+  const { b64url } = await import('../../src/lib/oauth/b64url.mjs')
+  const buf = Buffer.from([0xfb, 0xff, 0xfe, 0x01])
+  assert.equal(b64url(buf), buf.toString('base64url'))
+  assert.doesNotMatch(b64url(Buffer.alloc(31, 0xff)), /[+/=]/)
+})

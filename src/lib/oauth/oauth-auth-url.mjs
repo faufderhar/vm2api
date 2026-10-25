@@ -10,6 +10,7 @@ import { exchangeTokenViaCookieAuth } from './cookie-auth.mjs'
 import { enrichOauthIdentity, flattenOauthIdentity } from './oauth-identity.mjs'
 import { FULL_OAUTH_SCOPE } from './oauth-contract.mjs'
 import { codedError as fail } from '../core/errors.mjs'
+import { b64url } from './b64url.mjs'
 
 export const CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'
 export const SESSION_TTL_MS = 30 * 60 * 1000
@@ -50,10 +51,6 @@ export const REDIRECT_URI = OAUTH_FLAVORS.cai.redirectUri
 export const SCOPE_OAUTH = OAUTH_FLAVORS.cai.scope
 
 const sessions = new Map()
-
-function b64url(buf) {
-  return Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
-}
 
 function generateState() {
   return b64url(crypto.randomBytes(32))

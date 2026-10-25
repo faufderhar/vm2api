@@ -52,6 +52,7 @@ import { CONTAINER_CLI_NODE_BIN, normalizeOfficialCcInference, resolveOfficialCc
 import { getVm } from '../vm/vm-registry.mjs'
 import { slotHost } from '../vm/slot-host.mjs'
 import { sameMemoryLimit } from '../vm/docker-slot-memory.mjs'
+import { sleep } from '../core/clock.mjs'
 
 export { sameMemoryLimit }
 
@@ -1006,8 +1007,6 @@ export function writeOfficialCcTelemetry(projectRoot, vmId) {
     fingerprint_wrote: !!fingerprint?.wrote,
   }
 }
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 /**
  * Official `/usage` inside the slot (egress = slot SOCKS5 / transparent exit).
