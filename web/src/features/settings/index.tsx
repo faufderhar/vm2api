@@ -27,6 +27,7 @@ import { GrokPane } from '@/features/settings/grok-pane'
 import {
   asBlock as asGrokBlock,
   grokIssues,
+  routingHasGrok,
 } from '@/features/settings/grok-settings-model'
 import { HealthPane } from '@/features/settings/health-pane'
 import { LogsPane } from '@/features/settings/logs-pane'
@@ -390,6 +391,9 @@ export function SettingsPage() {
                     setDraft((current) => ({ ...current, grok: next }))
                   }
                   saving={save.isPending}
+                  serverMissing={
+                    !!routing.data && !routingHasGrok(routing.data)
+                  }
                 />
               ) : null}
               {tab === 'logs' ? (

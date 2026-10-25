@@ -8,6 +8,7 @@ import {
   grokView,
   isGrokBaseUrl,
   isGrokOauthEndpoint,
+  routingHasGrok,
   setClient,
   setProtocolMode,
   setSub,
@@ -169,5 +170,95 @@ describe('fmtInterval', () => {
     expect(fmtInterval(60)).toBe('1 小时')
     expect(fmtInterval(90)).toBe('1 小时 30 分钟')
     expect(fmtInterval(1440)).toBe('24 小时')
+  })
+})
+
+// 回归：设置 › Grok 保存后刷新总是显示默认值。后端 GET 现在回传规范化后的 grok 段，
+// 前端用它水合草稿、整份 PUT 回去。这里模拟「GET → 改 → PUT 体 → 再 GET → 显示」。
+describe('save / reload round-trip', () => {
+  // 与后端 normalizeGrokRouting 的输出同形（GET /api/panel/routing 的 data.grok）。
+  const serverGrok = {
+    enabled: false,
+    base_url: GROK_DEFAULT_BASE_URL,
+    oauth: {
+      authorize_url: '',
+      token_url: '',
+      client_id: '',
+      redirect_uri: '',
+      scope: '',
+      extra_authorize_params: {},
+      refresh_skew_sec: 300,
+    },
+    websocket: { enabled: false },
+    protocols: {
+      'openai.responses': { mode: 'native', enabled: true },
+      'openai.chat': { mode: 'native', enabled: true },
+      'openai.completions': { mode: 'reject', enabled: false },
+      'anthropic.messages': { mode: 'reject', enabled: false },
+    },
+    clients: {
+      official_codex: 'allow',
+      openai_compatible: 'allow',
+      claude_code: 'reject',
+      unknown: 'allow',
+    },
+    quota: { max_concurrency: 2, max_rpm: 0, max_sessions: 0 },
+    billing: { background: true, min_interval_sec: 1800 },
+  }
+
+  function edit(grok: Record<string, unknown>) {
+    let next: Record<string, unknown> = {
+      ...grok,
+      enabled: true,
+      base_url: 'https://api.x.ai',
+    }
+    next = setProtocolMode(next, 'anthropic.messages', 'convert')
+    next = setClient(next, 'claude_code', true)
+    next = setSub(next, 'quota', { max_concurrency: 7 })
+    next = setSub(next, 'oauth', { refresh_skew_sec: 900 })
+    next = setSub(next, 'billing', {
+      background: false,
+      min_interval_sec: 7200,
+    })
+    return next
+  }
+
+  it('the PUT body carries the edits and keeps untouched server values', () => {
+    const draft = { sticky: {}, grok: serverGrok }
+    const body = { ...draft, grok: edit(draft.grok) }
+    const v = grokView(body.grok)
+    expect(v).toMatchObject({
+      enabled: true,
+      baseUrl: 'https://api.x.ai',
+      refreshSkewSec: 900,
+      maxConcurrency: 7,
+      maxRpm: 0,
+      billingBackground: false,
+      billingIntervalMin: 120,
+    })
+    expect(v.protocols['anthropic.messages']).toBe('convert')
+    expect(v.protocols['openai.chat']).toBe('native')
+    expect(v.clients.claude_code).toBe('allow')
+    const sent = body.grok as typeof serverGrok
+    expect(sent.protocols['openai.responses']).toEqual({
+      mode: 'native',
+      enabled: true,
+    })
+    expect(sent.oauth.redirect_uri).toBe('')
+    expect(grokIssues(body.grok)).toEqual([])
+  })
+
+  it('the reloaded form shows what the server saved, not defaults', () => {
+    const saved = edit(serverGrok)
+    const reloaded = grokView(saved)
+    expect(reloaded).not.toEqual(grokView({}))
+    expect(reloaded.enabled).toBe(true)
+    expect(reloaded.maxConcurrency).toBe(7)
+  })
+
+  it('detects an old server that never returns grok', () => {
+    expect(routingHasGrok({ sticky: {}, codex: {} })).toBe(false)
+    expect(routingHasGrok({ grok: serverGrok })).toBe(true)
+    expect(routingHasGrok(null)).toBe(false)
   })
 })
