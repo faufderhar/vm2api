@@ -77,7 +77,10 @@ describe('panelFetch 401', () => {
   })
 
   it('does not put a bearer token on panel requests', async () => {
-    const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }))
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response('{}', { status: 200 })
+    )
     vi.stubGlobal('fetch', fetchMock)
     const res = await panelFetch('/api/panel/me')
     expect(res.status).toBe(200)

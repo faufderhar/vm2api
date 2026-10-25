@@ -211,6 +211,9 @@ test('image upgrade pulls the pinned ARM64 release and records VERSION only afte
   assert.equal(result.code, 0, result.stderr)
   assert.match(result.env, /VM2API_IMAGE_TAG=v1\.2\.7-arm64/)
   assert.match(result.env, /VM2API_ADMIN_PASSWORD=keep-me/)
+  // L-6: one rewritten line, no sed backup or temp file left behind.
+  assert.equal(result.env.match(/^VM2API_IMAGE_TAG=/gm).length, 1)
+  assert.equal(result.env, 'VM2API_ADMIN_PASSWORD=keep-me\nVM2API_IMAGE_TAG=v1.2.7-arm64\n')
   assert.ok(result.calls.some((args) => args.includes('pull')))
   assert.ok(!result.calls.some((args) => args.includes('build')))
   assert.equal(result.version, '1.2.7\n')
@@ -226,4 +229,10 @@ test('ARM64 source upgrade keeps the native override and rejects a missing one b
   assert.equal(missing.code, 1)
   assert.match(missing.stderr, /lacks docker-compose.arm64.yml/)
   assert.ok(!missing.calls.some((args) => args[0] === 'compose'))
+})
+
+test('L-6: the image tag is written with awk like install.sh env_set, not a sed expression', () => {
+  const src = fs.readFileSync(script, 'utf8')
+  assert.doesNotMatch(src, /sed -i/)
+  assert.match(src, /ENV_LINE_NAME=VM2API_IMAGE_TAG ENV_LINE_VALUE="\$IMAGE_TAG" awk/)
 })

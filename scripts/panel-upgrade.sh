@@ -117,12 +117,19 @@ else
   IMAGE_TAG=$TAG
   [ "$ARCH" != arm64 ] || IMAGE_TAG=$TAG-arm64
   touch .env
-  if grep -q '^VM2API_IMAGE_TAG=' .env; then
-    sed -i.bak "s|^VM2API_IMAGE_TAG=.*|VM2API_IMAGE_TAG=$IMAGE_TAG|" .env
-    rm -f .env.bak
-  else
-    printf '\nVM2API_IMAGE_TAG=%s\n' "$IMAGE_TAG" >> .env
-  fi
+  # Same rewrite as install.sh env_set: the value is data to awk, never a sed
+  # expression, and cat keeps the .env inode, owner and mode.
+  ENV_TMP=".env.tmp.$$"
+  (
+    umask 077
+    ENV_LINE_NAME=VM2API_IMAGE_TAG ENV_LINE_VALUE="$IMAGE_TAG" awk '
+      BEGIN { n = ENVIRON["ENV_LINE_NAME"]; v = ENVIRON["ENV_LINE_VALUE"]; done = 0 }
+      index($0, n "=") == 1 { if (!done) { print n "=" v; done = 1 }; next }
+      { print }
+      END { if (!done) print n "=" v }
+    ' .env >"$ENV_TMP"
+  ) && cat "$ENV_TMP" >.env
+  rm -f "$ENV_TMP"
   compose pull vm2api
 fi
 

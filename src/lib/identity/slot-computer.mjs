@@ -13,6 +13,7 @@ import { atomicWriteJson } from '../vm/vm-file.mjs'
 import { generateWorkstationFingerprint, HOSTNAME_RE, MACHINE_ID_RE } from './workstation-fingerprint.mjs'
 import { isRfc4122Uuid } from './rfc4122-uuid.mjs'
 import { repairKvmFingerprintUuid } from './kvm-fingerprint-uuid.mjs'
+import { PublicError } from '../core/public-error.mjs'
 
 const MAC_RE = /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..')
@@ -109,9 +110,10 @@ export function ensureSlotComputer(projectRoot, vm) {
   }
   const bin = computerBin()
   if (!fs.existsSync(bin)) {
-    const missing = new Error('计算机服务未安装。放好 kin-computer 后可再次创建，已完成的身份不会重抽。')
-    missing.code = 'computer_service_missing'
-    throw missing
+    throw new PublicError('计算机服务未安装。放好 kin-computer 后可再次创建，已完成的身份不会重抽。', {
+      status: 503,
+      code: 'computer_service_missing',
+    })
   }
   if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true })
   fs.mkdirSync(dir, { recursive: true })

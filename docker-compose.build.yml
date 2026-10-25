@@ -6,3 +6,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        VM2API_GITHUB_REPO: ${VM2API_GITHUB_REPO:-}
+        VM2API_PAYLOAD_BASE_URL: ${VM2API_PAYLOAD_BASE_URL:-}

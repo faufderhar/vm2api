@@ -5,7 +5,9 @@
  */
 
 import { WebSocketServer } from 'ws'
+import { startWsHeartbeat, wsHeartbeatMs } from '../core/ws-heartbeat.mjs'
 import { selectTicketProtocol, ticketFromUpgrade } from '../http/ws-ticket.mjs'
+import { rejectUpgradeSocket } from '../core/upgrade-guard.mjs'
 import {
   containerAction,
   containerLogs,
@@ -35,7 +37,7 @@ function clampInt(v, lo, hi, dflt) {
   return Math.min(hi, Math.max(lo, n))
 }
 
-export function createClusterRoutes({ manager, json, readBody, ok, stepUp }) {
+export function createClusterRoutes({ manager, json, readBody, ok, stepUp, heartbeatMs = wsHeartbeatMs() }) {
   function fail(res, err) {
     const status = err instanceof ClusterError ? err.status : 500
     const code = err instanceof ClusterError ? err.code : 'cluster_error'
@@ -180,13 +182,27 @@ export function createClusterRoutes({ manager, json, readBody, ok, stepUp }) {
   })
 
   function rejectUpgrade(socket, status, text) {
-    socket.write(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`)
-    socket.destroy()
+    rejectUpgradeSocket(socket, status, text)
   }
 
   /** @returns {boolean} whether this upgrade belonged to the cluster shell */
   function handleUpgrade(req, socket, head) {
-    const url = new URL(req.url || '/', 'http://local')
+    try {
+      return handleUpgradeUnsafe(req, socket, head)
+    } catch (err) {
+      console.warn(`[cluster-shell] upgrade failed: ${err?.name || 'Error'}`)
+      rejectUpgrade(socket, err instanceof URIError ? 400 : 500)
+      return true
+    }
+  }
+
+  function handleUpgradeUnsafe(req, socket, head) {
+    let url
+    try {
+      url = new URL(req.url || '/', 'http://local')
+    } catch {
+      return false
+    }
     const sm = SHELL_RE.exec(url.pathname)
     if (!sm) return false
     const id = sm[1]
@@ -206,6 +222,7 @@ export function createClusterRoutes({ manager, json, readBody, ok, stepUp }) {
     const pending = []
     let stream = null
     let closed = false
+    startWsHeartbeat(ws, heartbeatMs)
     const apply = (msg) => {
       if (msg?.t === 'd' && typeof msg.d === 'string') stream.write(msg.d)
       else if (msg?.t === 'r') stream.setWindow(clampInt(msg.r, 5, 200, 24), clampInt(msg.c, 10, 500, 80), 0, 0)

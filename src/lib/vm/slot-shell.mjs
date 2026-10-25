@@ -11,6 +11,7 @@
 import crypto from 'node:crypto'
 import { WebSocketServer } from 'ws'
 import { selectTicketProtocol, ticketFromUpgrade } from '../http/ws-ticket.mjs'
+import { rejectUpgradeSocket, safeDecodeURIComponent } from '../core/upgrade-guard.mjs'
 import { execDetached, inspectExec, openExecTty, resizeExec } from '../cluster/docker-remote.mjs'
 import { slotContainerName } from '../transport/rust-kernel-supervisor.mjs'
 import { slotHost } from './slot-host.mjs'
@@ -25,6 +26,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { ensureRemoteOfficialCredentialLink, reconcileSlotCredentials } from '../cluster/remote-slot-files.mjs'
 import { officialCcUidGid } from './vm-runtime.mjs'
+import { startWsHeartbeat, wsHeartbeatMs } from '../core/ws-heartbeat.mjs'
 
 const SHELL_RE = /^\/api\/panel\/vms\/([^/]+)\/shell$/
 const TICKET_TTL_MS = 30_000
@@ -402,6 +404,7 @@ export function createSlotShell({
   importOauth = null,
   authLoginReady = null,
   upgradeLoginReady = null,
+  heartbeatMs = wsHeartbeatMs(),
 } = {}) {
   const tickets = new Map()
   const liveTokens = new Set()
@@ -441,16 +444,36 @@ export function createSlotShell({
   }
 
   function rejectUpgrade(socket, status, text) {
-    socket.write(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`)
-    socket.destroy()
+    rejectUpgradeSocket(socket, status, text)
   }
 
   /** @returns {boolean} whether this upgrade belonged to the slot shell */
   function handleUpgrade(req, socket, head) {
-    const url = new URL(req.url || '/', 'http://local')
+    try {
+      return handleUpgradeUnsafe(req, socket, head)
+    } catch (err) {
+      logger.warn?.(`[slot-shell] upgrade failed: ${err?.name || 'Error'}`)
+      rejectUpgrade(socket, err instanceof URIError ? 400 : 500)
+      return true
+    }
+  }
+
+  function handleUpgradeUnsafe(req, socket, head) {
+    let url
+    try {
+      url = new URL(req.url || '/', 'http://local')
+    } catch {
+      return false
+    }
     const sm = SHELL_RE.exec(url.pathname)
     if (!sm) return false
-    const vmId = decodeURIComponent(sm[1])
+    // Malformed percent-encoding must not throw before the ticket check:
+    // an unauthenticated URIError would leave the socket open forever.
+    const vmId = safeDecodeURIComponent(sm[1])
+    if (vmId === null) {
+      rejectUpgrade(socket, 400, 'Bad Request')
+      return true
+    }
     const ticket = ticketFromUpgrade(req, url)
     const entry = consumeTicket(ticket, vmId)
     if (!entry) {
@@ -496,15 +519,21 @@ export function createSlotShell({
       accept()
       return true
     }
-    ;(upgradeLoginReady || authLoginReady || assertAuthLoginReady)(projectRoot, vm).then(accept, (err) =>
-      rejectUpgrade(
-        socket,
-        409,
-        String(err?.message || 'Conflict')
-          .replace(/[\r\n]+/g, ' ')
-          .slice(0, 120) || 'Conflict',
-      ),
-    )
+    Promise.resolve()
+      .then(() => (upgradeLoginReady || authLoginReady || assertAuthLoginReady)(projectRoot, vm))
+      .then(accept, (err) =>
+        rejectUpgrade(
+          socket,
+          409,
+          String(err?.message || 'Conflict')
+            .replace(/[\r\n]+/g, ' ')
+            .slice(0, 120) || 'Conflict',
+        ),
+      )
+      .catch((err) => {
+        logger.warn?.(`[slot-shell] upgrade accept failed: ${err?.name || 'Error'}`)
+        rejectUpgrade(socket, 500)
+      })
     return true
   }
 
@@ -522,6 +551,7 @@ export function createSlotShell({
       liveTokens.delete(token)
       sessions -= 1
     }
+    startWsHeartbeat(ws, heartbeatMs)
     const send = (data) => ws.readyState === ws.OPEN && ws.send(data)
     const resize = (cols, rows) => {
       resizeExec(connect, session.execId, { cols, rows }).catch(() => {})

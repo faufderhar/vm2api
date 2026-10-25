@@ -19,6 +19,8 @@ import {
   extractPanelToken,
   panelTokenFromCookie,
   panelCookieUseAllowed,
+  panelSessionProtocolBlock,
+  isPanelPathname,
   attachPanelAuth,
   getPanelAdmin,
   isLoopbackRequest,
@@ -30,6 +32,8 @@ import {
   publicErrorMessage,
 } from './lib/core/security.mjs'
 import { loadModelPolicy } from './lib/protocol/model-policy.mjs'
+import { guardUpgrade, rejectUpgradeSocket } from './lib/core/upgrade-guard.mjs'
+import { createFaultMonitor } from './lib/core/fault-monitor.mjs'
 import { gatewayModelCatalog } from './lib/protocol/models.mjs'
 import {
   createCredentialRefreshMonitor,
@@ -744,10 +748,15 @@ function rejectAuth(req, res, error) {
   return false
 }
 
+/** Normalized pathname, the same one the router dispatches on. */
+function requestPathname(req) {
+  return parseRequestUrl(req)?.pathname || '/'
+}
+
 function isPanelPath(req) {
-  const raw = String(req?.url || '/')
-  const pathname = raw.split('?')[0]
-  return pathname.startsWith('/admin') || pathname.startsWith('/api/panel')
+  // Same normalized path the router dispatches on: a raw-url check would treat
+  // /api/panel/../v1/... as a panel path while the router serves /v1/...
+  return isPanelPathname(requestPathname(req))
 }
 
 function requireAuth(req, res) {
@@ -807,6 +816,24 @@ function requireAuth(req, res) {
           code: ErrorCode.GATEWAY_RATE_LIMIT,
           message: 'Gateway rate limit exceeded. Retry later.',
           status: 429,
+        }),
+      )
+    }
+    // A session is not an API key: inference with it would skip quota and billing.
+    const sessionBlock = panelSessionProtocolBlock({
+      pathname: requestPathname(req),
+      method: req.method,
+      role: access.role,
+    })
+    if (sessionBlock) {
+      return rejectAuth(
+        req,
+        res,
+        makeError({
+          type: ErrorType.PERMISSION,
+          code: sessionBlock.code,
+          message: sessionBlock.message,
+          status: 403,
         }),
       )
     }
@@ -1145,7 +1172,7 @@ const server = http.createServer(async (req, res) => {
       )
     }
 
-    if (p.startsWith('/admin') || p.startsWith('/api/panel')) {
+    if (isPanelPathname(p)) {
       const handled = await handlePanel(req, res, url)
       if (handled !== false) return
     }
@@ -1198,11 +1225,6 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, apiScheduler.catalog())
       }
       const result = await fetchWorkerModels({ groupType: keyScopeFromRequest(req).group_type })
-      return json(res, 200, result)
-    }
-    if (req.method === 'POST' && p === '/admin/models/refresh') {
-      if (!requireAuth(req, res)) return
-      const result = await fetchWorkerModels()
       return json(res, 200, result)
     }
     if (req.method === 'GET' && p === '/v1/usage') {
@@ -1267,7 +1289,9 @@ const server = http.createServer(async (req, res) => {
     const status = e.status || 500
     if (!Number.isInteger(e?.status)) console.error('[request]', req.method, String(req.url || '').split('?')[0], e)
     if (!res.headersSent) {
-      json(res, status, { error: { message: publicErrorMessage(e), type: 'server_error' } })
+      const error = { message: publicErrorMessage(e), type: 'server_error' }
+      if (e?.expose === true && typeof e.code === 'string') error.code = e.code
+      json(res, status, { error })
     } else {
       try {
         res.end()
@@ -1276,15 +1300,21 @@ const server = http.createServer(async (req, res) => {
   }
 })
 
-server.on('upgrade', (req, socket, head) => {
-  if (backupService.isRestoring && /^\/(?:v1\/)?responses(?:\?|$)/.test(String(req.url || ''))) {
-    socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
-    return
-  }
-  if (responsesWs.handleUpgrade(req, socket, head)) return
-  if (clusterRoutes.handleUpgrade(req, socket, head)) return
-  if (!slotShell.handleUpgrade(req, socket, head)) socket.destroy()
-})
+// Every upgrade path ends with an answered + destroyed socket on any error:
+// a throw here would otherwise go to uncaughtException and leak the socket.
+server.on(
+  'upgrade',
+  guardUpgrade([
+    (req, socket) => {
+      if (!backupService.isRestoring || !/^\/(?:v1\/)?responses(?:\?|$)/.test(String(req.url || ''))) return false
+      rejectUpgradeSocket(socket, 503)
+      return true
+    },
+    (req, socket, head) => responsesWs.handleUpgrade(req, socket, head),
+    (req, socket, head) => clusterRoutes.handleUpgrade(req, socket, head),
+    (req, socket, head) => slotShell.handleUpgrade(req, socket, head),
+  ]),
+)
 
 server.on('clientError', (err, socket) => {
   try {
@@ -1331,12 +1361,13 @@ const pub = {
 // Never persist the raw API key. Public snapshot only.
 fs.writeFileSync(path.join(cfg.paths.root, 'config', 'gateway-v2.public.json'), JSON.stringify(pub, null, 2))
 
-process.on('uncaughtException', (e) => console.error('[uncaught]', e))
-process.on('unhandledRejection', (e) => console.error('[unhandled]', e))
+// L-11: rate-limited fault logs and counts; VM2API_EXIT_ON_UNCAUGHT=1 restarts via graceful shutdown.
+const faultMonitor = createFaultMonitor({ onFatal: () => shutdown('uncaughtException', 1) }).install()
+stats.faults = faultMonitor.counts
 
 // Graceful shutdown: stop schedulers/watchers, close the DB (WAL checkpoint).
 let _shuttingDown = false
-function shutdown(signal) {
+function shutdown(signal, exitCode = 0) {
   if (_shuttingDown) return
   _shuttingDown = true
   console.log(`[shutdown] ${signal} — closing`)
@@ -1392,7 +1423,7 @@ function shutdown(signal) {
   try {
     closeDatabase()
   } catch {}
-  process.exit(0)
+  process.exit(exitCode)
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'))
 process.on('SIGINT', () => shutdown('SIGINT'))

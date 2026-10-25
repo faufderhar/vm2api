@@ -11,6 +11,9 @@
  *                                                 manifest and point it at release TAG
  *
  * VM2API_PAYLOAD_BASE_URL overrides https://github.com/<repo>/releases/download.
+ * <repo> is VM2API_GITHUB_REPO when set (same rule as deploy/install.sh and the
+ * panel updater), else the manifest's `repo`. Every file is still checked against
+ * the pinned size and sha256, so a fork must publish the same assets.
  */
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -29,6 +32,19 @@ const { values: opts } = parseArgs({
 })
 
 const manifest = JSON.parse(fs.readFileSync(opts.manifest, 'utf8'))
+
+const REPO_RE = /^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/
+
+export function payloadRepo(m, env = process.env) {
+  const fromEnv = String(env.VM2API_GITHUB_REPO || '').trim()
+  if (fromEnv) {
+    if (!REPO_RE.test(fromEnv) || fromEnv.includes('..')) {
+      throw new Error(`VM2API_GITHUB_REPO must be owner/repo: ${fromEnv}`)
+    }
+    return fromEnv
+  }
+  return m.repo
+}
 const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex')
 
 function readLocal(file) {
@@ -77,10 +93,9 @@ if (opts.pin) {
   }
   console.log(`payload ok (${manifest.release}, ${manifest.files.length} files)`)
 } else {
-  const base = (process.env.VM2API_PAYLOAD_BASE_URL || `https://github.com/${manifest.repo}/releases/download`).replace(
-    /\/+$/,
-    '',
-  )
+  const base = (
+    process.env.VM2API_PAYLOAD_BASE_URL || `https://github.com/${payloadRepo(manifest)}/releases/download`
+  ).replace(/\/+$/, '')
   const downloads = new Map()
   for (const file of manifest.files) {
     const target = path.join(opts.dest, file.path)

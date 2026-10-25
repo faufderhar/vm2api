@@ -23,6 +23,7 @@ import {
   panelStepUpFresh,
   markPanelStepUp,
 } from '../core/security.mjs'
+import { operatorErrorMessage } from '../core/public-error.mjs'
 import { loadDistillRules, saveDistillRules, validateDistillPatch } from '../core/distill-detect.mjs'
 import { applyRefusalGuardPatch, refusalGuardPolicy } from '../core/refusal-guard.mjs'
 import {
@@ -242,7 +243,7 @@ import { raiseDockerSlotMemory } from '../vm/docker-slot-memory.mjs'
 import { RUNTIME_KVM } from '../vm/runtime-kind.mjs'
 import { hostProxyUrlForVm, slotHost } from '../vm/slot-host.mjs'
 import { syncIpv6ProxyEgress } from '../vm/proxy-policy-runtime.mjs'
-import { proxyResolvedBlockReason } from '../vm/proxy-policy.mjs'
+import { proxyResolvedBlockReason, proxyWriteBlockReason } from '../vm/proxy-policy.mjs'
 import { normalizeSocksHost } from '../vm/socks-address.mjs'
 import { writeSlotSeedFiles } from '../vm/slot-seed.mjs'
 import {
@@ -629,7 +630,7 @@ async function syncInstalledKernels({
       const exec = slotExec(project, vm)
       item.kernel = await restartRustKernel(exec).catch((e) => ({
         ok: false,
-        error: String(e?.message || e).slice(0, 200),
+        error: operatorErrorMessage(e).slice(0, 200),
       }))
       if (!item.kernel?.ok) {
         markKernelRestartPending(project, item.id, item.kernel?.reason || 'kernel_restart_failed')
@@ -806,7 +807,7 @@ export function createPanelHandler(ctx) {
     try {
       url = host.localExitProxyUrl(vm)
     } catch (err) {
-      return { ok: false, code: err?.code || 'node_egress_unavailable', error: String(err?.message || err) }
+      return { ok: false, code: err?.code || 'node_egress_unavailable', error: operatorErrorMessage(err) }
     }
     const r = await proxyPool.exitGeo(host.nodeId ? `node:${host.nodeId}` : 'local', url, { detect: true, force: true })
     if (!r?.ok) return { ok: false, code: 'geo_lookup_failed', error: String(r?.error || 'geo lookup failed') }
@@ -893,7 +894,7 @@ export function createPanelHandler(ctx) {
         ok: false,
         error: {
           code: error?.code || 'test_schedule_save_failed',
-          message: String(error?.message || error),
+          message: operatorErrorMessage(error),
         },
       })
     }
@@ -924,7 +925,7 @@ export function createPanelHandler(ctx) {
         ok: false,
         error: {
           code: error?.code || 'test_schedule_default_failed',
-          message: String(error?.message || error),
+          message: operatorErrorMessage(error),
         },
       })
     }
@@ -972,7 +973,7 @@ export function createPanelHandler(ctx) {
         ok: false,
         error: {
           code: error?.code || 'test_schedule_sync_failed',
-          message: String(error?.message || error),
+          message: operatorErrorMessage(error),
         },
       })
     }
@@ -1202,7 +1203,7 @@ export function createPanelHandler(ctx) {
           const exec = slotExec(cfg.paths.project, saved)
           const restarted = await restartRustKernel(exec).catch((e) => ({
             ok: false,
-            error: String(e?.message || e).slice(0, 200),
+            error: operatorErrorMessage(e).slice(0, 200),
           }))
           if (!restarted?.ok) {
             return {
@@ -1232,7 +1233,7 @@ export function createPanelHandler(ctx) {
         ok: false,
         id,
         code: rollback && !rollback.ok ? 'engine_switch_rollback_failed' : 'engine_persist_failed',
-        error: String(error?.message || error),
+        error: operatorErrorMessage(error),
         rollback,
       }
     }
@@ -1338,7 +1339,11 @@ export function createPanelHandler(ctx) {
         return true
       }
     }
-    if (p === '/admin/models/refresh') return false
+    // Authenticated and admin-checked above: one requireAuth, one rate-limit token (L-7).
+    if (p === '/admin/models/refresh') {
+      if (req.method !== 'POST') return false
+      return json(res, 200, await fetchWorkerModels())
+    }
 
     if (p === '/admin/routing' && req.method === 'GET') {
       if (!requireAuth(req, res)) return
@@ -1566,7 +1571,7 @@ export function createPanelHandler(ctx) {
             if (e.code === 'invalid_action' || e.code === 'invalid_profile') {
               return json(res, 400, {
                 ok: false,
-                error: { message: String(e.message || e), code: e.code },
+                error: { message: operatorErrorMessage(e), code: e.code },
               })
             }
             throw e
@@ -1641,7 +1646,7 @@ export function createPanelHandler(ctx) {
           const status = e.code === 'username_exists' ? 409 : 400
           return json(res, status, {
             ok: false,
-            error: { message: String(e.message || e), code: e.code || 'create_failed' },
+            error: { message: operatorErrorMessage(e), code: e.code || 'create_failed' },
           })
         }
       }
@@ -1663,7 +1668,7 @@ export function createPanelHandler(ctx) {
           const status = e.code === 'last_admin' || e.code === 'self_disable' ? 409 : 400
           return json(res, status, {
             ok: false,
-            error: { message: String(e.message || e), code: e.code || 'update_failed' },
+            error: { message: operatorErrorMessage(e), code: e.code || 'update_failed' },
           })
         }
       }
@@ -1679,7 +1684,7 @@ export function createPanelHandler(ctx) {
           const status = e.code === 'last_admin' || e.code === 'self_delete' ? 409 : 400
           return json(res, status, {
             ok: false,
-            error: { message: String(e.message || e), code: e.code || 'delete_failed' },
+            error: { message: operatorErrorMessage(e), code: e.code || 'delete_failed' },
           })
         }
       }
@@ -1694,7 +1699,7 @@ export function createPanelHandler(ctx) {
         } catch (e) {
           return json(res, vmPoolHttpStatus(e.code), {
             ok: false,
-            error: { message: String(e.message || e), code: e.code || 'create_failed' },
+            error: { message: operatorErrorMessage(e), code: e.code || 'create_failed' },
           })
         }
       }
@@ -1708,7 +1713,7 @@ export function createPanelHandler(ctx) {
         } catch (e) {
           return json(res, vmPoolHttpStatus(e.code), {
             ok: false,
-            error: { message: String(e.message || e), code: e.code || 'update_failed' },
+            error: { message: operatorErrorMessage(e), code: e.code || 'update_failed' },
           })
         }
       }
@@ -1813,7 +1818,7 @@ export function createPanelHandler(ctx) {
           const status = vmPoolHttpStatus(e.code)
           return json(res, status, {
             ok: false,
-            error: { message: String(e.message || e), code: e.code || 'create_failed' },
+            error: { message: operatorErrorMessage(e), code: e.code || 'create_failed' },
           })
         }
       }
@@ -1861,7 +1866,7 @@ export function createPanelHandler(ctx) {
         } catch (e) {
           return json(res, vmPoolHttpStatus(e.code), {
             ok: false,
-            error: { message: String(e.message || e), code: e.code },
+            error: { message: operatorErrorMessage(e), code: e.code },
           })
         }
       }
@@ -1888,7 +1893,7 @@ export function createPanelHandler(ctx) {
         } catch (e) {
           return json(res, 400, {
             ok: false,
-            error: { message: String(e.message || e), code: e.code || 'rotate_failed' },
+            error: { message: operatorErrorMessage(e), code: e.code || 'rotate_failed' },
           })
         }
       }
@@ -1936,7 +1941,7 @@ export function createPanelHandler(ctx) {
         } catch (e) {
           return json(res, e.status && e.status < 600 ? e.status : 400, {
             ok: false,
-            error: { message: String(e.message || e), code: e.code || 'fetch_models_failed' },
+            error: { message: operatorErrorMessage(e), code: e.code || 'fetch_models_failed' },
           })
         }
       }
@@ -1956,7 +1961,7 @@ export function createPanelHandler(ctx) {
         } catch (e) {
           return json(res, 400, {
             ok: false,
-            error: { message: String(e.message || e), code: e.code || 'create_failed' },
+            error: { message: operatorErrorMessage(e), code: e.code || 'create_failed' },
           })
         }
       }
@@ -1985,7 +1990,7 @@ export function createPanelHandler(ctx) {
           const saved = apiEndpointStore.getRaw(id) || rec
           return json(res, 200, { ok: true, item: publicEndpointView(saved) })
         } catch (e) {
-          return json(res, 400, { ok: false, error: { message: String(e.message || e), code: e.code } })
+          return json(res, 400, { ok: false, error: { message: operatorErrorMessage(e), code: e.code } })
         }
       }
       if (req.method === 'DELETE' && /^\/api\/panel\/api-endpoints\/[^/]+$/.test(p)) {
@@ -2025,7 +2030,7 @@ export function createPanelHandler(ctx) {
         } catch (e) {
           return json(res, e.status && e.status < 600 ? e.status : 400, {
             ok: false,
-            error: { message: String(e.message || e), code: e.code || 'fetch_models_failed' },
+            error: { message: operatorErrorMessage(e), code: e.code || 'fetch_models_failed' },
           })
         }
       }
@@ -2039,7 +2044,7 @@ export function createPanelHandler(ctx) {
           return json(res, 201, { ok: true, item: view?.api_key_entries?.find((k) => k.id === key.id) || key })
         } catch (e) {
           const status = e.code === 'endpoint_not_found' ? 404 : 400
-          return json(res, status, { ok: false, error: { message: String(e.message || e), code: e.code } })
+          return json(res, status, { ok: false, error: { message: operatorErrorMessage(e), code: e.code } })
         }
       }
       if (req.method === 'DELETE' && /^\/api\/panel\/api-endpoints\/[^/]+\/keys\/[^/]+$/.test(p)) {
@@ -2075,7 +2080,7 @@ export function createPanelHandler(ctx) {
           const status = e.status && e.status < 600 ? e.status : 400
           return json(res, status, {
             ok: false,
-            error: { message: String(e.message || e), code: e.code || 'anthropic_console_failed' },
+            error: { message: operatorErrorMessage(e), code: e.code || 'anthropic_console_failed' },
           })
         }
       }
@@ -2295,7 +2300,7 @@ export function createPanelHandler(ctx) {
           const status = e.code === 'backup_in_progress' ? 409 : 500
           return json(res, status, {
             ok: false,
-            error: { message: String(e.message || e), code: e.code || 'backup_failed' },
+            error: { message: operatorErrorMessage(e), code: e.code || 'backup_failed' },
           })
         }
       }
@@ -2312,7 +2317,7 @@ export function createPanelHandler(ctx) {
           const config = backupService.updateSchedule(body || {})
           return json(res, 200, { ok: true, config, next_auto_at: backupService.nextAutoAt() })
         } catch (e) {
-          return json(res, 400, { ok: false, error: { message: String(e.message || e), code: e.code } })
+          return json(res, 400, { ok: false, error: { message: operatorErrorMessage(e), code: e.code } })
         }
       }
       if (req.method === 'GET' && /^\/api\/panel\/backups\/[^/]+\/download$/.test(p)) {
@@ -2358,7 +2363,7 @@ export function createPanelHandler(ctx) {
           }
           return json(res, map[e.code] || 500, {
             ok: false,
-            error: { message: String(e.message || e), code: e.code || 'restore_failed' },
+            error: { message: operatorErrorMessage(e), code: e.code || 'restore_failed' },
           })
         }
       }
@@ -2502,7 +2507,7 @@ export function createPanelHandler(ctx) {
           ctx.routingConfig = previous
           return json(res, 503, {
             ok: false,
-            error: { code: 'dataplane_persist_failed', message: String(error?.message || error) },
+            error: { code: 'dataplane_persist_failed', message: operatorErrorMessage(error) },
           })
         }
         const report = await syncInstalledKernels({
@@ -2612,7 +2617,7 @@ export function createPanelHandler(ctx) {
           buf = await readRawBody(req, cfg.limits?.max_body_bytes || 32 * 1024 * 1024)
         } catch (error) {
           const status = error?.status || 400
-          const body = error?.body || { error: { message: String(error?.message || error) } }
+          const body = error?.body || { error: { message: operatorErrorMessage(error) } }
           return json(res, status, { ok: false, ...body })
         }
         if (!Buffer.isBuffer(buf)) buf = Buffer.from(buf || [])
@@ -2770,7 +2775,7 @@ export function createPanelHandler(ctx) {
               max_sessions: policy.maxSessions ?? null,
             })
           } catch (error) {
-            failed.push({ id, error: (error && error.message) || String(error) })
+            failed.push({ id, error: operatorErrorMessage(error) })
           }
         }
         return json(res, 200, panel.ok({ updated: items.length, missing, failed, items }))
@@ -3327,7 +3332,7 @@ export function createPanelHandler(ctx) {
             ok: false,
             error: {
               code: err.code || 'count_tokens_failed',
-              message: err.message || 'count_tokens 失败',
+              message: err?.message ? operatorErrorMessage(err) : 'count_tokens 失败',
               type: err.type || undefined,
             },
           })
@@ -3693,7 +3698,7 @@ export function createPanelHandler(ctx) {
               if (!started?.ok) kernel.error = started?.reason || 'codex_kernel_start_failed'
             }
           } catch (e) {
-            kernel.error = String(e?.message || e).slice(0, 160)
+            kernel.error = operatorErrorMessage(e).slice(0, 160)
           }
           try {
             const repo = ctx.accountQuota?.repo
@@ -4196,7 +4201,7 @@ export function createPanelHandler(ctx) {
           } catch (e) {
             return json(res, e?.status || 500, {
               ok: false,
-              error: { code: e?.code || 'placement_failed', message: String(e?.message || e) },
+              error: { code: e?.code || 'placement_failed', message: operatorErrorMessage(e) },
             })
           }
           if (!preflight.ok) {
@@ -4276,7 +4281,7 @@ export function createPanelHandler(ctx) {
             ok: false,
             error: {
               code: e.code || 'computer_create_failed',
-              message: String(e.message || e),
+              message: operatorErrorMessage(e),
             },
           })
         }
@@ -4452,7 +4457,7 @@ export function createPanelHandler(ctx) {
           try {
             boot = await startSlotReady(vm, cfg.paths.project, { routing: ctx.routingConfig })
           } catch (e) {
-            boot = { ok: false, error: String(e?.message || e) }
+            boot = { ok: false, error: operatorErrorMessage(e) }
           }
           if (!boot.ok) {
             // Slot JSON is already on disk. 500 here makes the console treat
@@ -4605,7 +4610,7 @@ export function createPanelHandler(ctx) {
             } catch (error) {
               return json(res, 400, {
                 ok: false,
-                error: { code: error.code || 'invalid_grok_credential', message: String(error.message || error) },
+                error: { code: error.code || 'invalid_grok_credential', message: operatorErrorMessage(error) },
               })
             }
             if (!account.access_token && account.refresh_token) {
@@ -4883,7 +4888,7 @@ export function createPanelHandler(ctx) {
             ok: false,
             error: {
               code: e.code || 'generate_auth_url_failed',
-              message: String(e.message || e).slice(0, 240),
+              message: operatorErrorMessage(e).slice(0, 240),
               missing: e.missing,
             },
           })
@@ -5120,7 +5125,7 @@ export function createPanelHandler(ctx) {
             e.code === 'session_expired' || e.code === 'session_vm_mismatch' || e.code === 'code_required' ? 400 : 502
           return json(res, status, {
             ok: false,
-            error: { code: e.code || 'exchange_code_failed', message: String(e.message || e).slice(0, 240) },
+            error: { code: e.code || 'exchange_code_failed', message: operatorErrorMessage(e).slice(0, 240) },
           })
         }
       }
@@ -5250,7 +5255,7 @@ export function createPanelHandler(ctx) {
         } catch (e) {
           return json(res, 400, {
             ok: false,
-            error: { code: e.code || 'credential_required', message: String(e.message || e).slice(0, 240) },
+            error: { code: e.code || 'credential_required', message: operatorErrorMessage(e).slice(0, 240) },
           })
         }
         const committed = await commitImportedOauth({
@@ -5753,7 +5758,7 @@ export function createPanelHandler(ctx) {
           restoreRoutingRuntime(previousRoutingConfig)
           return json(res, 503, {
             ok: false,
-            error: { code: 'routing_persist_failed', message: String(error?.message || error) },
+            error: { code: 'routing_persist_failed', message: operatorErrorMessage(error) },
           })
         }
         return json(
@@ -5906,7 +5911,7 @@ export function createPanelHandler(ctx) {
             error: {
               type: 'api_error',
               code: error?.code || 'fetch_models_failed',
-              message: error?.message || '获取模型失败',
+              message: error?.message ? operatorErrorMessage(error) : '获取模型失败',
             },
           })
         }
@@ -5977,7 +5982,7 @@ export function createPanelHandler(ctx) {
             error: {
               type: 'invalid_request_error',
               code: 'notify_test_failed',
-              message: String(e?.message || e).slice(0, 180),
+              message: operatorErrorMessage(e).slice(0, 180),
             },
           })
         }
@@ -6009,7 +6014,8 @@ export function createPanelHandler(ctx) {
         if (bindVmId && userMissesVmId(req, cfg.paths.project, bindVmId)) {
           return json(res, 404, { ok: false, error: { message: 'vm not found' } })
         }
-        const result = proxyPool.importLines(text, {
+        // Same write-time DNS check as the edit route, before anything is bound.
+        const result = await proxyPool.importLinesChecked(text, {
           fields: body.proxies || body.entries || null,
           host: body.host,
           port: body.port,
@@ -6107,11 +6113,20 @@ export function createPanelHandler(ctx) {
         // A public-looking name can resolve to loopback or metadata. The literal
         // check lives in update(); a new hostname is also looked up here.
         if (typeof patch.host === 'string' && patch.host.trim() && !net.isIP(normalizeSocksHost(patch.host.trim()))) {
-          const blocked = await proxyResolvedBlockReason({ host: patch.host.trim(), port: patch.port || 1080 })
-          if (blocked === 'proxy_host_blocked') {
-            return json(res, 409, {
+          const current = proxyPool.state?.proxies?.find?.((row) => row.id === id)
+          const blocked = await proxyWriteBlockReason(
+            { host: patch.host.trim(), port: patch.port ?? current?.port ?? 1080 },
+            { lookup: proxyPool.dnsLookup },
+          )
+          if (blocked) {
+            const unresolvable = blocked === 'proxy_host_unresolvable'
+            return json(res, unresolvable ? 400 : 409, {
               ok: false,
-              error: { type: 'invalid_request_error', code: blocked, message: blocked },
+              error: {
+                type: 'invalid_request_error',
+                code: blocked,
+                message: unresolvable ? 'proxy host does not resolve' : blocked,
+              },
             })
           }
         }

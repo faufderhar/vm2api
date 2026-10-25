@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
 import { atomicWriteJson } from '../vm/vm-file.mjs'
+import { isExposedError, operatorErrorMessage } from './public-error.mjs'
 
 export function hashKey(key) {
   return crypto.createHash('sha256').update(String(key)).digest('hex')
@@ -626,7 +627,19 @@ export function panelSessionCookieOptions(req, allowedOrigins, env = process.env
   return { sameSite, secure }
 }
 
-function originMatchesRequestHost(origin, req) {
+function defaultPort(protocol) {
+  return protocol === 'https:' ? '443' : '80'
+}
+
+/**
+ * Origin is this gateway: same hostname AND same port. A different port on the
+ * same host is a different origin (another app there must not ride the cookie).
+ * The scheme is not compared: behind a TLS proxy the gateway itself sees http.
+ * When the Host header carries no port and TRUST_PROXY=1, the proxy may have
+ * stripped it ($host), so only the hostname is compared. PUBLIC_BASE_URL and
+ * PANEL_CORS_ORIGINS are matched separately through the allowlist.
+ */
+export function originMatchesRequestHost(origin, req, env = process.env) {
   let parsed
   try {
     parsed = new URL(origin)
@@ -634,8 +647,20 @@ function originMatchesRequestHost(origin, req) {
     return false
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false
+  const raw = String(req?.headers?.host || '').trim()
   const host = requestHostname(req).toLowerCase()
-  return !!host && parsed.hostname.toLowerCase() === host
+  if (!host || parsed.hostname.toLowerCase() !== host) return false
+  let hostPort = ''
+  try {
+    hostPort = new URL(`http://${raw}`).port
+  } catch {
+    hostPort = (raw.match(/:(\d+)$/) || [])[1] || ''
+  }
+  if (/:\d+$/.test(raw) && !hostPort) hostPort = '80' // URL drops :80 under http:
+  const originPort = parsed.port || defaultPort(parsed.protocol)
+  if (hostPort) return hostPort === originPort
+  if (trustProxy(env)) return true
+  return originPort === defaultPort(parsed.protocol)
 }
 
 /**
@@ -762,10 +787,66 @@ export function clearPanelSessionCookie({ secure = true, sameSite = 'Lax' } = {}
 
 /**
  * Text for the catch-all error response. A thrown error that set its own
- * `status` was raised on purpose and keeps its message; anything else is an
+ * `status`, or a PublicError (`expose: true`), was raised on purpose and keeps
+ * its message (minus stack frames and absolute paths); anything else is an
  * unexpected fault whose text (paths, SQL, upstream bodies) stays in the log.
  */
 export function publicErrorMessage(e) {
-  if (e && typeof e === 'object' && Number.isInteger(e.status)) return e.message || String(e)
+  if (isExposedError(e)) return operatorErrorMessage(e)
   return 'internal server error'
+}
+
+/** Panel surface on a normalized pathname. Mirrors the router's dispatch test exactly. */
+export function isPanelPathname(pathname) {
+  const p = String(pathname || '')
+  return p.startsWith('/admin') || p.startsWith('/api/panel')
+}
+
+/** Gateway routes a panel session may read on the protocol surface: no upstream call, nothing billed. */
+const PANEL_SESSION_PROTOCOL_READS = new Set(['/v1/meta', '/v1/models', '/v1/usage'])
+const UNVERSIONED_PROTOCOL_ROUTES = new Set([
+  '/messages',
+  '/messages/count_tokens',
+  '/chat/completions',
+  '/completions',
+  '/responses',
+  '/alpha/search',
+  '/images/generations',
+  '/images/edits',
+])
+
+/** True for the inference surface (/v1/* and its unversioned aliases), on a normalized pathname. */
+export function isProtocolPath(pathname) {
+  const p = String(pathname || '')
+  return p === '/v1' || p.startsWith('/v1/') || UNVERSIONED_PROTOCOL_ROUTES.has(p)
+}
+
+/**
+ * Panel sessions are not API credentials. Inference made with one would carry
+ * no managed key, so it would skip per-key quota, rate plans and billing, and
+ * an admin/super session would draw on the whole platform pool. Only the
+ * read-only gateway routes (meta, model list, usage) accept a session.
+ *
+ * VM2API_PANEL_SESSION_INFERENCE=admin re-allows inference for admin sessions
+ * only (they can already mint keys and use the master key). Tenants and super
+ * are never allowed: they must use a managed API key, which is metered.
+ *
+ * @returns {null | {code: string, message: string}}
+ */
+export function panelSessionProtocolBlock({ pathname, method = 'GET', role = '' } = {}, env = process.env) {
+  const p = String(pathname || '')
+  if (!isProtocolPath(p)) return null
+  const m = String(method || 'GET').toUpperCase()
+  if ((m === 'GET' || m === 'HEAD') && PANEL_SESSION_PROTOCOL_READS.has(p)) return null
+  const r = String(role || '')
+    .trim()
+    .toLowerCase()
+  const optIn = String(env?.VM2API_PANEL_SESSION_INFERENCE || '')
+    .trim()
+    .toLowerCase()
+  if (r === 'admin' && optIn === 'admin') return null
+  return {
+    code: 'panel_session_not_api_key',
+    message: 'Panel sessions cannot call inference endpoints. Create an API key in the panel and send it instead.',
+  }
 }

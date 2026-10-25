@@ -17,8 +17,14 @@ import { computedUpstreamTransport, normalizeCodexRouting } from '../protocol/co
 const starts = new Map()
 
 // The kernel exits only through config.proxy_url; inherited proxy variables would give it a second, unseen exit.
-function kernelEnv(env = process.env) {
-  return Object.fromEntries(Object.entries(env).filter(([key]) => !/^(https?|all|no)_proxy$/i.test(key)))
+// Gateway-only policy flags: the kernel dials through its configured SOCKS and
+// has no use for them, so they do not leak into the child (or look like a proxy).
+const GATEWAY_ONLY_ENV = new Set(['VM2API_ALLOW_PRIVATE_PROXY'])
+
+export function kernelEnv(env = process.env) {
+  return Object.fromEntries(
+    Object.entries(env).filter(([key]) => !/^(https?|all|no)_proxy$/i.test(key) && !GATEWAY_ONLY_ENV.has(key)),
+  )
 }
 
 function existingBin(candidate) {

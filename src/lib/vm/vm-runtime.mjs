@@ -38,6 +38,7 @@ import { slotMemory, slotDockerCpus, memoryMiB, VM_CONFIG_DEFAULTS } from './mac
 import { probeLocalKvm } from './kvm-host.mjs'
 import { slotExecArgv } from './slot-exec.mjs'
 import { isDockerInspectNotFound } from './docker-container.mjs'
+import { PublicError } from '../core/public-error.mjs'
 
 export const RUNTIME = 'docker'
 const WORKER_BIN = process.env.KIN_WORKER_BIN || '/opt/kin-gateway/bin/kin-worker'
@@ -419,7 +420,7 @@ export async function reloadSlotWorker(vm, projectRoot, { routing } = {}) {
   let worker
   try {
     if (!isLocalEgressProxy(vm.proxy) && vm.proxy_required !== false && !workerProxyUrl(vm))
-      throw new Error('slot SOCKS5 proxy is required')
+      throw new PublicError('slot SOCKS5 proxy is required', { status: 409, code: 'proxy_required' })
     worker = writeWorkerFiles(vm, projectRoot, { routing })
   } catch (error) {
     if (!fs.existsSync(paths.config) || !fs.existsSync(paths.token)) {
@@ -539,7 +540,8 @@ export function writeWorkerFiles(vm, projectRoot, { transparent, routing } = {})
     transparent === true || (transparent !== false && (wantNet.startsWith('kin-eg-') || liveNet.startsWith('kin-eg-')))
   const local = isLocalEgressProxy(vm.proxy)
   const proxyUrl = onEgress || local ? '' : workerProxyUrl(vm) || ''
-  if (!onEgress && !local && vm.proxy_required !== false && !proxyUrl) throw new Error('slot SOCKS5 proxy is required')
+  if (!onEgress && !local && vm.proxy_required !== false && !proxyUrl)
+    throw new PublicError('slot SOCKS5 proxy is required', { status: 409, code: 'proxy_required' })
   const testEndpoints = process.env.KIN_WORKER_TEST_ENDPOINTS === '1'
   const resolvedRouting = resolveSlotRouting(projectRoot, routing)
   const nodePaths = slotHost(vm).slotPaths?.(vm) || null

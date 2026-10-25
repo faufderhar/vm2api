@@ -189,6 +189,12 @@ export function isUnsafeProxyHost(proxy) {
     .trim()
     .toLowerCase()
     .replace(/\.+$/, '')
+  // An IPv6 zone id (`fe80::1%eth0`, `%25` URL-encoded) names a local interface:
+  // never a proxy. The normalizer drops such a host to '' (so the dial fails
+  // today), but the policy must say so itself rather than lean on that (L-10).
+  if (String(proxy?.host || '').includes('%') || /^[a-z0-9+.-]+:\/\/[^/]*\[[^\]]*%/i.test(String(proxy?.url || ''))) {
+    return true
+  }
   if (!host) return false
   if (host === 'localhost' || host.endsWith('.localhost')) return !privateProxyAllowed()
   if (
@@ -276,7 +282,8 @@ function lookupAnswers(value) {
  * first safe IPv4 is chosen; IPv6-only answers are `ipv6_disabled`.
  * Platform local egress skips DNS. The returned url is only for the dial, not for storage.
  */
-export async function resolvedProxyDial(proxy, { lookup } = {}) {
+export async function resolvedProxyDial(proxy, { lookup, distinguishUnresolvable = false } = {}) {
+  const unresolvable = distinguishUnresolvable ? 'proxy_host_unresolvable' : 'proxy_host_blocked'
   const literal = proxyBlockedReason(proxy)
   if (literal) return { blocked: literal, url: '', address: '' }
   if (platformLocalEgress(proxy)) return { blocked: null, url: '', address: '', local: true }
@@ -288,14 +295,18 @@ export async function resolvedProxyDial(proxy, { lookup } = {}) {
   try {
     answers = lookupAnswers(await lookupFn(host))
   } catch {
-    return { blocked: 'proxy_host_blocked', url: '', address: '' }
+    return { blocked: unresolvable, url: '', address: '' }
   }
-  if (!answers.length) return { blocked: 'proxy_host_blocked', url: '', address: '' }
+  if (!answers.length) return { blocked: unresolvable, url: '', address: '' }
   const ipv6Enabled = configuredIpv6Enabled()
   let chosen = ''
   let sawIpv6 = false
+  // Check every answer first: one unsafe address blocks the name even when a
+  // public one comes earlier (the resolver may hand the dialer either).
   for (const address of answers) {
     if (isUnsafeProxyHost({ host: address })) return { blocked: 'proxy_host_blocked', url: '', address: '' }
+  }
+  for (const address of answers) {
     const family = net.isIP(address)
     if (family === 6 && ipv6Enabled !== true) {
       sawIpv6 = true
@@ -312,6 +323,20 @@ export async function resolvedProxyDial(proxy, { lookup } = {}) {
 export async function proxyResolvedBlockReason(proxy, opts) {
   const dial = await resolvedProxyDial(proxy, opts)
   return dial.blocked
+}
+
+/**
+ * Write-time check for a proxy row (create, import, edit): the literal rule,
+ * then what the name resolves to. Returns null when the row may be stored,
+ * 'proxy_host_blocked' when it points at a private/loopback/metadata address,
+ * or 'proxy_host_unresolvable' when the name does not resolve (fail closed,
+ * but reported apart so a typo is not mistaken for a policy block).
+ * IPv6-only answers with IPv6 off are left to the dial-time check.
+ */
+export async function proxyWriteBlockReason(proxy, opts = {}) {
+  const dial = await resolvedProxyDial(proxy, { ...opts, distinguishUnresolvable: true })
+  if (dial.blocked === 'proxy_host_blocked' || dial.blocked === 'proxy_host_unresolvable') return dial.blocked
+  return null
 }
 
 /** Resolve `proxyUrl` and return the socks URL pinned to the checked address. */

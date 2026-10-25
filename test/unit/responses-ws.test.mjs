@@ -58,7 +58,14 @@ async function listen({ routing, requireAuth, handleProtocol, maxBodyBytes }) {
     httpHits,
     url: `ws://127.0.0.1:${port}/v1/responses`,
     httpUrl: `http://127.0.0.1:${port}/v1/responses`,
-    close: () => new Promise((resolve) => server.close(resolve)),
+    // Drop any socket a test left open, or server.close() waits forever and the
+    // file never exits (it used to pass 17/17 and then hang until killed).
+    close: () =>
+      new Promise((resolve) => {
+        for (const client of handler.wss.clients) client.terminate()
+        server.close(resolve)
+        server.closeAllConnections?.()
+      }),
   }
 }
 
