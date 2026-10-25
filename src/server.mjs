@@ -27,6 +27,7 @@ import {
   assertEnvAdminPassword,
   warnPanelCookieScheme,
   warnPublicPlainListen,
+  publicErrorMessage,
 } from './lib/core/security.mjs'
 import { loadModelPolicy } from './lib/protocol/model-policy.mjs'
 import { gatewayModelCatalog } from './lib/protocol/models.mjs'
@@ -1264,8 +1265,9 @@ const server = http.createServer(async (req, res) => {
   } catch (e) {
     stats.errors++
     const status = e.status || 500
+    if (!Number.isInteger(e?.status)) console.error('[request]', req.method, String(req.url || '').split('?')[0], e)
     if (!res.headersSent) {
-      json(res, status, { error: { message: e.message || String(e), type: 'server_error' } })
+      json(res, status, { error: { message: publicErrorMessage(e), type: 'server_error' } })
     } else {
       try {
         res.end()

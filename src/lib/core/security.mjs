@@ -759,3 +759,13 @@ export function clearPanelSessionCookie({ secure = true, sameSite = 'Lax' } = {}
   if (lockedSecure) parts.push('Secure')
   return parts.join('; ')
 }
+
+/**
+ * Text for the catch-all error response. A thrown error that set its own
+ * `status` was raised on purpose and keeps its message; anything else is an
+ * unexpected fault whose text (paths, SQL, upstream bodies) stays in the log.
+ */
+export function publicErrorMessage(e) {
+  if (e && typeof e === 'object' && Number.isInteger(e.status)) return e.message || String(e)
+  return 'internal server error'
+}
