@@ -2350,13 +2350,64 @@ export function indexBillingAccounts(billing) {
   }
   for (const row of billing?.accounts || []) {
     if (row.account_id) set('id:' + row.account_id, row)
-    if (row.vm_id) set('vm:' + row.vm_id, row)
+    if (row.vm_id) {
+      set('vm:' + row.vm_id, row)
+      const rows = map.get('rows:' + row.vm_id) || []
+      rows.push(row)
+      map.set('rows:' + row.vm_id, rows)
+    }
   }
   return map
 }
 
+/**
+ * The id a Grok hop logs as its account (handle-grok grokLogAccountId): the xAI email,
+ * else the xAI account id, else the slot id. Slot summaries carry the same values as
+ * email / org_uuid.
+ */
+function grokBillingAccountId(vm) {
+  const bag = vm?.grok && typeof vm.grok === 'object' ? vm.grok : {}
+  const pick = (...values) => values.map((v) => (typeof v === 'string' ? v.trim() : '')).find(Boolean) || ''
+  return pick(vm?.email, bag.email, vm?.org_uuid, vm?.account_id, bag.account_id, vm?.id) || null
+}
+
+/** Sum two billing rows field by field; strings (ids, window starts) come from `a`. */
+function mergeBillingRows(a, b) {
+  const out = { ...a }
+  for (const [key, value] of Object.entries(b || {})) {
+    const prev = out[key]
+    if (typeof value === 'number' && (prev == null || typeof prev === 'number')) {
+      out[key] = Number(prev || 0) + value
+    } else if (value && typeof value === 'object' && !Array.isArray(value)) {
+      out[key] = prev && typeof prev === 'object' && !Array.isArray(prev) ? mergeBillingRows(prev, value) : { ...value }
+    } else if (prev == null) {
+      out[key] = value
+    }
+  }
+  return out
+}
+
+/**
+ * Grok rows logged before the hop named its xAI account are keyed by the slot id; later
+ * rows by the account. Both belong to the slot's current account, so the cost columns sum
+ * them. Rows of a different (earlier) account on a reused slot stay apart, as for Claude.
+ */
+function grokSlotBilling(index, vm) {
+  const rows = index.get('rows:' + vm.id) || []
+  const account = grokBillingAccountId(vm)
+  const own = rows.filter((row) => row.account_id === account)
+  const legacy = rows.filter((row) => row.account_id !== account && (row.account_id === vm.id || !row.account_id))
+  const picked = [...own, ...legacy]
+  if (picked.length < 2) return picked[0] || null
+  return picked.slice(1).reduce(mergeBillingRows, picked[0])
+}
+
 export function lookupBilling(index, accOrVm) {
   if (!index || !accOrVm) return null
+  if (accOrVm.id && isGrokVm(accOrVm)) {
+    const row = grokSlotBilling(index, accOrVm)
+    if (row) return row
+  }
   const keys = [
     accOrVm.account_id && 'id:' + accOrVm.account_id,
     accOrVm.account_uuid && 'id:' + accOrVm.account_uuid,
