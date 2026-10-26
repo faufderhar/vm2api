@@ -149,10 +149,25 @@ describe('vmCostLedger', () => {
     ])
   })
 
-  it('titles only the today row, naming the Shanghai day boundary', () => {
+  it('titles the today row with the Shanghai day boundary and leaves 7D bare', () => {
     const [today, week] = vmCostLedger(grok)
     expect(ledgerRowTitle(today)).toContain('上海自然日')
     expect(ledgerRowTitle(today)).toContain('3 次请求')
     expect(ledgerRowTitle(week)).toBeUndefined()
+  })
+
+  it('titles the total row with the log coverage start and the retention caveat', () => {
+    const since = '2026-10-19T06:00:00.000Z'
+    const total = vmCostLedger({ ...grok, log_coverage_start: since })[2]
+    expect(total).toMatchObject({ key: 'total', since })
+    const title = ledgerRowTitle(total)
+    expect(title).toContain(`自 ${new Date(since).toLocaleString()} 起`)
+    expect(title).toContain('受日志保留期限制')
+  })
+
+  it('says the coverage start is unknown when the slot does not carry it', () => {
+    const total = vmCostLedger(grok)[2]
+    expect(total.since).toBeNull()
+    expect(ledgerRowTitle(total)).toContain('起点未知，受日志保留期限制')
   })
 })

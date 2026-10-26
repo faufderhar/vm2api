@@ -114,3 +114,92 @@ test('Grok cost columns from a real usage_logs table match hand sums', async (t)
   assert.equal(row.window_7d_cost, 3)
   assert.equal(row.window_5h_cost, 1)
 })
+
+test('Grok 7D cost follows the weekly pool period the 7D bar counts down to', async (t) => {
+  const { createDatabase } = await import('../../src/lib/db/database.mjs')
+  const { UsageLogsRepo } = await import('../../src/lib/db/repos/usage-logs-repo.mjs')
+  const HOUR = 3600e3
+  const now = Date.now()
+  // The weekly pool started a day ago: the 7D bar resets in about six days.
+  const root = grokSlotRoot(t, {
+    email: 'grok-a@example.test',
+    build_usage: {
+      credit_usage_percent: 0,
+      period_type: 'USAGE_PERIOD_TYPE_WEEKLY',
+      period_start: new Date(now - 24 * HOUR).toISOString(),
+      period_end: new Date(now + 6 * 24 * HOUR).toISOString(),
+    },
+  })
+  const db = createDatabase({ dataDir: path.join(root, 'data') })
+  t.after(() => db.close?.())
+  const logs = new UsageLogsRepo(db)
+  let n = 0
+  const insert = (total_cost, agoMs) =>
+    logs.insertSummary({
+      id: `l${++n}`,
+      request_id: `r${n}`,
+      status: 200,
+      input_tokens: 10,
+      output_tokens: 5,
+      pricing_model: 'fixture',
+      vm_id: 'vm-g1',
+      account_id: 'grok-a@example.test',
+      final_account_id: 'grok-a@example.test',
+      total_cost,
+      created_at: new Date(now - agoMs).toISOString(),
+    })
+  insert(5, 3 * 24 * HOUR) // previous weekly period, still inside a rolling 7 days
+  insert(1, 2 * HOUR)
+  const listed = await buildVmList({
+    cfg: { paths: { project: root } },
+    accountQuota: { config: {}, snapshot: () => ({ accounts: [] }) },
+    routingConfig: {},
+    requestLog: { billingStats: (opts) => logs.billingStats(opts), costByModel: () => [] },
+  })
+  const row = listed.data.items.find((vm) => vm.id === 'vm-g1')
+  assert.equal(row.window_7d_cost, 1)
+  assert.equal(row.window_7d_requests, 1)
+  assert.equal(row.total_cost, 6)
+  // The total only covers what the request log still holds; the slot says from when.
+  assert.equal(row.log_coverage_start, logs.logCoverageStart())
+  assert.ok(row.log_coverage_start)
+})
+
+test('Grok 7D cost stays a rolling week when the reported period is not weekly', async (t) => {
+  const { createDatabase } = await import('../../src/lib/db/database.mjs')
+  const { UsageLogsRepo } = await import('../../src/lib/db/repos/usage-logs-repo.mjs')
+  const HOUR = 3600e3
+  const now = Date.now()
+  const root = grokSlotRoot(t, {
+    email: 'grok-a@example.test',
+    build_usage: { credit_usage_percent: 0, period_end: new Date(now + 20 * 24 * HOUR).toISOString() },
+  })
+  const db = createDatabase({ dataDir: path.join(root, 'data') })
+  t.after(() => db.close?.())
+  const logs = new UsageLogsRepo(db)
+  let n = 0
+  const insert = (total_cost, agoMs) =>
+    logs.insertSummary({
+      id: `l${++n}`,
+      request_id: `r${n}`,
+      status: 200,
+      input_tokens: 10,
+      output_tokens: 5,
+      pricing_model: 'fixture',
+      vm_id: 'vm-g1',
+      account_id: 'grok-a@example.test',
+      final_account_id: 'grok-a@example.test',
+      total_cost,
+      created_at: new Date(now - agoMs).toISOString(),
+    })
+  insert(5, 3 * 24 * HOUR)
+  insert(1, 2 * HOUR)
+  const listed = await buildVmList({
+    cfg: { paths: { project: root } },
+    accountQuota: { config: {}, snapshot: () => ({ accounts: [] }) },
+    routingConfig: {},
+    requestLog: { billingStats: (opts) => logs.billingStats(opts), costByModel: () => [] },
+  })
+  const row = listed.data.items.find((vm) => vm.id === 'vm-g1')
+  assert.equal(row.window_7d_cost, 6)
+})

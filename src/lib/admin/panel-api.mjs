@@ -49,6 +49,7 @@ import { hardBlockOf } from '../pool/rate-limit-service.mjs'
 import { unitCircuit } from '../pool/unit-circuit.mjs'
 import { accountIdOf, normalizePoolRouting } from '../pool/pool-scheduler.mjs'
 import { codexMaxSessions } from '../pool/codex-slot-pool.mjs'
+import { grokResetWindow } from '../pool/grok-slot-pool.mjs'
 import { resolveCredentialScheduleLevel } from '../pool/credential-weight.mjs'
 import { activeHoursZoneOf, evaluateActiveHours } from '../pool/active-hours.mjs'
 import {
@@ -2482,14 +2483,21 @@ function accountWindowsForBilling(accountQuota, vms = []) {
 }
 
 // Codex resets live on the slot's codex_usage view, not the Claude-shaped account quota.
+// Grok has no 7d quota of its own: its 7D bar counts down to the weekly pool's end, so the
+// 7D cost follows that period too (a monthly / legacy period stays a rolling week).
 function billingWindowOf(accountId, vmId, vm, q) {
   const codex = isCodexVm(vm)
   const codexQuota = codex ? vm.codex_usage?.quota || {} : {}
+  const grokWeek = isGrokVm(vm) ? grokResetWindow(vm) : null
   return {
     account_id: accountId,
     vm_id: vmId,
     reset_5h: (codex ? codexQuota.reset_5h : q.reset_5h) || vm.reset_5h || null,
-    reset_7d: (codex ? codexQuota.reset_7d : q.reset_7d) || vm.reset_7d || null,
+    reset_7d:
+      (codex ? codexQuota.reset_7d : q.reset_7d) ||
+      vm.reset_7d ||
+      (grokWeek?.kind === 'weekly' ? grokWeek.at : null) ||
+      null,
     reset_7d_oi: codex ? null : q.reset_7d_oi || vm.reset_7d_oi || null,
   }
 }
@@ -2548,6 +2556,8 @@ function applyCostFields(target, cost, { coveredSince = null } = {}) {
   target.today_cost = cost?.today_cost ?? today?.total_cost ?? 0
   target.total_cost = cost?.total_cost || 0
   target.total_tokens = tokenTotal(cost)
+  // total_* sums usage_logs, which retention prunes: it only covers traffic since this instant.
+  target.log_coverage_start = coveredSince || null
   target.today_requests = cost?.today_requests ?? today?.requests ?? 0
   target.today_tokens = todayInput + todayOut + todayRead + todayWrite
   target.today_input_tokens = todayInput

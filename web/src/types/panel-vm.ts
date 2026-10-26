@@ -454,9 +454,12 @@ export type Vm = {
   today_output_tokens?: number
   today_cache_read_tokens?: number
   today_cache_creation_tokens?: number
+  /** 自 `log_coverage_start` 起的官方价费用：网关请求日志会按保留期清理，不是账号终身累计。 */
   total_cost?: number
-  /** 累计 token（含缓存），与 total_cost 同源。 */
+  /** 累计 token（含缓存），与 total_cost 同源同起点。 */
   total_tokens?: number
+  /** 请求日志完整覆盖的起点（ISO）；早于它的请求已随保留期清理。 */
+  log_coverage_start?: string | null
   expires_at?: string
   refreshed_at?: string
   oauth_source?: string

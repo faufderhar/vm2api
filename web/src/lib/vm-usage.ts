@@ -2,7 +2,7 @@ import type { BillingAccountRow } from '@/types/panel-overview'
 import type { WindowEstimate } from '@/types/panel-pricing'
 import type { UsageAccountRow } from '@/types/panel-usage'
 import type { Vm } from '@/types/panel-vm'
-import { fmtNum, fmtUsd } from '@/lib/format'
+import { fmtExpiresAt, fmtNum, fmtUsd } from '@/lib/format'
 import { isGrokVm } from '@/lib/vm-kind'
 
 function num(v: unknown): number {
@@ -249,9 +249,10 @@ export function vmWindowTokens(
 }
 
 /**
- * 账号累计官方价费用。`/api/panel/vms` 不带任何费用字段，累计值只在 `/usage`
- * 账号行和 `/dashboard` 的槽位里；两边都可能缺，取较大者，和 `vmTodayView`
- * 同一取舍——累计只增不减，较小的一定是过期或缺失。
+ * 「总计」官方价费用：网关请求日志自 `log_coverage_start` 起的合计，不是账号终身累计——
+ * 日志按保留期（默认 7 天）清理，早于起点的花费已不在库里。值来自 `/usage` 账号行与
+ * `/dashboard` 槽位，两边同出一份 `billingStats`，缺的一边是 0，取较大者即取有值的那份。
+ * 它会随清理变小，不能当成只增不减。
  */
 export function vmTotalCost(vm: Vm, accounts?: UsageAccountRow[]): number {
   return Math.max(
@@ -275,6 +276,8 @@ export type VmLedgerRow = {
   tokens: number
   /** 只有「今日」行带：今日请求数，给提示用。 */
   requests?: number
+  /** 只有「总计」行带：请求日志覆盖起点，给提示用；缺省表示起点未知。 */
+  since?: string | null
 }
 
 /** 「今日」与 `billing.today`、统计弹窗同一天界：网关按上海自然日（UTC+8）切日。 */
@@ -314,6 +317,7 @@ export function vmCostLedger(
       label: '总计',
       cost: vmTotalCost(vm, accounts),
       tokens: vmTotalTokens(vm, accounts),
+      since: vm.log_coverage_start ?? null,
     },
   ]
 }
@@ -375,8 +379,16 @@ export function formatWindowSpend(
   }
 }
 
-/** 「今日」行的提示：天界、请求数与口径。其它行不带提示。 */
+/** 「今日」行：天界、请求数与口径；「总计」行：日志覆盖起点。5H / 7D 不带提示。 */
 export function ledgerRowTitle(r: VmLedgerRow): string | undefined {
+  if (r.key === 'total') {
+    const since = r.since ? `自 ${fmtExpiresAt(r.since)} 起` : '起点未知'
+    return [
+      `总计（${since}，受日志保留期限制）`,
+      `${fmtUsd(r.cost, 4)} · ${fmtNum(r.tokens)} tok`,
+      '早于起点的请求已随日志清理，不计入；官方价口径',
+    ].join('\n')
+  }
   if (r.key !== 'today') return undefined
   return [
     `今日（${TODAY_DAY_BOUNDARY}）`,
