@@ -12,7 +12,6 @@ import { resolveGrokRequestModel } from './grok-model-policy.mjs'
 import { keyAllowsVm, keyScopeFromRequest, vmPoolDenial } from '../admin/key-scope.mjs'
 import { restrictCodexClient } from './codex-restriction.mjs'
 import {
-  anthropicToCodexResponses,
   assembleCodexBodyFromSse,
   codexBodyToAnthropicMessage,
   createAnthropicSseState,
@@ -50,6 +49,7 @@ import {
   resolveGrokOutboundSession,
 } from './grok-client.mjs'
 import { assembleGrokNonStreamBody, grokStreamFailure } from './grok-sse-assemble.mjs'
+import { anthropicToGrokResponses } from './grok-convert.mjs'
 import { clientGoneSignal } from './client-gone.mjs'
 
 export const GROK_VIA = 'grok-kernel'
@@ -88,16 +88,6 @@ function pinnedVmId(req) {
   return isValidVmId(raw) ? raw : null
 }
 
-function anthropicSystemText(system) {
-  if (typeof system === 'string') return system
-  if (!Array.isArray(system)) return undefined
-  const text = system
-    .map((part) => (typeof part === 'string' ? part : part?.type === 'text' ? part.text || '' : ''))
-    .filter(Boolean)
-    .join('\n')
-  return text || undefined
-}
-
 /**
  * Caller fields that identify the end user or the caller's own client. grok-shell does not
  * send them; on a shared subscription they would show xAI one distinct user per tenant.
@@ -119,7 +109,7 @@ function stripGrokCallerIdentity(body) {
 export function buildGrokOutbound(protocol, body, mode, { stream } = {}) {
   const clean = stripGrokCallerIdentity(body)
   if (protocol === 'anthropic.messages' && mode === 'convert') {
-    const converted = anthropicToCodexResponses({ ...clean, system: anthropicSystemText(clean.system) })
+    const converted = anthropicToGrokResponses(clean)
     return {
       path: UPSTREAM_PATHS['openai.responses'],
       body: { ...stripGrokCallerIdentity(converted), stream: true },
