@@ -212,6 +212,8 @@ export function publicGrokBuildUsage(bag = {}) {
     probed_at: typeof usage.probed_at === 'string' ? usage.probed_at : null,
     ok: usage.ok !== false,
     credit_usage_percent: finiteOrNull(usage.credit_usage_percent),
+    credit_usage_source: str(usage.credit_usage_source) || null,
+    period_type: str(usage.period_type) || null,
     period_start: usage.period_start || null,
     period_end: usage.period_end || null,
     monthly_limit: finiteOrNull(usage.monthly_limit),
@@ -221,6 +223,8 @@ export function publicGrokBuildUsage(bag = {}) {
     on_demand_used: finiteOrNull(usage.on_demand_used),
     prepaid_balance: finiteOrNull(usage.prepaid_balance),
     on_demand_enabled: usage.on_demand_enabled === true ? true : usage.on_demand_enabled === false ? false : null,
+    unified_billing: usage.unified_billing === true ? true : usage.unified_billing === false ? false : null,
+    top_up_method: str(usage.top_up_method) || null,
     subscription_tier: str(usage.subscription_tier) || null,
     error: str(usage.error) || null,
     message: str(usage.message) || null,
@@ -239,6 +243,10 @@ const BUILD_USAGE_KEEP = [
   'prepaid_balance',
   'on_demand_enabled',
   'subscription_tier',
+  'credit_usage_source',
+  'period_type',
+  'unified_billing',
+  'top_up_method',
 ]
 
 /** Store a Grok Build billing sample. A failed hop keeps the last good numbers. */

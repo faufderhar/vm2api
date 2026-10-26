@@ -1,9 +1,12 @@
 /**
  * Grok Build account allowance.
  *
- * The installed Grok CLI 1.0.62 loads this from the chat proxy, not from
- * grok.com or api.x.ai. `GET /v1/billing?format=credits` is the shared weekly
- * pool (`creditUsagePercent`). `GET /v1/billing` is the monthly ledger.
+ * The Grok CLI loads this from the chat proxy, not from grok.com or api.x.ai.
+ * `GET /v1/billing?format=credits` is the shared weekly pool. Older accounts
+ * report `creditUsagePercent`; unified-billing accounts (CLI 1.0.70) report only
+ * `currentPeriod`, `onDemandCap/onDemandUsed` and `prepaidBalance`. The official
+ * client reads nothing else; `GET /v1/billing` (monthly ledger) is an extra read
+ * kept for `monthly_limit` and the monthly history, and its failure is ignored.
  * grok.com/billing is the website and returns 404. xAI still does not publish
  * Claude-style 5h / 7d windows.
  */
@@ -118,23 +121,50 @@ export function parseGrokBuildBilling(payload, ledger = null) {
   const ledgerConfig = ledger ? configOf(ledger) : null
   const period = config.currentPeriod || config.current_period || {}
   const history = latestHistory(config.history) || latestHistory(ledgerConfig?.history)
-  const credit = grokCreditUsedPercent(config.creditUsagePercent ?? config.credit_usage_percent)
+  const reported = grokCreditUsedPercent(config.creditUsagePercent ?? config.credit_usage_percent)
   const monthly = money(
     config.monthlyLimit ?? config.monthly_limit ?? ledgerConfig?.monthlyLimit ?? ledgerConfig?.monthly_limit,
   )
+  const onDemandCap = money(config.onDemandCap ?? config.on_demand_cap ?? ledgerConfig?.onDemandCap)
+  const onDemandUsed = money(config.onDemandUsed ?? config.on_demand_used ?? ledgerConfig?.onDemandUsed)
+  const prepaid = money(config.prepaidBalance ?? config.prepaid_balance ?? ledgerConfig?.prepaidBalance)
+  const unified = flag(config.isUnifiedBillingUser ?? config.is_unified_billing_user)
+  // The 1.0.70 credits shape: no percent, only the period and on-demand counters.
+  const creditsShape =
+    reported == null &&
+    (unified != null ||
+      onDemandCap != null ||
+      onDemandUsed != null ||
+      prepaid != null ||
+      Boolean(period.start || period.end || period.type))
+  let credit = reported
+  let creditSource = reported == null ? null : 'reported'
+  if (credit == null && creditsShape) {
+    if (onDemandCap != null && onDemandCap > 0 && onDemandUsed != null) {
+      credit = Math.max(0, Math.min(100, (onDemandUsed / onDemandCap) * 100))
+      creditSource = 'on_demand'
+    } else {
+      credit = 0
+      creditSource = 'none'
+    }
+  }
   if (credit == null && monthly == null) return null
   return {
     ok: true,
     credit_usage_percent: credit,
+    credit_usage_source: creditSource,
+    period_type: text(period.type) || null,
     period_start: timeOf(period.start ?? config.billingPeriodStart ?? config.billing_period_start),
-    period_end: timeOf(period.end),
+    period_end: timeOf(period.end ?? config.billingPeriodEnd ?? config.billing_period_end),
     monthly_limit: monthly,
     included_used: money(history?.includedUsed ?? history?.included_used),
     total_used: money(history?.totalUsed ?? history?.total_used),
-    on_demand_cap: money(config.onDemandCap ?? config.on_demand_cap ?? ledgerConfig?.onDemandCap),
-    on_demand_used: money(config.onDemandUsed ?? config.on_demand_used ?? ledgerConfig?.onDemandUsed),
-    prepaid_balance: money(config.prepaidBalance ?? config.prepaid_balance ?? ledgerConfig?.prepaidBalance),
+    on_demand_cap: onDemandCap,
+    on_demand_used: onDemandUsed,
+    prepaid_balance: prepaid,
     on_demand_enabled: flag(root.on_demand_enabled ?? root.onDemandEnabled ?? config.onDemandEnabled),
+    unified_billing: unified,
+    top_up_method: text(config.topUpMethod ?? config.top_up_method) || null,
     subscription_tier: grokSubscriptionTierOf(root, config, ledger, ledgerConfig),
     error: null,
   }
