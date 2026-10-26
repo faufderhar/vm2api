@@ -17,6 +17,8 @@ export function grokKernelEnvelope({
   modelId = '',
   requestId = '',
   agentId = '',
+  turnIdx = '',
+  convGroupId = '',
 } = {}) {
   return {
     method,
@@ -29,6 +31,8 @@ export function grokKernelEnvelope({
     model_id: String(modelId ?? ''),
     request_id: String(requestId ?? ''),
     agent_id: String(agentId ?? ''),
+    turn_idx: String(turnIdx ?? ''),
+    conv_group_id: String(convGroupId ?? ''),
   }
 }
 
