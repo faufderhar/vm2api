@@ -37,7 +37,7 @@ import { RefusalGuardsRepo } from '../db/repos/refusal-guards-repo.mjs'
 import { RefusalDeviceBlocksRepo } from '../db/repos/refusal-device-blocks-repo.mjs'
 import { SettingsRepo } from '../db/repos/settings-repo.mjs'
 import { parseCodexImportPayload, upsertCodexAccount, readCodexAccounts } from '../vm/codex-slot.mjs'
-import { grokBagAfterLogin, parseGrokCredentialInput, upsertGrokAccount } from '../vm/grok-slot.mjs'
+import { grokBagAfterLogin, grokLogAccountId, parseGrokCredentialInput, upsertGrokAccount } from '../vm/grok-slot.mjs'
 import { grokRuntime } from '../pool/openai-account-runtime.mjs'
 import { generateAuthUrl, exchangeAuthCode, normalizeOauthFlavor } from '../oauth/oauth-auth-url.mjs'
 import { sessionKeyToOAuth, panelImportErrorPayload } from '../oauth/cookie-auth.mjs'
@@ -2219,7 +2219,13 @@ export function createPanelHandler(ctx) {
       // ---- Scrolling usage logs (keyset cursor, camelCase rows) ----
       // Lives beside /request-logs (offset + snake_case, still used by error
       // collection and export); this surface never COUNTs the table.
-      const usageLogsView = () => new UsageLogsView(getDb(), { mutedErrorClasses: requestLog?.mutedErrorClasses })
+      // Grok rows from before the hop logged its xAI login show the slot's login, not '-'.
+      const logSlotAccount = (vmId) => {
+        const vm = getVm(cfg.paths.project, vmId)
+        return vm && isGrokVm(vm) ? grokLogAccountId(cfg.paths.project, vm) : null
+      }
+      const usageLogsView = () =>
+        new UsageLogsView(getDb(), { mutedErrorClasses: requestLog?.mutedErrorClasses, vmAccountOf: logSlotAccount })
       const tenantId = () => (panelIdentity(req).role === 'user' ? req.panelUserId : null)
       if (req.method === 'GET' && p === '/api/panel/usage-logs') {
         const u = new URL(req.url, 'http://x')

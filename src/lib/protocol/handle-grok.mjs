@@ -25,7 +25,7 @@ import { ensureGrokKernel, trackGrokKernel, writeGrokKernelConfig } from '../tra
 import { hostProxyUrlForVm } from '../vm/slot-host.mjs'
 import { assertKernelProxyResolved } from '../vm/proxy-policy.mjs'
 import { grokKernelExit } from '../oauth/grok-kernel-oauth.mjs'
-import { persistGrokRateLimit, persistGrokRefreshRejected, readGrokAccount } from '../vm/grok-slot.mjs'
+import { grokLogAccountId, persistGrokRateLimit, persistGrokRefreshRejected } from '../vm/grok-slot.mjs'
 import { scopeAccountFromVm } from './jev-intercept.mjs'
 import {
   grokSlotAllowsModel,
@@ -89,20 +89,7 @@ function pinnedVmId(req) {
   return isValidVmId(raw) ? raw : null
 }
 
-/**
- * The account a Grok hop bills, for the request log's account column. Claude rows resolve
- * their account uuid to an email through the accounts table; Grok slots have no row there,
- * so the hop logs the xAI login itself: email, else xAI account id, else the slot id.
- */
-export function grokLogAccountId(projectRoot, vm) {
-  const bag = vm?.grok && typeof vm.grok === 'object' ? vm.grok : {}
-  let account = null
-  try {
-    account = projectRoot && vm?.id ? readGrokAccount(projectRoot, vm.id) : null
-  } catch {}
-  const pick = (...values) => values.map((v) => (typeof v === 'string' ? v.trim() : '')).find(Boolean) || ''
-  return pick(account?.email, bag.email, account?.account_id, bag.account_id, vm?.id) || null
-}
+export { grokLogAccountId }
 
 /**
  * Caller fields that identify the end user or the caller's own client. grok-shell does not

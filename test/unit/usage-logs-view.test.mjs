@@ -403,3 +403,32 @@ test('tenant error collection hides other users and anonymous ingress failures',
   assert.equal(all.recent.length, 3)
   assert.deepEqual(all.ingress_hits.map((h) => h.ip).sort(), ['198.51.100.7', '203.0.113.9'])
 })
+
+test('a row logged without an account names the slot login the resolver returns', () => {
+  const db = freshDb()
+  const now = Date.now()
+  seed(db, [
+    { created_at: new Date(now - 2_000).toISOString(), vm_id: 'vm-g', outbound_session_id: 'g-1' },
+    { created_at: new Date(now - 1_000).toISOString(), vm_id: 'vm-a', account_id: 'acc-a', outbound_session_id: 'a-1' },
+    { created_at: new Date(now - 500).toISOString(), vm_id: 'vm-b', outbound_session_id: 'b-1' },
+  ])
+  const asked = []
+  const view = new UsageLogsView(db, {
+    vmAccountOf: (vmId) => {
+      asked.push(vmId)
+      return vmId === 'vm-g' ? 'login@x.ai' : null
+    },
+  })
+  const byVm = Object.fromEntries(view.listBatch({}).logs.map((r) => [r.vmId, r]))
+  assert.equal(byVm['vm-g'].providerName, 'login@x.ai')
+  assert.equal(byVm['vm-g'].accountId, 'login@x.ai')
+  // A logged account wins; a slot the resolver does not name stays blank.
+  assert.equal(byVm['vm-a'].providerName, 'a@pool')
+  assert.equal(byVm['vm-b'].providerName, null)
+  assert.deepEqual(asked.sort(), ['vm-b', 'vm-g'])
+  const active = Object.fromEntries(view.activeSessions({ now }).sessions.map((s) => [s.sessionId, s]))
+  assert.equal(active['g-1'].providerName, 'login@x.ai')
+  assert.equal(active['a-1'].providerName, 'a@pool')
+  // Without a resolver the stored row shows as it is.
+  assert.equal(new UsageLogsView(db).listBatch({}).logs.find((r) => r.vmId === 'vm-g').providerName, null)
+})

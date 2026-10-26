@@ -25,6 +25,21 @@ export function readGrokAccount(projectRoot, vmId) {
   return readGrokAccounts(projectRoot, vmId)[0] || null
 }
 
+/**
+ * The account a Grok hop bills, for the request log's account column. Claude rows resolve
+ * their account uuid to an email through the accounts table; Grok slots have no row there,
+ * so the hop logs the xAI login itself: email, else xAI account id, else the slot id.
+ */
+export function grokLogAccountId(projectRoot, vm) {
+  const bag = vm?.grok && typeof vm.grok === 'object' ? vm.grok : {}
+  let account = null
+  try {
+    account = projectRoot && vm?.id ? readGrokAccount(projectRoot, vm.id) : null
+  } catch {}
+  const pick = (...values) => values.map((v) => (typeof v === 'string' ? v.trim() : '')).find(Boolean) || ''
+  return pick(account?.email, bag.email, account?.account_id, bag.account_id, vm?.id) || null
+}
+
 export function writeGrokAccounts(projectRoot, vmId, accounts) {
   if (!projectRoot || !vmId) throw new Error('projectRoot and vmId required')
   const file = grokCredentialPath(projectRoot, vmId)

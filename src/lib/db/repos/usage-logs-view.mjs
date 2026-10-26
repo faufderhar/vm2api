@@ -379,11 +379,34 @@ function whereSql(where) {
 export class UsageLogsView {
   /**
    * @param {import('node:sqlite').DatabaseSync} db
-   * @param {{ mutedErrorClasses?: string[] }} [opts] settings default mute list
+   * @param {{ mutedErrorClasses?: string[], vmAccountOf?: (vmId: string) => string | null }} [opts]
+   *   settings default mute list; `vmAccountOf` names a slot's login for rows logged without one
    */
-  constructor(db = getDb(), { mutedErrorClasses = DEFAULT_MUTED_ERROR_CLASSES } = {}) {
+  constructor(db = getDb(), { mutedErrorClasses = DEFAULT_MUTED_ERROR_CLASSES, vmAccountOf = null } = {}) {
     this.db = db
     this.mutedErrorClasses = Array.isArray(mutedErrorClasses) ? mutedErrorClasses.slice() : []
+    this.vmAccountOf = typeof vmAccountOf === 'function' ? vmAccountOf : null
+  }
+
+  /**
+   * Grok rows written before the hop logged its xAI login carry only vm_id. For display the
+   * panel names the slot's current login instead of '-'; the stored row is left as it is.
+   * Returns a per-call memoized vmId → account, or null without a resolver.
+   */
+  _slotAccounts() {
+    if (!this.vmAccountOf) return null
+    const memo = new Map()
+    return (vmId) => {
+      if (!vmId) return null
+      if (!memo.has(vmId)) {
+        let account = null
+        try {
+          account = this.vmAccountOf(vmId) || null
+        } catch {}
+        memo.set(vmId, account)
+      }
+      return memo.get(vmId)
+    }
   }
 
   /**
@@ -457,6 +480,14 @@ export class UsageLogsView {
   /** Names + provider chains for a whole page: one attempts query, one lookup per entity kind. */
   _hydrate(rows) {
     if (!rows.length) return []
+    const slotAccount = this._slotAccounts()
+    if (slotAccount) {
+      rows = rows.map((r) => {
+        if (r.final_account_id || r.account_id) return r
+        const account = slotAccount(r.vm_id)
+        return account ? { ...r, account_id: account } : r
+      })
+    }
     const requestIds = uniq(rows.map((r) => r.request_id))
     const attempts = requestIds.length
       ? this.db
@@ -731,6 +762,8 @@ export class UsageLogsView {
       ORDER BY s.last_at DESC
     `)
       .all(...params, n, ...own.params)
+    const slotAccount = this._slotAccounts()
+    if (slotAccount) for (const r of rows) r.account ||= slotAccount(r.vm_id)
     const names = lookupNames(this.db, {
       userIds: rows.map((r) => r.user_id),
       keyIds: rows.map((r) => r.api_key_id),
