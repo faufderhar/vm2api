@@ -31,6 +31,8 @@ import {
   setSub,
 } from './grok-settings-model'
 import { settleInt, typingInt } from './int-input'
+import { RESET_IDLE_DEFAULT_SEC } from './reset-priority'
+import { ResetPrioritySection } from './reset-priority-section'
 import { PaneSection } from './scheduler-controls'
 
 type Block = Record<string, unknown>
@@ -399,6 +401,17 @@ export function GrokPane({
           </SettingRow>
         </div>
       </PaneSection>
+
+      <ResetPrioritySection
+        block={grok}
+        label='Grok'
+        resetLabel='Grok Build 周额度'
+        resetNote='重置时间取账单里当前周期的结束时间（官方客户端显示的 Resets）；没有周期类型时按上报的周期结束时间；月包含额度已用完的账号不优先。'
+        defaultIdleSec={RESET_IDLE_DEFAULT_SEC}
+        idleReason='与 Grok 槽位会话窗口的空闲判定（5 分钟）一致。重置时间来自用量同步，关闭后台同步后数据会变旧。'
+        saving={saving}
+        onChange={update}
+      />
 
       <PaneSection
         icon={Receipt}

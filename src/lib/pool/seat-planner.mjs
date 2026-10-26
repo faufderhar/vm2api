@@ -18,6 +18,7 @@
  */
 
 import { compareWindow7dAsc } from './refresh-order.mjs'
+import { compareResetBoost } from './reset-priority.mjs'
 
 export const SEAT_STRATEGIES = Object.freeze(['balanced', 'fill'])
 
@@ -52,7 +53,9 @@ function headroomRank(value) {
 /**
  * Order VMs for a new seat. Priority first; inside one level balanced takes
  * the lowest occupancy and fill the highest (still below cap). Ties go to the
- * larger headroom, then the earlier 7d usage-window reset, then vmId.
+ * larger headroom, then the earlier 7d usage-window reset, then vmId. With
+ * reset_priority on, a boosted reset hour (future reset, ≥5% left) sorts
+ * right after priority.
  * @param {Array<{ vmId: string, priority?: number, seatCap: number, headroom?: number|null, window7dAt?: number|string|null }>} candidates
  * @param {{ strategy: string, openOf: (vmId: string) => number }} opts
  */
@@ -61,6 +64,9 @@ export function rankSeatCandidates(candidates, { strategy = 'balanced', openOf }
   return [...candidates].sort((left, right) => {
     const priority = (Number(right.priority) || 0) - (Number(left.priority) || 0)
     if (priority) return priority
+    // reset_priority: the earlier boosted 7d reset hour (null without the feature or data).
+    const boost = compareResetBoost(left.resetBoostAt ?? null, right.resetBoostAt ?? null)
+    if (boost) return boost
     const lo = occupancy(openOf(left.vmId), left.seatCap)
     const ro = occupancy(openOf(right.vmId), right.seatCap)
     if (lo !== ro) return fill ? ro - lo : lo - ro

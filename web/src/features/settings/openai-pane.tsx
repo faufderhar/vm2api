@@ -7,6 +7,8 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { SettingRow } from '@/components/setting-row'
 import { OpenaiQuotaSection } from './openai-quota-section'
+import { RESET_IDLE_DEFAULT_SEC } from './reset-priority'
+import { ResetPrioritySection } from './reset-priority-section'
 import { ChipGroup, PaneSection } from './scheduler-controls'
 
 type Block = Record<string, unknown>
@@ -250,6 +252,16 @@ export function OpenaiPane({
             },
           })
         }
+      />
+
+      <ResetPrioritySection
+        block={codex}
+        label='GPT'
+        resetLabel='7 天额度窗口'
+        defaultIdleSec={RESET_IDLE_DEFAULT_SEC}
+        idleReason='与 GPT 槽位会话窗口的空闲判定（5 分钟）一致。'
+        saving={saving}
+        onChange={update}
       />
 
       <PaneSection

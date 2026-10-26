@@ -75,6 +75,7 @@ import {
 } from '../identity/identity-rewrite.mjs'
 import { clientIp } from '../pool/sticky-router.mjs'
 import { clientGoneSignal } from './client-gone.mjs'
+import { boundSessionIdle, resetPriorityOf, sessionActivity } from '../pool/reset-priority.mjs'
 
 // Official Codex client headers for ChatGPT Responses. Auth is attached by the kernel.
 const CODEX_KERNEL_HEADER_ALLOWLIST = Object.freeze([
@@ -218,12 +219,22 @@ function pinnedVmId(req) {
 export function pickCodexCandidates(
   projectRoot,
   req,
-  { stickyRouter = null, sessions = null, body = null, excluded = null, routing = {}, ownerScope = null } = {},
+  {
+    stickyRouter = null,
+    sessions = null,
+    body = null,
+    excluded = null,
+    routing = {},
+    ownerScope = null,
+    activity = sessionActivity,
+  } = {},
 ) {
   const pin = pinnedVmId(req)
   const owner = ownerScope || ownerScopeFromRequest(req)
   const model = body?.model || null
-  const routingPolicy = normalizeCodexRouting(routing.codex || routing).quota
+  const codexRouting = normalizeCodexRouting(routing.codex || routing)
+  const routingPolicy = codexRouting.quota
+  const resetFirst = resetPriorityOf(codexRouting)
   const scope = keyScopeFromRequest(req)
   const poolDenial = vmPoolDenial(scope)
   if (poolDenial) return { error: 'vm_pool_unavailable', message: poolDenial.message, ids: [], candidates: [] }
@@ -248,11 +259,20 @@ export function pickCodexCandidates(
   }
   const stickyKeys = stickyRouter?.collectPoolKeys?.(req, body || {}, { platform: 'openai' }) || []
   const sessionKey = stickyRouter?.extractPoolKey?.(req, body || {}, { platform: 'openai' }) || stickyKeys[0] || null
-  const bound = sessionKey ? stickyRouter?.resolve?.(sessionKey) : null
+  let bound = sessionKey ? stickyRouter?.resolve?.(sessionKey) : null
   const vms = listVms(projectRoot, { codex: { quota: routingPolicy } }).filter(
     (vm) => vmMatchesOwnerScope(vm, owner) && keyAllowsVm(scope, vm),
   )
   const continuesResponse = !!body?.previous_response_id && !!bound?.vmId
+  // reset_priority: a conversation idle past the threshold re-picks by reset
+  // order. A stored response can only continue where it lives, so it stays.
+  if (bound?.vmId && !continuesResponse && boundSessionIdle(bound, sessionKey, { ...resetFirst, activity })) {
+    for (const key of stickyKeys.length ? stickyKeys : [sessionKey]) stickyRouter?.unbind?.(key)
+    try {
+      sessions?.drop?.(bound.vmId, sessionKey)
+    } catch {}
+    bound = null
+  }
   if (scope.vm_pool_id && vms.length === 0 && !continuesResponse) {
     return { error: 'vm_pool_unavailable', message: '账号池没有可调度的 GPT 槽位', ids: [], candidates: [] }
   }
@@ -263,6 +283,7 @@ export function pickCodexCandidates(
     model,
     excluded,
     quotaPolicy: routingPolicy,
+    strategy: resetFirst.enabled ? 'reset_first' : 'smart',
   })
   // A resting home migrates the conversation like a gone one: the next slot rebinds it.
   const boundLeft = ordered.boundState === 'gone' || ordered.boundState === 'resting'
@@ -739,6 +760,9 @@ export async function handleCodexProtocol({
         for (const key of stickyKeys) stickyRouter?.unbind?.(key)
       }
       let attemptKind = 'failed'
+      // reset_priority: a conversation with a request running is never idle.
+      const activeKey = picked.sessionKey || null
+      if (activeKey) sessionActivity.begin(activeKey)
       try {
         const localExit = isLocalEgressProxy(vm.proxy)
         let proxyUrl = localExit && !vmNodeId(vm) ? '' : hostProxyUrlForVm(vm)
@@ -1001,6 +1025,7 @@ export async function handleCodexProtocol({
         break
       } finally {
         lease.release()
+        if (activeKey) sessionActivity.end(activeKey)
         if (claimsWindow) {
           try {
             sessions?.release?.(vm.id, picked.sessionKey, { gen: windowGen })

@@ -484,6 +484,7 @@ export class StickyRouter {
       sessionId: ent.session_id || null,
       generation: Number(ent.generation) || 0,
       slotIndex: ent.slot_index == null ? null : Number(ent.slot_index),
+      boundAt: Number(ent.bound_at) || null,
       key,
     }
   }

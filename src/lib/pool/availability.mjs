@@ -189,6 +189,12 @@ export function budgetHeadroom({ account = {}, quota = {}, policy = null, now = 
   return Math.min(pol.limit_5h - u5, pol.limit_7d - u7)
 }
 
+/** Share of quota left, 0..1: 1 − max(5h, 7d utilization), on the same windows as the gate. */
+export function usageRemaining({ account = {}, quota = {}, now = Date.now() } = {}) {
+  const { u5, u7 } = usageWindows(quota || {}, account || {}, now)
+  return Math.min(1, Math.max(0, 1 - Math.max(u5, u7)))
+}
+
 function policyOf(input = {}) {
   const p = input.policy || {}
   const fallback = DEFAULT_TIER_POLICIES.default

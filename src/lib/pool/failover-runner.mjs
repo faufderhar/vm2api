@@ -534,9 +534,36 @@ export class FailoverRunner {
     }
   }
 
+  /** reset_priority: see PoolScheduler.releaseIdlePins. Call before reading pins for a request. */
+  releaseIdlePins(args = {}) {
+    return this.scheduler?.releaseIdlePins?.(args) || { session: false, family: false, device: false }
+  }
+
+  /**
+   * Activity marks for reset_priority idle detection: a session, family or
+   * device with a request running is never idle, so it never switches mid-stream.
+   */
+  async runTracked(args = {}) {
+    const activity = this.scheduler?.sessionActivity
+    if (!activity) return this.runOnce(args)
+    const keys = [
+      ...new Set(
+        [...uniqueStickyKeys(args.stickyKey, args.stickyKeys), args.familyKey, args.deviceKey]
+          .filter(Boolean)
+          .map(String),
+      ),
+    ]
+    for (const key of keys) activity.begin(key)
+    try {
+      return await this.runOnce(args)
+    } finally {
+      for (const key of keys) activity.end(key)
+    }
+  }
+
   async run(args = {}) {
     const sessionKey = String(args.stickyKey || '')
-    if (!sessionKey) return this.runOnce(args)
+    if (!sessionKey) return this.runTracked(args)
     const previous = this.sessionTails.get(sessionKey) || Promise.resolve()
     let releaseTurn
     const turn = new Promise((resolve) => {
@@ -546,7 +573,7 @@ export class FailoverRunner {
     this.sessionTails.set(sessionKey, tail)
     try {
       await waitForSessionTurn(previous, args.signal, this.config.session_queue_timeout_ms)
-      return await this.runOnce(args)
+      return await this.runTracked(args)
     } catch (error) {
       if (error?.code === 'request_cancelled') return clientCancelledResult()
       if (error?.code === 'session_queue_timeout') {
