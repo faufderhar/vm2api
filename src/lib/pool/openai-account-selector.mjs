@@ -7,6 +7,7 @@
  */
 
 import { compareWindow7dAsc, window7dBucket } from './refresh-order.mjs'
+import { resetBoostBucket } from './reset-priority.mjs'
 
 export const SMART_LOAD_WEIGHT = 1
 export const SMART_QUOTA_WEIGHT = 0.8
@@ -15,7 +16,7 @@ export const SMART_LATENCY_WEIGHT = 0.5
 export const SMART_SCORE_TOLERANCE = 0.05
 export const SMART_LATENCY_HALF_SCORE_MS = 10_000
 
-const STRATEGIES = new Set(['smart', 'quota_reset_priority', 'round_robin', 'sticky'])
+const STRATEGIES = new Set(['smart', 'reset_first', 'quota_reset_priority', 'round_robin', 'sticky'])
 
 function asId(value) {
   return String(value || '')
@@ -117,6 +118,12 @@ function selectInBand(eligible, context) {
     })
     return ranked[0] || null
   }
+  if (strategy === 'reset_first') {
+    // Earliest boosted reset hour, then load, then the longest-unused account,
+    // then the cursor. No boosted candidate in this band: smart decides.
+    const boosted = eligible.filter((candidate) => resetBoostBucket(candidate.resetBoostAt) != null)
+    if (boosted.length) return pickResetFirst(boosted, context)
+  }
   if (strategy === 'round_robin') {
     const ranked = [...eligible].sort((left, right) => asId(left.id).localeCompare(asId(right.id)))
     const cursor = Number(context.roundRobinCursor) || 0
@@ -151,6 +158,25 @@ function selectInBand(eligible, context) {
   const tied = earliest == null ? band : band.filter((item) => window7dBucket(item.candidate.window7dAt) === earliest)
   const cursor = Number(context.roundRobinCursor) || 0
   return tied[cursor % tied.length]?.candidate || null
+}
+
+function startedRank(candidate) {
+  const started = Number(candidate?.lastStartedAt)
+  return Number.isFinite(started) ? started : -Infinity
+}
+
+function pickResetFirst(boosted, context) {
+  const fallbackConcurrency = context.maxConcurrent
+  const earliest = Math.min(...boosted.map((candidate) => resetBoostBucket(candidate.resetBoostAt)))
+  let band = boosted.filter((candidate) => resetBoostBucket(candidate.resetBoostAt) === earliest)
+  const minLoad = Math.min(...band.map((candidate) => capacityUtilization(candidate, fallbackConcurrency)))
+  band = band.filter((candidate) => capacityUtilization(candidate, fallbackConcurrency) === minLoad)
+  const oldest = Math.min(...band.map(startedRank))
+  const tied = band
+    .filter((candidate) => startedRank(candidate) === oldest)
+    .sort((left, right) => asId(left.id).localeCompare(asId(right.id)))
+  const cursor = Number(context.roundRobinCursor) || 0
+  return tied[cursor % tied.length] || null
 }
 
 /**
