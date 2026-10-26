@@ -25,6 +25,11 @@ import { Switch } from '@/components/ui/switch'
 import { SEAT_CAP_MAX, SeatCells } from '@/components/scheduler-viz'
 import { SEAT_CAP_STEPS, withCurrent } from '@/features/vm/scheduling-steps'
 import { PoolLivePanel } from './pool-live-panel'
+import {
+  CLAUDE_RESET_IDLE_DEFAULT_SEC,
+  resetIdleOptions,
+  resetPriorityView,
+} from './reset-priority'
 import { ChipGroup, SliderSetting, StepperSetting } from './scheduler-controls'
 
 type Obj = Record<string, unknown>
@@ -502,6 +507,14 @@ export function PoolPane({
       onPoolChange({
         strategy: poolDraft.strategy,
         manual_schedule_wins: poolDraft.manual_schedule_wins,
+        reset_priority: resetPriorityView(
+          poolDraft,
+          CLAUDE_RESET_IDLE_DEFAULT_SEC
+        ).enabled,
+        reset_priority_idle_sec: resetPriorityView(
+          poolDraft,
+          CLAUDE_RESET_IDLE_DEFAULT_SEC
+        ).idleSec,
       })
     } else if (open === 'seats') {
       onInferenceChange({ session_slots: inferenceDraft.session_slots })
@@ -570,7 +583,11 @@ export function PoolPane({
           icon={Layers}
           title='分配策略'
           value={strategy === 'fill' ? '填充' : '平衡'}
-          desc='Claude 新设备开席的优先顺序'
+          desc={
+            pool.reset_priority === false
+              ? 'Claude 新设备开席的优先顺序'
+              : 'Claude 新设备开席的优先顺序 · 临近重置优先'
+          }
           pending={pending}
           disabled={saving}
           buttonRef={(node) => {
@@ -681,6 +698,52 @@ export function PoolPane({
                     }
                   />
                 </div>
+                <div className='flex items-center justify-between gap-4 rounded-md border px-3 py-2.5'>
+                  <div>
+                    <Label htmlFor='pool-reset-priority'>
+                      优先使用临近重置的账号
+                    </Label>
+                    <p className='text-xs leading-5 text-muted-foreground'>
+                      7 天额度窗口越早重置越先用；剩余不足 5%
+                      或无重置数据的账号按原顺序。手动优先级仍然优先。
+                    </p>
+                  </div>
+                  <Switch
+                    id='pool-reset-priority'
+                    checked={poolDraft.reset_priority !== false}
+                    onCheckedChange={(value) =>
+                      updateDraft('pool', { reset_priority: value })
+                    }
+                  />
+                </div>
+                {poolDraft.reset_priority !== false ? (
+                  <div className='space-y-2'>
+                    <Label>会话空闲多久后可换号</Label>
+                    <ChipGroup
+                      label='会话空闲多久后可换号'
+                      value={
+                        resetPriorityView(
+                          poolDraft,
+                          CLAUDE_RESET_IDLE_DEFAULT_SEC
+                        ).idleSec
+                      }
+                      options={resetIdleOptions(
+                        resetPriorityView(
+                          poolDraft,
+                          CLAUDE_RESET_IDLE_DEFAULT_SEC
+                        ).idleSec
+                      )}
+                      onChange={(value) =>
+                        updateDraft('pool', { reset_priority_idle_sec: value })
+                      }
+                    />
+                    <p className='text-xs leading-5 text-muted-foreground'>
+                      进行中的会话、仍占着席位的设备不换号；空闲超过此时间后，下一次请求按重置顺序重新选号。默认
+                      1 小时：默认提示缓存 TTL 为 1 小时，空闲满 1
+                      小时缓存已失效，换号不损失缓存。
+                    </p>
+                  </div>
+                ) : null}
               </>
             ) : null}
             {open === 'seats' ? (

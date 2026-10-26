@@ -7,6 +7,7 @@
  *   面板的 Grok 登录走设备码，没有路由会调用 PKCE。
  * - `websocket.enabled`：没有代码读它；Grok 不支持 Responses WebSocket，WS 入口直接拒绝。
  */
+import { resetPriorityView } from './reset-priority'
 
 type Block = Record<string, unknown>
 
@@ -141,6 +142,10 @@ export type GrokView = {
   maxSessions: number
   billingBackground: boolean
   billingIntervalMin: number
+  /** 优先使用临近重置（period_end）的账号，默认开。 */
+  resetPriority: boolean
+  /** 会话空闲多久后可换号（秒），默认 300。 */
+  resetPriorityIdleSec: number
 }
 
 /** 草稿 → 面板读数。缺省值与后端 DEFAULT_GROK_ROUTING 一致。 */
@@ -182,6 +187,8 @@ export function grokView(grok: Block): GrokView {
     billingIntervalMin: Math.round(
       intOr(billing.min_interval_sec, L.billing_interval_min.fallback * 60) / 60
     ),
+    resetPriority: resetPriorityView(grok).enabled,
+    resetPriorityIdleSec: resetPriorityView(grok).idleSec,
   }
 }
 
