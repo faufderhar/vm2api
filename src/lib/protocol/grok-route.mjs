@@ -53,6 +53,8 @@ export const DEFAULT_GROK_ROUTING = Object.freeze({
   },
   quota: normalizeGrokQuotaPolicy(),
   billing: { background: true, min_interval_sec: 1800 },
+  // Official /v1/settings `inference_idle_timeout_secs` (3600 on 1.0.70).
+  inference: { idle_timeout_sec: 3600 },
 })
 
 /**
@@ -61,6 +63,20 @@ export const DEFAULT_GROK_ROUTING = Object.freeze({
  * refresh button always forces a read regardless of these values.
  */
 export const GROK_BILLING_LIMITS = Object.freeze({ min_interval_sec: Object.freeze({ min: 1800, max: 86400 }) })
+
+/** Silence allowed on a Grok stream before the hop is cut. Grok's own client waits an hour. */
+export const GROK_INFERENCE_LIMITS = Object.freeze({ idle_timeout_sec: Object.freeze({ min: 30, max: 7200 }) })
+
+function normalizeInference(raw) {
+  const src = asObject(raw) || {}
+  const { min, max } = GROK_INFERENCE_LIMITS.idle_timeout_sec
+  const n = Number(src.idle_timeout_sec)
+  return {
+    idle_timeout_sec: Number.isInteger(n)
+      ? Math.min(max, Math.max(min, n))
+      : DEFAULT_GROK_ROUTING.inference.idle_timeout_sec,
+  }
+}
 
 function asObject(raw) {
   return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : null
@@ -184,6 +200,7 @@ export function normalizeGrokRouting(raw = {}) {
     clients,
     quota: normalizeGrokQuotaPolicy(src.quota),
     billing: normalizeBilling(src.billing),
+    inference: normalizeInference(src.inference),
   }
 }
 
@@ -247,6 +264,17 @@ export function validateGrokRoutingPatch(body = {}) {
       const n = billing.min_interval_sec
       if (!Number.isInteger(n) || n < min || n > max) {
         throw typedError(`grok.billing.min_interval_sec 必须是 ${min}–${max} 的整数（秒）`, 'invalid_grok_billing')
+      }
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(grok, 'inference')) {
+    const inference = grok.inference
+    if (!asObject(inference)) throw typedError('grok.inference 必须是对象', 'invalid_grok_inference')
+    if (inference.idle_timeout_sec != null) {
+      const { min, max } = GROK_INFERENCE_LIMITS.idle_timeout_sec
+      const n = inference.idle_timeout_sec
+      if (!Number.isInteger(n) || n < min || n > max) {
+        throw typedError(`grok.inference.idle_timeout_sec 必须是 ${min}–${max} 的整数（秒）`, 'invalid_grok_inference')
       }
     }
   }

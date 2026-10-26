@@ -240,3 +240,118 @@ test('a prefixed model goes upstream bare; a model the panel turned off is refus
   assert.equal(off.payload.error.code, 'model_disabled')
   assert.equal(envelopes.length, 1)
 })
+
+test('upstream always streams; a non-stream caller gets the stream folded back', async (t) => {
+  const fs = await import('node:fs')
+  const os = await import('node:os')
+  const path = await import('node:path')
+  const { handleGrokProtocol } = await import('../../src/lib/protocol/handle-grok.mjs')
+  const { upsertGrokAccount } = await import('../../src/lib/vm/grok-slot.mjs')
+  const { grokAgentUuid } = await import('../../src/lib/protocol/grok-client.mjs')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'grok-hop-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  fs.mkdirSync(path.join(root, 'vms', 'vm-g3'), { recursive: true })
+  fs.writeFileSync(
+    path.join(root, 'vms', 'vm-g3.json'),
+    JSON.stringify({
+      id: 'vm-g3',
+      platform: 'xai',
+      family: 'grok',
+      status: 'running',
+      proxy: { id: 'px-local', scheme: 'local' },
+      grok: {},
+    }),
+  )
+  upsertGrokAccount(root, 'vm-g3', { access_token: 'at', refresh_token: 'rt', expires_at: Date.now() + 3_600_000 })
+  const sse = {
+    'openai.chat': [
+      'data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"grok-4.3","choices":[{"index":0,"delta":{"role":"assistant","content":"Hel"}}]}',
+      '',
+      'data: {"id":"c1","choices":[{"index":0,"delta":{"content":"lo"},"finish_reason":"stop"}]}',
+      '',
+      'data: {"id":"c1","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}',
+      '',
+      'data: [DONE]',
+      '',
+    ],
+    'openai.responses': [
+      'event: response.output_text.delta',
+      'data: {"type":"response.output_text.delta","delta":"Hi","sequence_number":1}',
+      '',
+      'event: response.completed',
+      'data: {"type":"response.completed","sequence_number":2,"response":{"id":"r1","object":"response","status":"completed","model":"grok-4.3","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hi"}]}],"usage":{"input_tokens":3,"output_tokens":1}}}',
+      '',
+    ],
+  }
+  const envelopes = []
+  const run = async (protocol, body, ctxPath) => {
+    const sent = {}
+    await handleGrokProtocol({
+      req: { headers: {}, once() {}, off() {} },
+      res: { headersSent: false, setHeader() {}, once() {}, off() {} },
+      protocol,
+      ctx: { body, path: ctxPath },
+      inbound: body,
+      logBag: {},
+      stats: { errors: 0, requests: 0, by_route: {} },
+      json: (_res, status, payload) => Object.assign(sent, { status, payload }),
+      writeSSEHeaders() {},
+      routing: { grok: { enabled: true } },
+      projectRoot: root,
+      body,
+      ops: {
+        writeGrokKernelConfig: () => ({ agentId: 'ab'.repeat(32) }),
+        callGrokKernel: async ({ envelope }) => {
+          envelopes.push(envelope)
+          return {
+            statusCode: 200,
+            headers: {},
+            async *[Symbol.asyncIterator]() {
+              yield Buffer.from(sse[protocol].join('\n') + '\n')
+            },
+          }
+        },
+      },
+    })
+    return sent
+  }
+  const chat = await run(
+    'openai.chat',
+    {
+      model: 'grok-4.3',
+      stream: false,
+      messages: [
+        { role: 'user', content: 'a' },
+        { role: 'assistant', content: 'b' },
+        { role: 'user', content: 'c' },
+      ],
+    },
+    '/v1/chat/completions',
+  )
+  assert.equal(chat.status, 200)
+  assert.equal(chat.payload.object, 'chat.completion')
+  assert.equal(chat.payload.choices[0].message.content, 'Hello')
+  assert.equal(chat.payload.choices[0].finish_reason, 'stop')
+  assert.equal(chat.payload.usage.total_tokens, 5)
+  const sentChat = envelopes[0]
+  assert.equal(sentChat.body.stream, true)
+  assert.equal(sentChat.body.stream_options.include_usage, true)
+  assert.equal(sentChat.body.prompt_cache_key, undefined, 'chat completions keep no prompt_cache_key')
+  assert.equal(sentChat.turn_idx, '2')
+  assert.equal(sentChat.agent_id, grokAgentUuid('ab'.repeat(32)))
+  assert.match(sentChat.conv_group_id, /^[0-9a-f-]{36}$/)
+
+  const responses = await run(
+    'openai.responses',
+    { model: 'grok-4.3', stream: false, input: 'hi', prompt_cache_key: 'caller-key' },
+    '/v1/responses',
+  )
+  assert.equal(responses.status, 200)
+  assert.equal(responses.payload.id, 'r1')
+  assert.equal(responses.payload.output[0].content[0].text, 'Hi')
+  const sentResponses = envelopes[1]
+  assert.equal(sentResponses.body.stream, true)
+  assert.equal(sentResponses.body.prompt_cache_key, sentResponses.session_id)
+  assert.notEqual(sentResponses.body.prompt_cache_key, 'caller-key')
+  assert.equal(sentResponses.turn_idx, '1')
+})

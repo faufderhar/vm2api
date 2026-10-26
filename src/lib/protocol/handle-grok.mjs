@@ -41,7 +41,15 @@ import { CLIENT_POOL_BUSY_MESSAGE, CLIENT_POOL_UNAVAILABLE_MESSAGE, ErrorCode } 
 import { applyOpenaiWashLog } from './openai-wash.mjs'
 import { redactHeaders } from '../admin/request-log.mjs'
 import { sessionIdForLog } from './log-fields.mjs'
-import { grokCliRequestHeaders, grokCliUserAgent, grokRequestId, resolveGrokOutboundSession } from './grok-client.mjs'
+import {
+  GROK_CLI_VERSION,
+  grokCliRequestHeaders,
+  grokCliUserAgent,
+  grokRequestId,
+  grokTurnIndex,
+  resolveGrokOutboundSession,
+} from './grok-client.mjs'
+import { assembleGrokNonStreamBody, grokStreamFailure } from './grok-sse-assemble.mjs'
 import { clientGoneSignal } from './client-gone.mjs'
 
 export const GROK_VIA = 'grok-kernel'
@@ -55,11 +63,8 @@ const ERROR_BODY_MAX = 1024 * 1024
 const WAIT_TIMEOUT_MIN_MS = 1000
 const WAIT_TIMEOUT_MAX_MS = 120000
 const DEFAULT_WAIT_TIMEOUT_MS = 30000
-const DEFAULT_IDLE_TIMEOUT_MS = 180000
-
-function upstreamAccept(stream) {
-  return stream ? 'text/event-stream' : 'application/json'
-}
+/** Official `inference_idle_timeout_secs`; `grok.inference.idle_timeout_sec` overrides it. */
+const DEFAULT_IDLE_TIMEOUT_MS = 3600 * 1000
 
 function waitTimeoutMs(routing) {
   const n = Number(routing?.pool?.fallback_wait_timeout_ms)
@@ -67,9 +72,14 @@ function waitTimeoutMs(routing) {
   return Math.min(WAIT_TIMEOUT_MAX_MS, Math.max(WAIT_TIMEOUT_MIN_MS, n))
 }
 
+/**
+ * Grok reasoning can stay silent for minutes; the official client waits up to the server's
+ * `inference_idle_timeout_secs`. The shared `failover.stream_idle_timeout_ms` is tuned for
+ * Codex and is not used here.
+ */
 function idleTimeoutMs(routing) {
-  const n = Number(routing?.failover?.stream_idle_timeout_ms)
-  return Number.isFinite(n) && n >= 5000 ? n : DEFAULT_IDLE_TIMEOUT_MS
+  const sec = Number(grokRoutingOf(routing).inference?.idle_timeout_sec)
+  return Number.isFinite(sec) && sec > 0 ? sec * 1000 : DEFAULT_IDLE_TIMEOUT_MS
 }
 
 function pinnedVmId(req) {
@@ -91,7 +101,8 @@ function anthropicSystemText(system) {
 /**
  * Caller fields that identify the end user or the caller's own client. grok-shell does not
  * send them; on a shared subscription they would show xAI one distinct user per tenant.
- * Prompt caching rides on x-grok-conv-id, which the kernel sends, not on prompt_cache_key.
+ * The caller's prompt_cache_key is dropped too: each hop sets it to the outbound
+ * conversation id (`x-grok-conv-id`), as the official client does.
  */
 const GROK_CALLER_IDENTITY_KEYS = ['user', 'safety_identifier', 'prompt_cache_key', 'metadata']
 
@@ -105,7 +116,7 @@ function stripGrokCallerIdentity(body) {
  * Outbound body and upstream route per inbound protocol. Native modes pass the body through
  * (identity fields stripped); `anthropic.messages` convert goes through Responses like Codex.
  */
-export function buildGrokOutbound(protocol, body, mode, { stream }) {
+export function buildGrokOutbound(protocol, body, mode, { stream } = {}) {
   const clean = stripGrokCallerIdentity(body)
   if (protocol === 'anthropic.messages' && mode === 'convert') {
     const converted = anthropicToCodexResponses({ ...clean, system: anthropicSystemText(clean.system) })
@@ -113,17 +124,26 @@ export function buildGrokOutbound(protocol, body, mode, { stream }) {
       path: UPSTREAM_PATHS['openai.responses'],
       body: { ...stripGrokCallerIdentity(converted), stream: true },
       convert: true,
+      clientStream: !!stream,
     }
   }
   const path = UPSTREAM_PATHS[protocol]
   if (!path) return null
-  const out = { ...clean, stream }
+  // The official client always streams; a non-stream caller gets the stream folded back.
+  const out = { ...clean, stream: true }
   let injectedUsage = false
-  if (protocol === 'openai.chat' && stream && out.stream_options?.include_usage !== true) {
+  if (protocol === 'openai.chat' && out.stream_options?.include_usage !== true) {
     out.stream_options = { ...(out.stream_options || {}), include_usage: true }
     injectedUsage = true
   }
-  return { path, body: out, convert: false, injectedUsage }
+  return { path, body: out, convert: false, injectedUsage, clientStream: !!stream }
+}
+
+/** The hop's body: Responses carries the conversation id as prompt_cache_key, like grok-shell. */
+export function grokHopBody(outbound, sessionId) {
+  const body = outbound?.body || {}
+  if (outbound?.path !== UPSTREAM_PATHS['openai.responses'] || !sessionId) return body
+  return { ...body, prompt_cache_key: String(sessionId) }
 }
 
 function normalizeErrorBody(status, payload, text) {
@@ -553,13 +573,15 @@ export async function runGrokSlotHop({
       envelope: grokKernelEnvelope({
         method: 'POST',
         path: outbound.path,
-        body: outbound.body,
+        body: grokHopBody(outbound, headers?.['x-grok-session-id'] || ''),
         stream,
         purpose: 'inference',
         sessionId: headers?.['x-grok-session-id'] || '',
         modelId: headers?.['x-grok-model-override'] || outbound.body?.model || '',
         requestId: headers?.['x-grok-req-id'] || '',
-        agentId: written?.agentId || headers?.['x-grok-agent-id'] || '',
+        agentId: headers?.['x-grok-agent-id'] || written?.agentId || '',
+        turnIdx: headers?.['x-grok-turn-idx'] || '',
+        convGroupId: headers?.['x-grok-conv-group-id'] || '',
       }),
       stream,
       signal,
@@ -662,10 +684,12 @@ export async function handleGrokProtocol({
     authorization: 'Bearer ***',
     'content-type': 'application/json',
     'user-agent': grokCliUserAgent(),
-    'x-grok-client-version': '1.0.62',
+    'x-grok-client-version': GROK_CLI_VERSION,
     'x-grok-client-identifier': 'grok-shell',
   })
-  const upstreamStream = outbound.convert ? true : stream
+  // Upstream always streams (official client behavior); see buildGrokOutbound.
+  const upstreamStream = true
+  const turnIdx = grokTurnIndex(ctx.body || inbound)
   const shape = protocol === 'anthropic.messages' && !outbound.convert ? 'anthropic' : 'openai'
   const pickOpts = { stickyRouter, sessions, body: body || ctx.body || inbound, excluded: new Set(), routing }
   const deadline = Date.now() + waitTimeoutMs(routing)
@@ -795,11 +819,10 @@ export async function handleGrokProtocol({
             sessionId: outboundSessionId,
             requestId,
             agentId: written?.agentId || '',
+            turnIdx,
           })
           logBag.outbound_headers = redactHeaders({
             authorization: 'Bearer ***',
-            'content-type': 'application/json',
-            accept: upstreamAccept(upstreamStream),
             ...headers,
           })
           return runGrokSlotHop({
@@ -862,9 +885,16 @@ export async function handleGrokProtocol({
           logBag.upstream_model = outbound.body.model
           if (hops > 1) logBag.grok_failed_over = true
           if (!stream) {
+            const failure = grokStreamFailure(outbound.convert ? 'openai.responses' : protocol, chunks)
+            if (failure) {
+              stats.errors++
+              logBag.final_state = 'incomplete'
+              logBag.error_code = failure.code || 'grok_upstream'
+              return json(res, 502, { error: failure })
+            }
             const out = outbound.convert
               ? codexBodyToAnthropicMessage(assembleCodexBodyFromSse(chunks, {}), outbound.body.model)
-              : result.body
+              : assembleGrokNonStreamBody(protocol, chunks)
             return json(res, 200, out)
           }
           if (!res.headersSent) writeSSEHeaders(res)
