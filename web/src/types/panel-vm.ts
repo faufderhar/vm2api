@@ -27,6 +27,9 @@ export type GrokBuildUsage = {
   probed_at?: string | null
   ok?: boolean | null
   credit_usage_percent?: number | null
+  /** reported：上游给的百分比；on_demand：按 onDemandUsed/onDemandCap 推算；none：统一计费账号没有百分比，记 0。 */
+  credit_usage_source?: 'reported' | 'on_demand' | 'none' | null
+  period_type?: string | null
   period_start?: string | number | null
   period_end?: string | number | null
   monthly_limit?: number | null
@@ -36,6 +39,8 @@ export type GrokBuildUsage = {
   on_demand_used?: number | null
   prepaid_balance?: number | null
   on_demand_enabled?: boolean | null
+  unified_billing?: boolean | null
+  top_up_method?: string | null
   subscription_tier?: string | null
   error?: string | null
   /** 最近一次同步失败的说明。成功后清空。 */

@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { createPanelHandler } from '../../src/lib/admin/panel-routes.mjs'
 import { DEFAULT_CLAUDE_SETTING } from '../../src/lib/protocol/seed-policy.mjs'
+import { GROK_CLI_VERSION } from '../../src/lib/protocol/grok-client.mjs'
 
 function seed(root, id) {
   const dir = path.join(root, 'vms')
@@ -186,7 +187,8 @@ test('GET seed-settings returns Grok CLI info for Grok slots without secrets', a
     assert.equal(data.kind, 'grok')
     assert.equal(data.settings_json, undefined)
     assert.equal(data.grok_cli.product, 'grok-shell')
-    assert.match(data.grok_cli.user_agent, /^grok-shell\/1\.0\.62 \(/)
+    // The kernel binary fixes the version; a stale config value is ignored.
+    assert.ok(data.grok_cli.user_agent.startsWith(`grok-shell/${GROK_CLI_VERSION} (`), data.grok_cli.user_agent)
     assert.equal(data.grok_cli.agent_id, 'abc123')
     assert.deepEqual(data.grok_cli.proxy, { url: 'http://10.0.0.2:3128', auth: true, required: true })
     assert.equal(data.grok_cli.oauth.client_id, 'cid')

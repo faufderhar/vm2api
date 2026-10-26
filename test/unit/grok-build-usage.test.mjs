@@ -49,6 +49,59 @@ test('billing response maps the weekly pool and the latest monthly included spen
   assert.equal(parseGrokBuildBilling({}), null)
 })
 
+// Synthetic copy of the unified-billing credits document the 1.0.70 CLI reads:
+// no creditUsagePercent and no monthlyLimit, only the period and on-demand counters.
+const UNIFIED_CREDITS = {
+  config: {
+    currentPeriod: {
+      type: 'USAGE_PERIOD_TYPE_WEEKLY',
+      start: '2026-10-19T00:00:00Z',
+      end: '2026-10-26T00:00:00Z',
+    },
+    onDemandCap: { val: 0 },
+    onDemandUsed: { val: 0 },
+    isUnifiedBillingUser: true,
+    prepaidBalance: { val: 0 },
+    topUpMethod: 'TOP_UP_METHOD_SAVED_PAYMENT_METHOD',
+    billingPeriodStart: '2026-10-01T00:00:00Z',
+    billingPeriodEnd: '2026-11-01T00:00:00Z',
+  },
+}
+
+test('the unified-billing credits shape parses with or without a ledger', () => {
+  for (const ledger of [null, UNIFIED_CREDITS, { config: {} }]) {
+    const usage = parseGrokBuildBilling(UNIFIED_CREDITS, ledger)
+    assert.ok(usage, 'unified billing must not be billing_unparsed')
+    assert.equal(usage.credit_usage_percent, 0)
+    assert.equal(usage.credit_usage_source, 'none')
+    assert.equal(usage.period_type, 'USAGE_PERIOD_TYPE_WEEKLY')
+    assert.equal(usage.period_start, '2026-10-19T00:00:00.000Z')
+    assert.equal(usage.period_end, '2026-10-26T00:00:00.000Z')
+    assert.equal(usage.on_demand_cap, 0)
+    assert.equal(usage.on_demand_used, 0)
+    assert.equal(usage.prepaid_balance, 0)
+    assert.equal(usage.unified_billing, true)
+    assert.equal(usage.top_up_method, 'TOP_UP_METHOD_SAVED_PAYMENT_METHOD')
+    assert.equal(usage.monthly_limit, null)
+  }
+})
+
+test('unified billing derives the percent from on-demand spend when a cap is set', () => {
+  const doc = structuredClone(UNIFIED_CREDITS)
+  doc.config.onDemandCap = { val: 40 }
+  doc.config.onDemandUsed = { val: 10 }
+  const usage = parseGrokBuildBilling(doc)
+  assert.equal(usage.credit_usage_percent, 25)
+  assert.equal(usage.credit_usage_source, 'on_demand')
+  // A reported percent still wins.
+  doc.config.creditUsagePercent = 12
+  assert.equal(parseGrokBuildBilling(doc).credit_usage_percent, 12)
+  assert.equal(parseGrokBuildBilling(doc).credit_usage_source, 'reported')
+  // Period end falls back to the billing period when currentPeriod has none.
+  const bare = { config: { isUnifiedBillingUser: true, billingPeriodEnd: '2026-11-01T00:00:00Z' } }
+  assert.equal(parseGrokBuildBilling(bare).period_end, '2026-11-01T00:00:00.000Z')
+})
+
 test('wrapped billing amounts and the ledger fill the monthly window', () => {
   const usage = parseGrokBuildBilling(
     {

@@ -5,6 +5,7 @@ use serde_json::{Map, Value};
 
 use crate::config::Config;
 use crate::credentials::{self, Account};
+use crate::headers::{user_agent_string_for, PlatformInfo, CLIENT_VERSION, PRODUCT};
 
 /// One OAuth call bounded on its own; the client only has a connect timeout.
 const OAUTH_TIMEOUT: Duration = Duration::from_secs(30);
@@ -73,18 +74,24 @@ pub async fn refresh_account(
         return Err("grok_token_expired".to_string());
     }
     let token_url = resolve_token_url(client, config).await?;
-    let reply = post_form(
-        client,
-        &token_url,
-        &[
-            ("grant_type", "refresh_token"),
-            ("refresh_token", account.refresh_token.as_str()),
-            ("client_id", config.oauth.client_id.as_str()),
-        ],
-    )
-    .await
-    // A stable code: transport detail must not reach logs or API clients.
-    .map_err(|_| "refresh_failed".to_string())?;
+    let principal = account.user_id.clone().unwrap_or_default();
+    let fields = refresh_form(&account.refresh_token, &config.oauth.client_id, &principal);
+    let mut reply = post_form(client, config, &token_url, &fields)
+        .await
+        // A stable code: transport detail must not reach logs or API clients.
+        .map_err(|_| "refresh_failed".to_string())?;
+    // A 400 that is not invalid_grant may be the principal fields themselves (an
+    // account id that is not the principal xAI expects): try once without them, as
+    // before. A rejected refresh token is never retried.
+    if !principal.is_empty()
+        && reply.status == 400
+        && reply.body.get("error").and_then(|value| value.as_str()) != Some("invalid_grant")
+    {
+        let plain = refresh_form(&account.refresh_token, &config.oauth.client_id, "");
+        reply = post_form(client, config, &token_url, &plain)
+            .await
+            .map_err(|_| "refresh_failed".to_string())?;
+    }
     let payload = reply.body;
     let oauth_error = payload
         .get("error")
@@ -132,6 +139,25 @@ pub async fn refresh_account(
     })
 }
 
+/// The refresh form the official client posts: no scope, and the principal when the
+/// account id is known.
+pub fn refresh_form<'a>(
+    refresh_token: &'a str,
+    client_id: &'a str,
+    principal_id: &'a str,
+) -> Vec<(&'static str, &'a str)> {
+    let mut fields = vec![
+        ("grant_type", "refresh_token"),
+        ("refresh_token", refresh_token),
+        ("client_id", client_id),
+    ];
+    if !principal_id.is_empty() {
+        fields.push(("principal_type", "User"));
+        fields.push(("principal_id", principal_id));
+    }
+    fields
+}
+
 /// Device code start: POST client_id and scope to the discovered device endpoint.
 pub async fn device_authorize(
     client: &reqwest::Client,
@@ -142,7 +168,7 @@ pub async fn device_authorize(
     if !config.oauth.scope.is_empty() {
         form.push(("scope", config.oauth.scope.as_str()));
     }
-    post_form(client, &url, &form).await
+    post_form(client, config, &url, &form).await
 }
 
 /// A token grant Node started (device code poll, PKCE exchange, refresh-token import).
@@ -154,7 +180,7 @@ pub async fn token_grant(
 ) -> Result<OauthReply, String> {
     let form = token_form(config, fields)?;
     let url = resolve_token_url(client, config).await?;
-    post_form(client, &url, &form).await
+    post_form(client, config, &url, &form).await
 }
 
 /// The form for `token_grant`: known fields in a fixed order, then our client_id.
@@ -180,13 +206,26 @@ fn token_form(
     Ok(form)
 }
 
+/// The official client names itself on auth.x.ai calls too.
+fn oauth_user_agent(config: &Config) -> String {
+    let platform = config
+        .platform
+        .as_ref()
+        .map(PlatformInfo::normalized)
+        .unwrap_or_else(PlatformInfo::current);
+    user_agent_string_for(PRODUCT, CLIENT_VERSION, &platform)
+}
+
 async fn post_form<T: Serialize + ?Sized>(
     client: &reqwest::Client,
+    config: &Config,
     url: &str,
     form: &T,
 ) -> Result<OauthReply, String> {
     let response = client
         .post(url)
+        .header("accept", "*/*")
+        .header("user-agent", oauth_user_agent(config))
         .timeout(OAUTH_TIMEOUT)
         .form(form)
         .send()
@@ -309,6 +348,24 @@ pub fn now_ms() -> i64 {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn refresh_form_names_the_principal_when_known() {
+        let fields = refresh_form("rt", "client", "user-1");
+        assert_eq!(
+            fields,
+            vec![
+                ("grant_type", "refresh_token"),
+                ("refresh_token", "rt"),
+                ("client_id", "client"),
+                ("principal_type", "User"),
+                ("principal_id", "user-1"),
+            ]
+        );
+        assert!(!fields.iter().any(|(name, _)| *name == "scope"));
+        let plain = refresh_form("rt", "client", "");
+        assert_eq!(plain.len(), 3);
+    }
 
     #[test]
     fn expires_in_accepts_numbers_and_strings() {

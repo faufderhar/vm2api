@@ -13,7 +13,7 @@ type Block = Record<string, unknown>
 export const GROK_DEFAULT_BASE_URL = 'https://cli-chat-proxy.grok.com'
 export const GROK_DEFAULT_CLIENT_ID = 'b1a00492-073a-47ea-816f-4c329264a828'
 export const GROK_DEFAULT_SCOPE =
-  'openid profile email offline_access grok-cli:access api:access'
+  'openid profile email offline_access grok-cli:access api:access conversations:read conversations:write workspaces:read workspaces:write'
 
 export const GROK_LIMITS = {
   refresh_skew_sec: { min: 30, max: 3600, fallback: 300 },
