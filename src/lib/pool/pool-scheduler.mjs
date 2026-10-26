@@ -28,6 +28,7 @@ import {
   isAccountRestrictionReason,
   isLeftoverQuotaScheduleOff,
   isQuotaWindowReason,
+  usageRemaining,
 } from './availability.mjs'
 import { listQuotaFromHeaders } from './quota-window.mjs'
 import { hardBlockOf } from './rate-limit-service.mjs'
@@ -37,8 +38,18 @@ import { splitBlocksModel } from './weekly-split.mjs'
 import { slotAllowsModel } from './slot-model-gate.mjs'
 import { platformOf } from '../vm/vm-kind.mjs'
 import { detectInboundPlatform } from '../protocol/platform-detect.mjs'
-import { resolveCredentialScheduleLevel, window7dResetAt } from './credential-weight.mjs'
+import { resolveCredentialScheduleLevel, weeklyResetAt, window7dResetAt } from './credential-weight.mjs'
 import { compareWindow7dAsc } from './refresh-order.mjs'
+import {
+  CLAUDE_RESET_PRIORITY_IDLE_DEFAULT_SEC,
+  RESET_PRIORITY_MIN_REMAINING,
+  compareResetBoost,
+  earliestResetBand,
+  normalizeResetPriorityFields,
+  resetBoostAt,
+  resetPriorityOf,
+  sessionActivity as defaultSessionActivity,
+} from './reset-priority.mjs'
 import { PLATFORM_SCOPE, normalizeOwnerId, vmMatchesOwnerScope } from '../admin/resource-owner.mjs'
 import { keyAllowsVm } from '../admin/key-scope.mjs'
 import {
@@ -76,6 +87,8 @@ export const DEFAULT_POOL_ROUTING = Object.freeze({
   sticky_wait_timeout_ms: 45000,
   circuit_failure_threshold: 3,
   circuit_open_ms: 30000,
+  // Prefer accounts whose 7d window resets soonest; an idle session may re-pick.
+  ...normalizeResetPriorityFields({}, { idleDefaultSec: CLAUDE_RESET_PRIORITY_IDLE_DEFAULT_SEC }),
 })
 
 const DEFAULT_CONFIG = {
@@ -138,6 +151,7 @@ export function normalizePoolRouting(pool = {}) {
     CIRCUIT_OPEN_MIN_MS,
     Number.MAX_SAFE_INTEGER,
   )
+  Object.assign(next, normalizeResetPriorityFields(next, { idleDefaultSec: CLAUDE_RESET_PRIORITY_IDLE_DEFAULT_SEC }))
   return next
 }
 
@@ -249,8 +263,13 @@ function vmTierOf(vm) {
   return vm?.claude?.has_access || vm?.has_token ? 'pro' : null
 }
 
-function priorityOf(vm, account, now) {
-  return resolveCredentialScheduleLevel({ vm, unified: account?.unified || {}, now }).level
+function priorityOf(vm, account, now, { resetFirst = false, remaining = null } = {}) {
+  const resolved = resolveCredentialScheduleLevel({ vm, unified: account?.unified || {}, now })
+  // reset_priority: under 5% left the soon reset earns nothing; manual levels still win.
+  if (resetFirst && resolved.mode === 'auto' && remaining != null && remaining < RESET_PRIORITY_MIN_REMAINING) {
+    return 1
+  }
+  return resolved.level
 }
 
 function weightOf(vm, state) {
@@ -325,6 +344,7 @@ export class PoolScheduler extends EventEmitter {
     runtimeRepo = null,
     workerHealth = null,
     config = {},
+    sessionActivity = defaultSessionActivity,
   } = {}) {
     super()
     // One 'change' listener per open panel seat stream.
@@ -335,6 +355,7 @@ export class PoolScheduler extends EventEmitter {
     this.runtimeRepo = runtimeRepo
     this.workerHealth = workerHealth
     this.config = normalizePoolConfig(config)
+    this.sessionActivity = sessionActivity
     this.lastStickyCleared = false
     this.inflight = new Map()
     this.inflightFamily = new Map()
@@ -865,6 +886,7 @@ export class PoolScheduler extends EventEmitter {
     quotaRequest = null,
   } = {}) {
     const now = Date.now()
+    const resetFirst = this.resetPriority()
     this.runtimeRepo?.clearExpired?.(now)
     const summaries = listVms(this.projectRoot)
     const candidates = []
@@ -919,6 +941,7 @@ export class PoolScheduler extends EventEmitter {
       const inflight = this.inflight.get(accountId) || 0
       const seatCap = seatCapOf(vm, this.config.default_session_slots)
       this.planner.noteCap(vm.id, seatCap)
+      const remaining = eligibility.remaining ?? null
       candidates.push({
         ok: true,
         vmId: vm.id,
@@ -926,7 +949,7 @@ export class PoolScheduler extends EventEmitter {
         vm,
         state,
         model: normalizeModel(model),
-        priority: priorityOf(vm, eligibility.account, now),
+        priority: priorityOf(vm, eligibility.account, now, { resetFirst: resetFirst.enabled, remaining }),
         weight: weightOf(vm, state),
         inflight,
         maxConcurrency,
@@ -937,6 +960,9 @@ export class PoolScheduler extends EventEmitter {
         loadRatio: (inflight + this.waiterCount(accountId)) / maxConcurrency,
         lastUsedAt: this.lastUsed.get(accountId) || state?.last_used_at || 0,
         window7dAt: window7dResetAt(eligibility.account?.unified || {}) || vm.reset_7d || null,
+        resetBoostAt: resetFirst.enabled
+          ? resetBoostAt(weeklyResetAt(eligibility.account?.unified || {}, now), remaining, now)
+          : null,
         workerStatus: eligibility.workerStatus,
         busy: !!eligibility.busy,
         availableAt: eligibility.availableAt || null,
@@ -980,6 +1006,7 @@ export class PoolScheduler extends EventEmitter {
     }
     let account = null
     let headroom = null
+    let remaining = null
     if (!pinned) {
       try {
         account = this.accountQuota?.repo?.get?.(accountId) || null
@@ -1047,6 +1074,9 @@ export class PoolScheduler extends EventEmitter {
           }
         }
         headroom = budgetHeadroom({ account: { ...account, last_used_at: lastUsedAt }, quota, policy, now })
+        remaining = account.unified
+          ? usageRemaining({ account: { ...account, last_used_at: lastUsedAt }, quota, now })
+          : null
       }
       // Operator-set working window: outside it the slot simply is not a
       // candidate. Checked after the model / account gates so only a slot that
@@ -1146,7 +1176,7 @@ export class PoolScheduler extends EventEmitter {
     } else if (workerStatus && rustKernelProcessUp(workerStatus) && !rustKernelReachable(workerStatus)) {
       return { ok: false, reason: 'worker_unhealthy' }
     }
-    return { ok: true, account, workerStatus, busy, availableAt, waitReason, headroom, gateZone }
+    return { ok: true, account, workerStatus, busy, availableAt, waitReason, headroom, remaining, gateZone }
   }
 
   executionContext(vm, accountId) {
@@ -1273,6 +1303,56 @@ export class PoolScheduler extends EventEmitter {
     return cleared
   }
 
+  resetPriority() {
+    return resetPriorityOf(this.config, { idleDefaultSec: CLAUDE_RESET_PRIORITY_IDLE_DEFAULT_SEC })
+  }
+
+  /**
+   * reset_priority: before a request runs, drop the pins of a conversation
+   * that has gone idle so it may re-pick by the reset order. Active sessions
+   * (anything in flight, or quiet for less than the idle time) and devices
+   * that still hold a live seat keep their account. Pins never move here.
+   * Family / device affinity are released only when that key is idle too.
+   */
+  releaseIdlePins({
+    stickyKey = null,
+    stickyKeys = null,
+    familyKey = null,
+    deviceKey = null,
+    seatKey = null,
+    ownerScope = PLATFORM_SCOPE,
+    pinVmId = null,
+    now = Date.now(),
+  } = {}) {
+    const released = { session: false, family: false, device: false }
+    const cfg = this.resetPriority()
+    if (!cfg.enabled || !this.stickyRouter || String(pinVmId || '').trim()) return released
+    if (seatKey && this.planner.seatOf(scopedSeatKey(seatKey, ownerScope))) return released
+    const idle = (key) => {
+      if (!key) return false
+      const bound = this.stickyRouter.resolve?.(key)
+      if (!bound?.accountId && !bound?.vmId) return false
+      return this.sessionActivity.isIdle(key, { idleMs: cfg.idleMs, boundAt: bound.boundAt ?? null, now })
+    }
+    const sessionKeys = [
+      ...new Set([stickyKey, ...(Array.isArray(stickyKeys) ? stickyKeys : [])].filter(Boolean).map(String)),
+    ]
+    const primary = sessionKeys[0] || ''
+    if (primary && idle(primary)) {
+      for (const key of sessionKeys) this.stickyRouter.unbind?.(key)
+      released.session = true
+    }
+    if (familyKey && idle(familyKey)) {
+      this.stickyRouter.unbind?.(familyKey)
+      released.family = true
+    }
+    if (deviceKey && idle(deviceKey)) {
+      this.stickyRouter.unbind?.(deviceKey)
+      released.device = true
+    }
+    return released
+  }
+
   /** Session leaves this VM: drop its alias keys. A device seat lives in the planner, not here. */
   releaseSticky(bound, stickyKey, stickyKeys) {
     const keys = Array.isArray(stickyKeys) && stickyKeys.length ? stickyKeys : stickyKey ? [stickyKey] : []
@@ -1333,6 +1413,8 @@ export class PoolScheduler extends EventEmitter {
     }
     const highestPriority = Math.max(...candidates.map((candidate) => candidate.priority))
     let pool = candidates.filter((candidate) => candidate.priority === highestPriority)
+    // reset_priority: inside the top level, the earliest 7d reset hour (no-op without boosts).
+    pool = earliestResetBand(pool)
     const minLoad = Math.min(...pool.map((candidate) => candidate.loadRatio))
     pool = pool.filter((candidate) => candidate.loadRatio === minLoad)
     if (pool.length === 1) return { ...pool[0], selectionReason: reasonFor('priority-load') }
@@ -1346,7 +1428,7 @@ export class PoolScheduler extends EventEmitter {
   peekRank(candidates = []) {
     if (!candidates.length) return null
     const highestPriority = Math.max(...candidates.map((candidate) => candidate.priority))
-    let pool = candidates.filter((candidate) => candidate.priority === highestPriority)
+    let pool = earliestResetBand(candidates.filter((candidate) => candidate.priority === highestPriority))
     const minLoad = Math.min(...pool.map((candidate) => candidate.loadRatio))
     pool = pool.filter((candidate) => candidate.loadRatio === minLoad)
     pool.sort(

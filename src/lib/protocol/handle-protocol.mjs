@@ -1085,6 +1085,22 @@ export function createHandleProtocol(deps) {
       : stickyRouter?.familyPoolKey
         ? stickyRouter.familyPoolKey(req, familySession, { trusted: familyTrusted })
         : stickyRouter?.familyKey?.(req, familySession, 'anthropic') || null
+    if (!isProbe) {
+      // reset_priority: a conversation that went idle drops its pins before the
+      // family home and outbound session are read, so it re-picks by reset order.
+      // Active sessions, live device seats and x-kin-vm pins are left alone.
+      const idlePinRaw = String(req.headers['x-kin-vm'] || '').trim()
+      const idlePinned = req.apiKeyKind === 'master' && isValidVmId(idlePinRaw)
+      getFailoverRunner()?.releaseIdlePins?.({
+        stickyKey,
+        stickyKeys,
+        familyKey,
+        deviceKey,
+        seatKey,
+        ownerScope: idlePinned ? { type: 'any' } : ownerScopeFromRequest(req, apiKeyStore?.users),
+        pinVmId: idlePinned ? idlePinRaw : null,
+      })
+    }
     const familyVmId = familyKey ? stickyRouter?.resolve?.(familyKey)?.vmId || null : null
     const stickyBound =
       stickyKey && typeof stickyRouter?.resolve === 'function' ? stickyRouter.resolve(stickyKey) : null
