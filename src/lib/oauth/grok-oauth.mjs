@@ -12,6 +12,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { GROK_OAUTH_DEVICE_GRANT, grokOauthConfig } from '../protocol/grok-route.mjs'
 import { atomicWriteJson } from '../vm/vm-file.mjs'
+import { sleep } from '../core/clock.mjs'
+import { b64url } from './b64url.mjs'
 
 export const GROK_OAUTH_SESSION_TTL_MS = 10 * 60 * 1000
 const DEVICE_POLL_FLOOR_SEC = 5
@@ -21,10 +23,6 @@ const sessions = new Map()
 const deviceSessions = new Map()
 const DEVICE_LOCK_STALE_MS = 15_000
 const DEVICE_LOCK_WAIT_MS = 5_000
-
-function b64url(buf) {
-  return Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
-}
 
 function fail(code, message, extra = {}) {
   const err = new Error(message)
@@ -40,10 +38,6 @@ function sweepExpired(now = Date.now()) {
   for (const [id, session] of deviceSessions) {
     if (now > session.expiresAt) deviceSessions.delete(id)
   }
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function deviceSessionPath(projectRoot) {

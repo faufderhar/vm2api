@@ -6,24 +6,16 @@ import {
   modelsUrl,
   parseUpstreamModels,
   resolvePreset,
-  trimBaseUrl,
   upstreamAuthHeaders,
 } from '../pool/api-presets.mjs'
 import { forwardApi, readApiJson } from '../transport/api-kernel-client.mjs'
 import { AUTH_SCHEME_X_API_KEY, resolveAuthScheme } from '../oauth/auth-scheme.mjs'
 import { assertConsoleDialTarget, consoleForwardTarget } from './anthropic-console.mjs'
 import { isUnsafeProxyHost } from '../vm/proxy-policy.mjs'
-
-function nowIso() {
-  return new Date().toISOString()
-}
+import { nowIso } from '../core/clock.mjs'
 
 function nid(prefix) {
   return prefix + crypto.randomBytes(6).toString('hex')
-}
-
-function trimUrl(url) {
-  return trimBaseUrl(url)
 }
 
 function assertEndpointBaseUrl(baseUrl) {

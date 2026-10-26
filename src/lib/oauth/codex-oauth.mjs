@@ -13,21 +13,13 @@ import {
   CODEX_OAUTH_SCOPE,
   exchangeCodexAuthorizationCode,
 } from '../protocol/codex-models.mjs'
+import { codedError as fail } from '../core/errors.mjs'
+import { b64url } from './b64url.mjs'
 
 export const CODEX_OAUTH_SESSION_TTL_MS = 10 * 60 * 1000
 const SURFACE_STABLE_ID_DOMAIN = Buffer.from('openai/codex-desktop/surface-stable-id/v1\0')
 
 const sessions = new Map()
-
-function b64url(buf) {
-  return Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
-}
-
-function fail(code, message) {
-  const err = new Error(message)
-  err.code = code
-  return err
-}
 
 function sweepExpired(now = Date.now()) {
   for (const [id, session] of sessions) {

@@ -3,7 +3,7 @@
  * Used for panel account labels and chatgpt-account-id headers — not auth validation.
  */
 
-function firstString(...values) {
+export function firstString(...values) {
   for (const value of values) {
     const text = String(value || '').trim()
     if (text) return text

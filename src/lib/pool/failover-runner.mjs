@@ -18,7 +18,6 @@ import {
 } from '../core/errors.mjs'
 import { hasRefreshPresence, readWorkerCredentialFile } from '../oauth/oauth-credentials.mjs'
 import { ensureWorkerCredential } from '../transport/go-worker-client.mjs'
-import { resolveOfficialCcInference } from '../vm/slot-engine.mjs'
 import { AttemptCoordinator } from './unit-decision.mjs'
 import { SOFT_COOLDOWN_REASONS } from './pool-scheduler.mjs'
 

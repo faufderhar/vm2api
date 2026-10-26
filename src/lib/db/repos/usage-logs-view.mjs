@@ -45,7 +45,7 @@ const BLOCKED_STATES = {
   policy_blocked: 'policy',
 }
 
-function num(v) {
+export function num(v) {
   const n = Number(v)
   return Number.isFinite(n) ? n : 0
 }

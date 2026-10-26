@@ -26,7 +26,7 @@ import {
 } from './claude-code-betas.mjs'
 import { reasoningEffortOf } from './log-fields.mjs'
 
-function isCatalogModelId(id) {
+export function isCatalogModelId(id) {
   const s = String(id || '')
   if (s.endsWith('-') || s.endsWith('.')) return false
   if (/\.md$/i.test(s)) return false

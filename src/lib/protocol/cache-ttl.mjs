@@ -265,13 +265,6 @@ export function stripCacheScopeFields(body) {
   return changed ? out : body
 }
 
-function setEphemeralTtlUnlessPinned(control, ttl) {
-  if (!control || typeof control !== 'object') return { type: 'ephemeral', ttl }
-  if (control.type && control.type !== 'ephemeral') return control
-  if (String(control.ttl || '').trim()) return { type: 'ephemeral', ttl: normalizeCacheTtl(control.ttl) }
-  return { type: 'ephemeral', ttl }
-}
-
 /** Anthropic treats a missing ttl as 5m. */
 export function ephemeralCacheTtl(control) {
   if (!control || typeof control !== 'object') return null

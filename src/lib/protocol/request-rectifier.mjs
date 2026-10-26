@@ -264,7 +264,7 @@ export function flattenSearchResultHistory(body = {}) {
   return { ...body, messages }
 }
 
-function placeholderContent(role) {
+export function placeholderContent(role) {
   return [
     {
       type: 'text',

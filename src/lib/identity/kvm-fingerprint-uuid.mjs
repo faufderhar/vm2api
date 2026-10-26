@@ -2,26 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { atomicWriteJson } from '../vm/vm-file.mjs'
 import { coerceRfc4122Uuid, isRfc4122Uuid } from './rfc4122-uuid.mjs'
-
-function splitSmbios(body) {
-  const parts = []
-  let cur = ''
-  for (let i = 0; i < body.length; i++) {
-    if (body[i] === ',' && body[i + 1] === ',') {
-      cur += ','
-      i++
-      continue
-    }
-    if (body[i] === ',') {
-      parts.push(cur)
-      cur = ''
-      continue
-    }
-    cur += body[i]
-  }
-  parts.push(cur)
-  return parts
-}
+import { splitQemuOpts } from './qemu-opts.mjs'
 
 function joinSmbios(parts) {
   return parts.join(',')
@@ -39,7 +20,7 @@ function uuidFromQemuSmbiosArgs(text) {
     else if (lines[i] === '-smbios' && lines[i + 1]?.startsWith('type=1,')) type1 = lines[++i]
   }
   const fields = {}
-  for (const part of splitSmbios(type1)) {
+  for (const part of splitQemuOpts(type1)) {
     const eq = part.indexOf('=')
     if (eq > 0) fields[part.slice(0, eq)] = part.slice(eq + 1)
   }
@@ -48,7 +29,7 @@ function uuidFromQemuSmbiosArgs(text) {
 
 function setType1Uuid(type1Line, uuid) {
   const body = type1Line.startsWith('type=1,') ? type1Line.slice('type=1,'.length) : type1Line
-  const parts = splitSmbios(body)
+  const parts = splitQemuOpts(body)
   let found = false
   const next = parts.map((part) => {
     const eq = part.indexOf('=')

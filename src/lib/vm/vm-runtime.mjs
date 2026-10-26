@@ -39,6 +39,7 @@ import { probeLocalKvm } from './kvm-host.mjs'
 import { slotExecArgv } from './slot-exec.mjs'
 import { isDockerInspectNotFound } from './docker-container.mjs'
 import { PublicError } from '../core/public-error.mjs'
+import { splitQemuOpts } from '../identity/qemu-opts.mjs'
 
 export const RUNTIME = 'docker'
 const WORKER_BIN = process.env.KIN_WORKER_BIN || '/opt/kin-gateway/bin/kin-worker'
@@ -603,7 +604,7 @@ export function shouldReplaceSlotContainer({ existing, recreate = false, network
   return !!(wrongNet || wrongImg || wrongRuntime)
 }
 
-function kvmMachineFields(vm) {
+export function kvmMachineFields(vm) {
   const m = vm.machine && typeof vm.machine === 'object' ? vm.machine : {}
   const smbios = m.smbios && typeof m.smbios === 'object' ? m.smbios : {}
   const d = VM_CONFIG_DEFAULTS
@@ -663,26 +664,6 @@ export function shouldPublishComputer(existing) {
   return !existing
 }
 
-function splitSmbios(body) {
-  const parts = []
-  let cur = ''
-  for (let i = 0; i < body.length; i++) {
-    if (body[i] === ',' && body[i + 1] === ',') {
-      cur += ','
-      i++
-      continue
-    }
-    if (body[i] === ',') {
-      parts.push(cur)
-      cur = ''
-      continue
-    }
-    cur += body[i]
-  }
-  parts.push(cur)
-  return parts
-}
-
 function readFingerprintSmbios(kvmDir) {
   let text
   try {
@@ -702,7 +683,7 @@ function readFingerprintSmbios(kvmDir) {
   }
   if (!type1 && !uuid) return null
   const fields = {}
-  for (const part of splitSmbios(type1)) {
+  for (const part of splitQemuOpts(type1)) {
     const eq = part.indexOf('=')
     if (eq > 0) fields[part.slice(0, eq)] = part.slice(eq + 1)
   }

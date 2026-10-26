@@ -32,7 +32,7 @@ import { REMOTE_KERNEL_ENTRY, resolveKernelDataplane } from '../vm/slot-engine.m
 import { isCodexVm, isHeadlessSlotVm, PLATFORMS, platformDescriptor } from '../vm/vm-kind.mjs'
 import { proxyBlockedReason } from '../vm/proxy-policy.mjs'
 import { isKvmRuntime, runtimeKind } from '../vm/runtime-kind.mjs'
-import { slotMemory, slotDockerCpus, memoryMiB, normalizeVmConfig, VM_CONFIG_DEFAULTS } from '../vm/machine-spec.mjs'
+import { slotMemory, slotDockerCpus, memoryMiB, normalizeVmConfig } from '../vm/machine-spec.mjs'
 import { logTelemetryContainerSkip, telemetryContainerSkip } from '../vm/docker-container.mjs'
 import { slotExecArgv, slotExecCmd } from '../vm/slot-exec.mjs'
 import {
@@ -43,6 +43,7 @@ import {
   KVM_CAPS,
   STANDARD_LOCALE,
   writeWorkerFiles,
+  kvmMachineFields,
 } from '../vm/vm-runtime.mjs'
 import {
   containerAction,
@@ -207,12 +208,6 @@ export function legacyServiceContainerBody(
 function migrationBackupName(name, stamp = Date.now()) {
   const suffix = `-legacy-${stamp}`
   return `${String(name).slice(0, Math.max(1, 63 - suffix.length))}${suffix}`
-}
-
-function hasBindDestination(info, destination, source = '') {
-  return (info?.Mounts || []).some(
-    (mount) => mount.Destination === destination && mount.RW === false && (!source || mount.Source === source),
-  )
 }
 
 function hasLiveServiceMount(info, { sourceDir = '' } = {}) {
@@ -610,27 +605,6 @@ async function probeRemoteAccel(session, routing) {
   } catch {
     if (allowTcg) return { ok: true, accel: 'tcg' }
     return { ok: false, error: '节点没有 /dev/kvm，且未允许 TCG' }
-  }
-}
-
-function kvmMachineFields(vm) {
-  const m = vm.machine && typeof vm.machine === 'object' ? vm.machine : {}
-  const smbios = m.smbios && typeof m.smbios === 'object' ? m.smbios : {}
-  const d = VM_CONFIG_DEFAULTS
-  return {
-    vcpus: Number.isInteger(m.vcpus) ? m.vcpus : d.vcpus,
-    disk_gb: Number.isInteger(m.disk_gb) ? m.disk_gb : d.disk_gb,
-    cpu_model: m.cpu_model || d.cpu_model,
-    mac: m.mac || '',
-    smbios: {
-      manufacturer: smbios.manufacturer || d.smbios.manufacturer,
-      product: smbios.product || d.smbios.product,
-      version: smbios.version || d.smbios.version,
-      family: smbios.family || d.smbios.family,
-      serial: smbios.serial || '',
-      uuid: smbios.uuid || '',
-    },
-    disk_serial: m.disk_serial || '',
   }
 }
 

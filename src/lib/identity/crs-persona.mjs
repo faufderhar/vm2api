@@ -36,7 +36,6 @@ import { uuidFromSeed } from './identity-rewrite.mjs'
 import { OFFICIAL_CLI_VERSION } from './vm-identity.mjs'
 import { CCH_PLACEHOLDER } from './cch.mjs'
 import { CLAUDE_CLI_UA_RE, isOfficialClaudeUa } from './official-claude-ua.mjs'
-import { modelSupportsMidConversationSystem } from '../protocol/anthropic-policy.mjs'
 import { validTimezone } from '../core/timezone.mjs'
 import {
   AGENT_EXPANSION_CACHE_CONTROL,
@@ -492,29 +491,6 @@ function stripLeakySystem(system, options = {}) {
     return text === system.text ? system : { ...system, text }
   }
   return system
-}
-
-function sanitizeMessageContent(content) {
-  if (typeof content === 'string') {
-    const text = stripLeakyClientText(content)
-    return text || null
-  }
-  if (!Array.isArray(content)) return content
-  const next = content
-    .map((block) => {
-      if (typeof block === 'string') {
-        const text = stripLeakyClientText(block)
-        return text || null
-      }
-      if (block && typeof block === 'object' && typeof block.text === 'string') {
-        const text = stripLeakyClientText(block.text)
-        if (!text) return null
-        return text === block.text ? block : { ...block, text }
-      }
-      return block
-    })
-    .filter(Boolean)
-  return next.length ? next : null
 }
 
 export function sanitizeUnofficialMessages(messages) {

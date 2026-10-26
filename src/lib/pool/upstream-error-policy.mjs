@@ -13,6 +13,8 @@ import {
 import { isContentPolicyErrorCode } from '../core/refusal-guard.mjs'
 import { isPlanLimitMessage, parseLimitResetFromMessage, parseResetMs } from './quota-window.mjs'
 import { attachFailureDecision } from './unit-decision.mjs'
+import { header } from './rate-limit-service.mjs'
+import { placeholderContent } from '../protocol/request-rectifier.mjs'
 
 const ENTITLEMENT_PATTERNS = [
   /extra usage required/i,
@@ -57,14 +59,6 @@ function bodyMessage(body) {
 
 function bodyCode(body) {
   return String(body?.error?.code || body?.error?.type || body?.type || '')
-}
-
-function header(headers, name) {
-  const target = String(name).toLowerCase()
-  for (const [key, value] of Object.entries(headers || {})) {
-    if (String(key).toLowerCase() === target) return Array.isArray(value) ? value[0] : value
-  }
-  return null
 }
 
 function resetFromHeaders(headers, now = Date.now()) {
@@ -649,15 +643,6 @@ export function normalizeModelKey(model) {
   return String(model || '')
     .trim()
     .toLowerCase()
-}
-
-function placeholderContent(role) {
-  return [
-    {
-      type: 'text',
-      text: role === 'assistant' ? '(assistant content removed)' : '(content removed)',
-    },
-  ]
 }
 
 function rectifyMessageContent(content, role) {

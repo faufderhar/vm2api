@@ -21,13 +21,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import {
-  parseVmIndex,
-  containerName,
-  officialCcUidGid,
-  syncWorkerTelemetry,
-  isSlotProxyDesynced,
-} from '../vm/vm-runtime.mjs'
+import { containerName, officialCcUidGid, syncWorkerTelemetry, isSlotProxyDesynced } from '../vm/vm-runtime.mjs'
 import { slotMemory } from '../vm/machine-spec.mjs'
 import { isKvmRuntime } from '../vm/runtime-kind.mjs'
 import { slotExecArgv } from '../vm/slot-exec.mjs'
@@ -43,7 +37,7 @@ import { canOfficialCc, credentialModeOfVm } from './credential-mode.mjs'
 import { ensureWorkerCredential } from '../transport/go-worker-client.mjs'
 import { inferTierFromOfficialStats, parseOfficialCcStats, tierFromOauthProfile } from './official-cc-stats.mjs'
 import { defaultSeedPolicy } from '../protocol/seed-policy.mjs'
-import { OFFICIAL_CLI_VERSION, loadVmIdentity, persistVmSettings } from '../identity/vm-identity.mjs'
+import { OFFICIAL_CLI_VERSION } from '../identity/vm-identity.mjs'
 import { applyOfficialFingerprintToVm, readOfficialCcIdentity } from '../identity/official-fingerprint.mjs'
 import { writeSlotSeedFiles, inferProjectRootFromCliHome } from '../vm/slot-seed.mjs'
 import { touchTelemetrySession } from '../vm/worker-telemetry.mjs'
@@ -51,6 +45,10 @@ import { atomicWriteJson, listVmRecordFiles } from '../vm/vm-file.mjs'
 import { CONTAINER_CLI_NODE_BIN, normalizeOfficialCcInference, resolveOfficialCcInference } from '../vm/slot-engine.mjs'
 import { getVm } from '../vm/vm-registry.mjs'
 import { slotHost } from '../vm/slot-host.mjs'
+import { sameMemoryLimit } from '../vm/docker-slot-memory.mjs'
+import { sleep } from '../core/clock.mjs'
+
+export { sameMemoryLimit }
 
 export { officialCcUidGid } from '../vm/vm-runtime.mjs'
 export const DEFAULT_HELLO_PROMPT = 'hello'
@@ -153,17 +151,6 @@ export function officialCcQuotaSucceeded(usage) {
 
 export function slotIdleMemory(vm, routing) {
   return slotMemory(vm, routing)
-}
-
-export function sameMemoryLimit(a, b) {
-  return (
-    String(a || '')
-      .trim()
-      .toLowerCase() ===
-    String(b || '')
-      .trim()
-      .toLowerCase()
-  )
 }
 
 export function formatMemoryLimit(bytes) {
@@ -1014,8 +1001,6 @@ export function writeOfficialCcTelemetry(projectRoot, vmId) {
     fingerprint_wrote: !!fingerprint?.wrote,
   }
 }
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 /**
  * Official `/usage` inside the slot (egress = slot SOCKS5 / transparent exit).

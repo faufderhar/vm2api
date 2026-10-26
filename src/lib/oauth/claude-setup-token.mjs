@@ -6,7 +6,6 @@ import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { fileURLToPath } from 'node:url'
 import { containerName } from '../vm/vm-runtime.mjs'
 import { AUTH_SCHEME_BEARER } from './auth-scheme.mjs'
 import { officialCcUidGid, officialCcHome, officialCcHostCli } from './official-cc-bootstrap.mjs'
@@ -15,6 +14,16 @@ import { OFFICIAL_CLI_VERSION } from '../identity/vm-identity.mjs'
 import { slotExecArgv } from '../vm/slot-exec.mjs'
 import { getVm } from '../vm/vm-registry.mjs'
 import { slotHost } from '../vm/slot-host.mjs'
+import { sleep } from '../core/clock.mjs'
+import {
+  codedError as fail,
+  extractCaiAuthorizeUrl,
+  pidAlive,
+  ptySessionView,
+  readJsonOrNull as readJson,
+  scriptsDir,
+  waitFor,
+} from './claude-pty-session.mjs'
 
 export const SETUP_TOKEN_SESSION_TTL_MS = 30 * 60 * 1000
 export const SETUP_TOKEN_SOURCE = 'claude-setup-token'
@@ -23,29 +32,11 @@ export const SETUP_TOKEN_FLAVOR = 'claude_setup_token'
 const URL_WAIT_MS = 45_000
 const TOKEN_WAIT_MS = 90_000
 
-function fail(code, message) {
-  const err = new Error(message)
-  err.code = code
-  return err
-}
-
-function scriptsDir() {
-  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../scripts')
-}
-
 export function setupTokenSessionDir(projectRoot, vmId) {
   return path.join(projectRoot, 'vms', vmId, 'run', 'setup-token')
 }
 
-export function extractSetupTokenAuthUrl(raw = '') {
-  const text = String(raw || '')
-  const osc = text.match(/\x1b\]8;[^;]*;(https:\/\/claude\.com\/cai\/oauth\/authorize\?[^\x07]+)\x07/)
-  if (osc?.[1]) return osc[1].trim()
-  const stripped = text.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').replace(/\r/g, '')
-  const compact = stripped.replace(/\s+/g, '')
-  const m = compact.match(/https:\/\/claude\.com\/cai\/oauth\/authorize\?[A-Za-z0-9_\-.=&%+]+/)
-  return m ? m[0] : ''
-}
+export const extractSetupTokenAuthUrl = extractCaiAuthorizeUrl
 
 export function extractSetupTokenValue(raw = '') {
   const stripped = String(raw || '').replace(/\x1b(?:\[[0-9;]*[A-Za-z]|].*?(?:\x07|\x1b\\))/g, '')
@@ -115,24 +106,6 @@ export function officialSetupTokenToOauth(token, extra = {}) {
   }
 }
 
-function readJson(file) {
-  try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'))
-  } catch {
-    return null
-  }
-}
-
-function pidAlive(pid) {
-  if (!pid) return false
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch {
-    return false
-  }
-}
-
 function readPidFile(file) {
   try {
     const n = Number(String(fs.readFileSync(file, 'utf8')).trim())
@@ -148,22 +121,7 @@ export function readSetupTokenSession(projectRoot, vmId) {
   if (!status) return null
   const ptyPid = readPidFile(path.join(dir, 'pty.pid'))
   const alive = !!(ptyPid && pidAlive(ptyPid))
-  const expired = Number(status.expires_at || 0) && Date.now() > Number(status.expires_at)
-  return {
-    session_id: status.session_id || '',
-    vm_id: status.vm_id || vmId,
-    status: status.status || '',
-    auth_url: status.auth_url || '',
-    error: status.error || null,
-    code_fed: !!status.code_fed,
-    created_at: status.created_at || 0,
-    updated_at: status.updated_at || 0,
-    expires_at: status.expires_at || 0,
-    flavor: SETUP_TOKEN_FLAVOR,
-    source: SETUP_TOKEN_SOURCE,
-    alive,
-    expired: !!expired,
-  }
+  return ptySessionView(status, vmId, { alive, flavor: SETUP_TOKEN_FLAVOR, source: SETUP_TOKEN_SOURCE })
 }
 
 /** Same official CLI / PKCE pair stays up until the operator force-regenerates. */
@@ -215,20 +173,6 @@ export async function stopClaudeSetupTokenSession(projectRoot, vmId, { spawn = s
     } catch {}
   }
   return { ok: true }
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-async function waitFor(fn, timeoutMs, intervalMs = 200) {
-  const start = Date.now()
-  while (Date.now() - start < timeoutMs) {
-    const value = fn()
-    if (value) return value
-    await sleep(intervalMs)
-  }
-  return null
 }
 
 function ensureCli(projectRoot, vmId) {

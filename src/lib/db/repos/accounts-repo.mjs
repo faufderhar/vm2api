@@ -9,17 +9,9 @@
  */
 
 import { getDb } from '../database.mjs'
+import { parseJsonColumn as parse } from '../database.mjs'
 
 const MAX_ALLOCATIONS_PER_ACCOUNT = 50
-
-function parse(json, fallback = null) {
-  if (json == null) return fallback
-  try {
-    return JSON.parse(json)
-  } catch {
-    return fallback
-  }
-}
 
 const DEFAULT_UNIFIED = () => ({
   '5h': { utilization: 0, reset: null, status: 'active' },

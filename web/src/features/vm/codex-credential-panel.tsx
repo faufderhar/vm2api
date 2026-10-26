@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { Vm } from '@/types/panel-vm'
-import { Copy, ExternalLink, Upload } from 'lucide-react'
+import { Copy, ExternalLink } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { proxyNamedLabel } from '@/lib/vm-status'
@@ -10,7 +10,14 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { dashboardQueryOptions } from '@/features/overview/queries'
 import type { CommitResult } from '@/features/vm/credential-panel'
+import {
+  AccountFileField,
+  Hint,
+  type PickedFile,
+  Seg,
+} from '@/features/vm/credential-panel-parts'
 import { vmQueryOptions } from '@/features/vm/queries'
+import { useMmSsCountdown } from '@/features/vm/use-mmss-countdown'
 
 type CodexImportMode = 'oauth' | 'access_token' | 'refresh_token' | 'json'
 
@@ -33,61 +40,6 @@ const EMPTY_LINK: Link = {
   proxyHint: '',
 }
 
-function Seg({
-  value,
-  onChange,
-  disabled,
-}: {
-  value: CodexImportMode
-  onChange: (next: CodexImportMode) => void
-  disabled?: boolean
-}) {
-  return (
-    <div
-      role='tablist'
-      aria-label='账号添加方式'
-      className='flex flex-wrap items-center gap-1.5'
-    >
-      {MODES.map((option) => (
-        <Button
-          key={option.id}
-          type='button'
-          role='tab'
-          size='sm'
-          aria-selected={value === option.id}
-          disabled={disabled}
-          variant={value === option.id ? 'default' : 'outline'}
-          onClick={() => onChange(option.id)}
-        >
-          {option.label}
-        </Button>
-      ))}
-    </div>
-  )
-}
-
-function Hint({ children }: { children: React.ReactNode }) {
-  return <p className='text-xs text-muted-foreground'>{children}</p>
-}
-
-function fileSizeLabel(bytes: number) {
-  if (bytes < 1024) return `${bytes} B`
-  return `${Math.max(0.1, bytes / 1024).toFixed(1)} KB`
-}
-
-function useCountdown(expiresAt: number) {
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    if (!expiresAt) return
-    const timer = window.setInterval(() => setNow(Date.now()), 1000)
-    return () => window.clearInterval(timer)
-  }, [expiresAt])
-  const left = Math.max(0, Math.floor((expiresAt - now) / 1000))
-  const mm = String(Math.floor(left / 60)).padStart(2, '0')
-  const ss = String(left % 60).padStart(2, '0')
-  return `${mm}:${ss}`
-}
-
 export function CodexCredentialPanel({
   vm,
   onCommitted,
@@ -96,18 +48,14 @@ export function CodexCredentialPanel({
   onCommitted?: (data: CommitResult, vmId: string, what: string) => void
 }) {
   const qc = useQueryClient()
-  const fileRef = useRef<HTMLInputElement>(null)
   const [mode, setMode] = useState<CodexImportMode>('oauth')
   const [text, setText] = useState('')
   const [code, setCode] = useState('')
   const [link, setLink] = useState<Link>(EMPTY_LINK)
   const [fileError, setFileError] = useState('')
-  const [pickedFile, setPickedFile] = useState<{
-    name: string
-    size: number
-  } | null>(null)
+  const [pickedFile, setPickedFile] = useState<PickedFile | null>(null)
 
-  const remaining = useCountdown(link.expiresAt)
+  const remaining = useMmSsCountdown(link.expiresAt)
   const linkReady = !!(link.sessionId && link.authUrl)
   const proxyHint =
     link.proxyHint || (vm.proxy?.host ? proxyNamedLabel(vm.proxy) : '')
@@ -202,26 +150,19 @@ export function CodexCredentialPanel({
   const placeholder =
     '粘贴或上传 Codex CLI ~/.codex/auth.json、CPR 账号文件，或含 accessToken/refreshToken 的 JSON'
 
-  async function onPickFile(file: File | undefined) {
-    setFileError('')
-    if (!file) return
-    try {
-      const raw = await file.text()
-      setText(raw)
-      setPickedFile({ name: file.name, size: file.size })
-    } catch {
-      setPickedFile(null)
-      setFileError('文件读取失败')
-    }
-  }
-
   return (
     <div className='space-y-3'>
       <Hint>
         对齐 Codex Desktop：OAuth 授权或账号文件（auth.json）。不要用 Claude
         sessionKey、Setup Token 或 Console Key。一槽一号。
       </Hint>
-      <Seg value={mode} onChange={setMode} disabled={busy} />
+      <Seg
+        label='账号添加方式'
+        value={mode}
+        options={MODES}
+        onChange={setMode}
+        disabled={busy}
+      />
       {mode === 'oauth' ? (
         linkReady ? (
           <div className='space-y-2'>
@@ -309,78 +250,26 @@ export function CodexCredentialPanel({
         )
       ) : (
         <div className='space-y-2'>
-          <div className='flex flex-wrap items-center justify-between gap-2'>
-            <Label htmlFor='codex-import-text'>
-              {mode === 'access_token'
+          <AccountFileField
+            id='codex-import-text'
+            label={
+              mode === 'access_token'
                 ? 'Access Token'
                 : mode === 'refresh_token'
                   ? 'Refresh Token'
-                  : '账号文件'}
-            </Label>
-            {mode === 'json' ? (
-              <>
-                <input
-                  ref={fileRef}
-                  type='file'
-                  accept='application/json,.json'
-                  className='hidden'
-                  onChange={(event) => {
-                    const file = event.target.files?.[0]
-                    event.target.value = ''
-                    void onPickFile(file)
-                  }}
-                />
-                <Button
-                  type='button'
-                  size='sm'
-                  variant='outline'
-                  disabled={busy}
-                  onClick={() => fileRef.current?.click()}
-                >
-                  <Upload className='size-3.5' aria-hidden='true' />
-                  上传文件
-                </Button>
-              </>
-            ) : null}
-          </div>
-          {pickedFile ? (
-            <div className='flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2'>
-              <div className='min-w-0'>
-                <p className='truncate text-sm'>{pickedFile.name}</p>
-                <p className='text-xs text-muted-foreground'>
-                  {fileSizeLabel(pickedFile.size)} · 已读取，不展示原文
-                </p>
-              </div>
-              <Button
-                type='button'
-                size='sm'
-                variant='ghost'
-                disabled={busy}
-                onClick={() => {
-                  setPickedFile(null)
-                  setText('')
-                  setFileError('')
-                }}
-              >
-                清除
-              </Button>
-            </div>
-          ) : (
-            <Textarea
-              id='codex-import-text'
-              rows={8}
-              value={text}
-              disabled={busy}
-              onChange={(event) => {
-                setFileError('')
-                setText(event.target.value)
-              }}
-              placeholder={placeholder}
-            />
-          )}
-          {fileError ? (
-            <p className='text-xs text-destructive'>{fileError}</p>
-          ) : null}
+                  : '账号文件'
+            }
+            allowUpload={mode === 'json'}
+            rows={8}
+            placeholder={placeholder}
+            busy={busy}
+            text={text}
+            setText={setText}
+            pickedFile={pickedFile}
+            setPickedFile={setPickedFile}
+            fileError={fileError}
+            setFileError={setFileError}
+          />
           <Hint>
             支持 Codex CLI ~/.codex/auth.json、kernel accounts、CPR openai
             文档。仅 OPENAI_API_KEY 的客户端配置不能当 OAuth 导入。

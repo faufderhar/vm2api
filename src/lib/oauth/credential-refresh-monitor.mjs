@@ -8,6 +8,9 @@ import { isLocalEgressProxy } from '../vm/egress.mjs'
 import { proxyBlockedReason } from '../vm/proxy-policy.mjs'
 import { hasRefreshPresence, needsRefresh } from './oauth-credentials.mjs'
 import { isClaudeVm } from '../vm/vm-kind.mjs'
+import { asBool, clampPositiveInt } from '../core/config-values.mjs'
+import { createPeriodicTask } from '../core/periodic-task.mjs'
+import { mapPool } from '../core/map-pool.mjs'
 
 export const DEFAULT_CREDENTIAL_REFRESH = Object.freeze({
   enabled: true,
@@ -19,29 +22,14 @@ export const DEFAULT_CREDENTIAL_REFRESH = Object.freeze({
 
 const HARD_DOWN = new Set(['stopped', 'dead', 'error', 'disabled'])
 
-function clampInt(value, min, max, fallback) {
-  const n = Number(value)
-  if (!Number.isFinite(n) || n <= 0) return fallback
-  return Math.min(max, Math.max(min, Math.round(n)))
-}
-
-function asBool(value, fallback) {
-  if (value == null) return fallback
-  if (typeof value === 'boolean') return value
-  const s = String(value).trim().toLowerCase()
-  if (s === 'true' || s === '1' || s === 'yes' || s === 'on') return true
-  if (s === 'false' || s === '0' || s === 'no' || s === 'off') return false
-  return fallback
-}
-
 export function normalizeCredentialRefreshConfig(raw = {}) {
   const src = raw && typeof raw === 'object' ? raw : {}
   return {
     enabled: asBool(src.enabled, DEFAULT_CREDENTIAL_REFRESH.enabled),
-    interval_sec: clampInt(src.interval_sec, 60, 3600, DEFAULT_CREDENTIAL_REFRESH.interval_sec),
+    interval_sec: clampPositiveInt(src.interval_sec, 60, 3600, DEFAULT_CREDENTIAL_REFRESH.interval_sec),
     run_on_start: asBool(src.run_on_start, DEFAULT_CREDENTIAL_REFRESH.run_on_start),
-    concurrency: clampInt(src.concurrency, 1, 8, DEFAULT_CREDENTIAL_REFRESH.concurrency),
-    timeout_ms: clampInt(src.timeout_ms, 10_000, 180_000, DEFAULT_CREDENTIAL_REFRESH.timeout_ms),
+    concurrency: clampPositiveInt(src.concurrency, 1, 8, DEFAULT_CREDENTIAL_REFRESH.concurrency),
+    timeout_ms: clampPositiveInt(src.timeout_ms, 10_000, 180_000, DEFAULT_CREDENTIAL_REFRESH.timeout_ms),
   }
 }
 
@@ -113,22 +101,8 @@ export function needsScheduledRefresh(vm, now = Date.now()) {
   return needsRefresh(vm?.expires_at || vm?.claude?.expires_at, now)
 }
 
-function mapPool(items, concurrency, fn) {
-  const out = new Array(items.length)
-  let cursor = 0
-  const n = Math.max(1, Math.min(Number(concurrency) || 1, items.length || 1))
-  async function worker() {
-    while (cursor < items.length) {
-      const index = cursor++
-      out[index] = await fn(items[index], index)
-    }
-  }
-  return Promise.all(Array.from({ length: Math.min(n, items.length || 1) }, () => worker())).then(() => out)
-}
-
 export function createCredentialRefreshMonitor(opts = {}) {
   let config = normalizeCredentialRefreshConfig(opts.config)
-  let timer = null
   let inflight = null
   let lastRun = null
   const nowFn = opts.now || (() => Date.now())
@@ -178,27 +152,10 @@ export function createCredentialRefreshMonitor(opts = {}) {
     return inflight
   }
 
-  const stop = () => {
-    if (timer) {
-      clearInterval(timer)
-      timer = null
-    }
-  }
-
-  const start = ({ immediate = false } = {}) => {
-    stop()
-    if (!config.enabled) return { started: false, reason: 'disabled' }
-    timer = setInterval(() => {
-      runOnce().catch(() => {})
-    }, config.interval_sec * 1000)
-    if (typeof timer.unref === 'function') timer.unref()
-    if (immediate && config.run_on_start) {
-      queueMicrotask(() => {
-        runOnce().catch(() => {})
-      })
-    }
-    return { started: true, interval_sec: config.interval_sec, run_on_start: config.run_on_start }
-  }
+  const { start, stop } = createPeriodicTask(
+    () => runOnce(),
+    () => config,
+  )
 
   const setConfig = (next, { restart = true } = {}) => {
     config = normalizeCredentialRefreshConfig(next)

@@ -1,13 +1,5 @@
 import { getDb } from '../database.mjs'
-
-function parse(value, fallback = null) {
-  if (value == null) return fallback
-  try {
-    return JSON.parse(value)
-  } catch {
-    return fallback
-  }
-}
+import { parseJsonColumn as parse } from '../database.mjs'
 
 function rowToAttempt(row) {
   if (!row) return null

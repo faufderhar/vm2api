@@ -7,7 +7,7 @@
  * Normalize() maps primary/secondary by window_minutes like sub2api.
  */
 
-function num(value) {
+export function num(value) {
   if (value == null || value === '') return null
   const n = Number(value)
   return Number.isFinite(n) ? n : null

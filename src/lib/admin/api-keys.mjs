@@ -25,6 +25,8 @@ import { ApiKeysRepo } from '../db/repos/api-keys-repo.mjs'
 import { maybeEncrypt, maybeDecrypt } from '../db/secure.mjs'
 import { calculateCost, normalizeUsage } from './pricing.mjs'
 import { UsersRepo } from '../db/repos/users-repo.mjs'
+import { nowIso } from '../core/clock.mjs'
+import { timingSafeEqualStr } from '../core/security.mjs'
 
 const KEY_PREFIX = 'sk-vm-'
 const HASH_MARKER = 'hmac:'
@@ -83,9 +85,6 @@ function clampInt(n, min, max, fallback) {
   return Math.max(min, Math.min(max, Math.floor(v)))
 }
 
-function nowIso() {
-  return new Date().toISOString()
-}
 function storedKeyScope(scope) {
   return {
     group_type: scope.group_type,
@@ -160,18 +159,6 @@ export function publicKeyView(rec, { reveal = false } = {}) {
     ...keyScopeFromRecord(rec),
     inflight: undefined, // filled by store.snapshot
   }
-}
-
-function timingSafeEqualStr(a, b) {
-  const left = crypto
-    .createHash('sha256')
-    .update(String(a ?? ''), 'utf8')
-    .digest()
-  const right = crypto
-    .createHash('sha256')
-    .update(String(b ?? ''), 'utf8')
-    .digest()
-  return crypto.timingSafeEqual(left, right)
 }
 
 export class ApiKeyStore {

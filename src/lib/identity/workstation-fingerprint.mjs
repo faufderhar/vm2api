@@ -5,7 +5,7 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { US_TIMEZONES, validTimezone } from '../core/timezone.mjs'
+import { validTimezone } from '../core/timezone.mjs'
 import { workstationFamily, workstationKernel, workstationSkuId } from './workstation-profile.mjs'
 
 export const HOSTNAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/

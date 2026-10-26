@@ -6,15 +6,15 @@ import { slotExecArgv } from './slot-exec.mjs'
 
 const runFile = promisify(execFile)
 
-const DMI_KEYS = Object.freeze(['manufacturer', 'product', 'version', 'family', 'serial', 'uuid'])
+export const DMI_KEYS = Object.freeze(['manufacturer', 'product', 'version', 'family', 'serial', 'uuid'])
 
-function textOrNull(value) {
+export function textOrNull(value) {
   if (value == null) return null
   const text = String(value).trim()
   return text ? text : null
 }
 
-function intOrNull(value) {
+export function intOrNull(value) {
   if (value == null || value === '') return null
   const n = typeof value === 'number' ? value : Number.parseInt(String(value), 10)
   if (!Number.isFinite(n) || n < 0) return null

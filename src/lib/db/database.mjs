@@ -104,6 +104,16 @@ function reconcileHistorical001ProxySchema(db, checksum) {
 let _db = null
 let _dbPath = null
 
+/** A JSON text column, or `fallback` when it is null or not valid JSON. */
+export function parseJsonColumn(value, fallback = null) {
+  if (value == null) return fallback
+  try {
+    return JSON.parse(value)
+  } catch {
+    return fallback
+  }
+}
+
 export function resolveDbPath({ dataDir, dbPath } = {}) {
   if (dbPath) return dbPath
   if (process.env.KIN_DB_PATH) return process.env.KIN_DB_PATH

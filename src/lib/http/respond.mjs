@@ -3,7 +3,7 @@
  * and optionally disable Nagle so Claude Code subagent tokens are not delayed.
  */
 import { ErrorCode, ErrorType, makeError } from '../core/errors.mjs'
-import { CORS_ALLOW_HEADERS, corsHeadersForRequest } from './cors.mjs'
+import { corsHeadersForRequest } from './cors.mjs'
 
 export { CORS_ALLOW_HEADERS } from './cors.mjs'
 

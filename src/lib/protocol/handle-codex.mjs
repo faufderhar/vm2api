@@ -7,7 +7,6 @@ import { isValidVmId } from '../vm/vm-file.mjs'
 import { isCodexProtocolAllowed, isCodexVm, normalizeCodexRouting } from './codex-route.mjs'
 import { keyAllowsVm, keyScopeFromRequest, vmPoolDenial } from '../admin/key-scope.mjs'
 import { ownerScopeFromRequest, vmMatchesOwnerScope } from '../admin/resource-owner.mjs'
-import { normalizeOpenAIQuotaPolicy } from '../pool/openai-quota-policy.mjs'
 import { restrictCodexClient } from './codex-restriction.mjs'
 import {
   responsesSseToChatChunk,
@@ -75,6 +74,7 @@ import {
   resolveOutboundSessionId,
 } from '../identity/identity-rewrite.mjs'
 import { clientIp } from '../pool/sticky-router.mjs'
+import { clientGoneSignal } from './client-gone.mjs'
 
 // Official Codex client headers for ChatGPT Responses. Auth is attached by the kernel.
 const CODEX_KERNEL_HEADER_ALLOWLIST = Object.freeze([
@@ -445,20 +445,6 @@ function codexWaitTimeoutMs(routing) {
   const n = Number(routing?.pool?.fallback_wait_timeout_ms)
   if (!Number.isFinite(n)) return DEFAULT_WAIT_TIMEOUT_MS
   return Math.min(WAIT_TIMEOUT_MAX_MS, Math.max(WAIT_TIMEOUT_MIN_MS, n))
-}
-
-function clientGoneSignal(req, res) {
-  const controller = new AbortController()
-  const onGone = () => controller.abort()
-  req?.once?.('aborted', onGone)
-  res?.once?.('close', onGone)
-  return {
-    signal: controller.signal,
-    settle() {
-      req?.off?.('aborted', onGone)
-      res?.off?.('close', onGone)
-    },
-  }
 }
 
 /**
