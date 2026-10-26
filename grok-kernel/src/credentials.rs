@@ -18,6 +18,9 @@ pub struct Account {
     pub refresh_token: String,
     pub id_token: String,
     pub expires_at_ms: Option<i64>,
+    /// The xAI account id (`x-grok-user-id`, refresh `principal_id`). Node stores it
+    /// as `account_id`; older files fall back to the token's `sub` claim.
+    pub user_id: Option<String>,
 }
 
 pub fn read_account(path: &Path) -> Result<Account, String> {
@@ -33,11 +36,19 @@ pub fn read_account(path: &Path) -> Result<Account, String> {
     if access_token.is_empty() && refresh_token.is_empty() {
         return Err("grok_no_credential".to_string());
     }
+    let id_token = text_field(row, "id_token");
+    let stored = text_field(row, "account_id");
+    let user_id = if stored.is_empty() {
+        jwt_sub(&id_token).or_else(|| jwt_sub(&access_token))
+    } else {
+        Some(stored)
+    };
     Ok(Account {
         access_token,
         refresh_token,
-        id_token: text_field(row, "id_token"),
+        id_token,
         expires_at_ms: number_field(row, "expires_at"),
+        user_id,
     })
 }
 
@@ -80,6 +91,49 @@ pub fn write_tokens(
     atomic_write(path, rendered.as_bytes())
 }
 
+/// The account id for headers, or None when the file has none.
+pub fn read_user_id(path: &Path) -> Option<String> {
+    read_account(path).ok().and_then(|account| account.user_id)
+}
+
+/// `sub` of an unverified JWT. Only used to name the account to its own upstream.
+pub fn jwt_sub(token: &str) -> Option<String> {
+    let payload = token.split('.').nth(1)?;
+    let bytes = base64url_decode(payload)?;
+    let claims: Value = serde_json::from_slice(&bytes).ok()?;
+    let sub = claims.get("sub")?.as_str()?.trim();
+    if sub.is_empty() {
+        None
+    } else {
+        Some(sub.to_string())
+    }
+}
+
+fn base64url_decode(text: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(text.len() * 3 / 4);
+    let mut buffer: u32 = 0;
+    let mut bits = 0;
+    for byte in text.bytes() {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'-' | b'+' => 62,
+            b'_' | b'/' => 63,
+            b'=' => break,
+            _ => return None,
+        } as u32;
+        buffer = (buffer << 6) | value;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buffer >> bits) as u8);
+            buffer &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
+}
+
 pub fn load_agent_id(path: &Path) -> String {
     if let Ok(text) = fs::read_to_string(path) {
         let trimmed = text.trim();
@@ -87,6 +141,7 @@ pub fn load_agent_id(path: &Path) -> String {
             return trimmed.to_string();
         }
     }
+    // A new install: random once, then stable. Headers send it as a v5 UUID.
     let id = Uuid::new_v4().to_string();
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
@@ -211,4 +266,39 @@ fn iso_now() -> String {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     format!("{secs}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn jwt_sub_reads_the_unverified_claim() {
+        // {"sub":"user-1","email":"someone@example.com"}
+        let token = "e30.eyJzdWIiOiJ1c2VyLTEiLCJlbWFpbCI6InNvbWVvbmVAZXhhbXBsZS5jb20ifQ.sig";
+        assert_eq!(jwt_sub(token).as_deref(), Some("user-1"));
+        assert_eq!(jwt_sub("opaque-token"), None);
+        assert_eq!(jwt_sub(""), None);
+    }
+
+    #[test]
+    fn the_stored_account_id_wins_over_the_token_claim() {
+        let dir = std::env::temp_dir().join(format!("grok-cred-{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cred.json");
+        let token = "e30.eyJzdWIiOiJ1c2VyLTEifQ.sig";
+        fs::write(
+            &path,
+            json!({"accounts":[{"access_token": token}]}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(read_user_id(&path).as_deref(), Some("user-1"));
+        fs::write(
+            &path,
+            json!({"accounts":[{"access_token": token, "account_id": "acct-2"}]}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(read_user_id(&path).as_deref(), Some("acct-2"));
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

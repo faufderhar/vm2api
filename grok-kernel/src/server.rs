@@ -1,8 +1,8 @@
 use crate::config::Config;
 use crate::credentials;
 use crate::headers::{
-    billing_headers, inference_headers, models_headers, HeaderList, InferenceHeaderInput,
-    PlatformInfo,
+    agent_uuid, billing_headers, conv_group_uuid, inference_headers, models_headers, HeaderList,
+    InferenceHeaderInput, PlatformInfo,
 };
 use crate::oauth::{self, token_needs_refresh};
 use axum::body::Body;
@@ -143,6 +143,12 @@ pub struct Envelope {
     pub request_id: String,
     #[serde(default)]
     pub agent_id: String,
+    /// 1-based user turn in this conversation. Empty: 1.
+    #[serde(default)]
+    pub turn_idx: String,
+    /// Node's stable conversation-group id. Empty: derived from agent and session.
+    #[serde(default)]
+    pub conv_group_id: String,
 }
 /// `POST /internal/oauth`. Every auth.x.ai call for a slot leaves through this
 /// kernel, so login, polling and refresh share its client and exit.
@@ -373,20 +379,28 @@ fn platform_of(app: &App, rt: &Runtime) -> PlatformInfo {
         .unwrap_or_else(|| app.platform.clone())
 }
 fn headers_for(app: &App, rt: &Runtime, envelope: &Envelope, token: &str) -> HeaderList {
+    let user_id = credentials::read_user_id(&rt.config.credentials_path);
     match envelope.purpose.as_str() {
-        "models" => models_headers(token, &platform_of(app, rt)),
-        "billing" => billing_headers(token, &platform_of(app, rt)),
+        "models" => models_headers(token, &user_id, &platform_of(app, rt)),
+        "billing" => billing_headers(token, &user_id, &platform_of(app, rt)),
         _ => {
             let request_id = if envelope.request_id.is_empty() {
                 Uuid::new_v4().to_string()
             } else {
                 envelope.request_id.clone()
             };
-            let agent_id = if envelope.agent_id.is_empty() {
+            let seed = if envelope.agent_id.is_empty() {
                 credentials::load_agent_id(&rt.config.agent_id_path)
             } else {
                 envelope.agent_id.clone()
             };
+            let agent_id = agent_uuid(&seed);
+            let conv_group_id = if envelope.conv_group_id.trim().is_empty() {
+                conv_group_uuid(&agent_id, &envelope.session_id)
+            } else {
+                envelope.conv_group_id.trim().to_string()
+            };
+            let turn_idx = envelope.turn_idx.trim();
             inference_headers(
                 &InferenceHeaderInput {
                     access_token: token.to_string(),
@@ -394,6 +408,9 @@ fn headers_for(app: &App, rt: &Runtime, envelope: &Envelope, token: &str) -> Hea
                     request_id,
                     model_id: envelope.model_id.clone(),
                     agent_id,
+                    turn_idx: Some(if turn_idx.is_empty() { "1" } else { turn_idx }.to_string()),
+                    user_id,
+                    conv_group_id: Some(conv_group_id),
                     ..InferenceHeaderInput::default()
                 },
                 &platform_of(app, rt),
@@ -676,7 +693,7 @@ mod tests {
         let headers = headers_for(&app, &app.runtime(), &envelope, "t");
         assert_eq!(
             headers.get("user-agent"),
-            Some("grok-shell/1.0.62 (macos; aarch64)")
+            Some("grok-shell/1.0.70 (macos; aarch64)")
         );
         // Without a pin the kernel reports its own host.
         text.as_object_mut().unwrap().remove("platform");
@@ -684,7 +701,7 @@ mod tests {
         let headers = headers_for(&app, &app.runtime(), &envelope, "t");
         assert_eq!(
             headers.get("user-agent"),
-            Some("grok-shell/1.0.62 (linux; x86_64)")
+            Some("grok-shell/1.0.70 (linux; x86_64)")
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -746,6 +763,8 @@ mod tests {
             model_id: "grok-4".to_string(),
             request_id: "req".to_string(),
             agent_id: "agent".to_string(),
+            turn_idx: String::new(),
+            conv_group_id: String::new(),
         };
         let failure = dispatch(&app, envelope)
             .await
