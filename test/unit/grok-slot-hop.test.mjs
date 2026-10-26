@@ -235,6 +235,10 @@ test('a prefixed model goes upstream bare; a model the panel turned off is refus
   assert.equal(envelopes[0].body.model, 'grok-4.3')
   assert.equal(envelopes[0].model_id, 'grok-4.3')
   assert.equal(ok.logBag.upstream_model, 'grok-4.3')
+  // No login email on this slot: the account column falls back to the slot id.
+  assert.equal(ok.logBag.vm_id, 'vm-g2')
+  assert.equal(ok.logBag.account_id, 'vm-g2')
+  assert.equal(ok.logBag.final_account_id, 'vm-g2')
   const off = await run('grok-4.5')
   assert.equal(off.status, 400)
   assert.equal(off.payload.error.code, 'model_disabled')
@@ -354,4 +358,27 @@ test('upstream always streams; a non-stream caller gets the stream folded back',
   assert.equal(sentResponses.body.prompt_cache_key, sentResponses.session_id)
   assert.notEqual(sentResponses.body.prompt_cache_key, 'caller-key')
   assert.equal(sentResponses.turn_idx, '1')
+})
+
+test('the request log names the xAI login a Grok hop used', async (t) => {
+  const fs = await import('node:fs')
+  const os = await import('node:os')
+  const path = await import('node:path')
+  const { grokLogAccountId } = await import('../../src/lib/protocol/handle-grok.mjs')
+  const { upsertGrokAccount } = await import('../../src/lib/vm/grok-slot.mjs')
+  const { toUsageLogRow } = await import('../../src/lib/db/repos/usage-logs-view.mjs')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'grok-log-account-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const vm = { id: 'vm-g3', platform: 'xai', grok: {} }
+  assert.equal(grokLogAccountId(root, vm), 'vm-g3')
+  assert.equal(grokLogAccountId(root, { ...vm, grok: { account_id: 'xai-acct-1' } }), 'xai-acct-1')
+  assert.equal(grokLogAccountId(root, { ...vm, grok: { email: 'bag@example.com', account_id: 'x' } }), 'bag@example.com')
+  upsertGrokAccount(root, 'vm-g3', { access_token: 'at', refresh_token: 'rt', email: 'login@example.com' })
+  assert.equal(grokLogAccountId(root, { ...vm, grok: { email: 'stale@example.com' } }), 'login@example.com')
+  assert.equal(grokLogAccountId(null, null), null)
+
+  const names = { users: new Map(), keys: new Map(), vms: new Map(), accounts: new Map() }
+  const row = toUsageLogRow({ id: 1, created_at: '2026-10-25T00:00:00Z', vm_id: 'vm-g3', account_id: 'login@example.com', final_account_id: 'login@example.com' }, names)
+  assert.equal(row.providerName, 'login@example.com')
+  assert.equal(row.accountId, 'login@example.com')
 })

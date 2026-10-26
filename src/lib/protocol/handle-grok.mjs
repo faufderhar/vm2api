@@ -25,7 +25,7 @@ import { ensureGrokKernel, trackGrokKernel, writeGrokKernelConfig } from '../tra
 import { hostProxyUrlForVm } from '../vm/slot-host.mjs'
 import { assertKernelProxyResolved } from '../vm/proxy-policy.mjs'
 import { grokKernelExit } from '../oauth/grok-kernel-oauth.mjs'
-import { persistGrokRateLimit, persistGrokRefreshRejected } from '../vm/grok-slot.mjs'
+import { persistGrokRateLimit, persistGrokRefreshRejected, readGrokAccount } from '../vm/grok-slot.mjs'
 import { scopeAccountFromVm } from './jev-intercept.mjs'
 import {
   grokSlotAllowsModel,
@@ -86,6 +86,21 @@ function pinnedVmId(req) {
   const raw = String(req?.headers?.['x-kin-vm'] || '').trim()
   if (req?.apiKeyKind !== 'master') return null
   return isValidVmId(raw) ? raw : null
+}
+
+/**
+ * The account a Grok hop bills, for the request log's account column. Claude rows resolve
+ * their account uuid to an email through the accounts table; Grok slots have no row there,
+ * so the hop logs the xAI login itself: email, else xAI account id, else the slot id.
+ */
+export function grokLogAccountId(projectRoot, vm) {
+  const bag = vm?.grok && typeof vm.grok === 'object' ? vm.grok : {}
+  let account = null
+  try {
+    account = projectRoot && vm?.id ? readGrokAccount(projectRoot, vm.id) : null
+  } catch {}
+  const pick = (...values) => values.map((v) => (typeof v === 'string' ? v.trim() : '')).find(Boolean) || ''
+  return pick(account?.email, bag.email, account?.account_id, bag.account_id, vm?.id) || null
 }
 
 /**
@@ -726,6 +741,8 @@ export async function handleGrokProtocol({
       }
       if (accountGate) {
         logBag.vm_id = vm.id
+        logBag.final_account_id = grokLogAccountId(projectRoot, vm)
+        if (!logBag.account_id) logBag.account_id = logBag.final_account_id
         if (await accountGate(scopeAccountFromVm(vm))) {
           lease.release()
           return
@@ -770,7 +787,11 @@ export async function handleGrokProtocol({
       }
       try {
         hops += 1
+        const accountId = grokLogAccountId(projectRoot, vm)
         logBag.vm_id = vm.id
+        // account_id is the first account tried, final_account_id the one that served.
+        if (!logBag.account_id) logBag.account_id = accountId
+        logBag.final_account_id = accountId
         logBag.attempt_count = hops
         const usage = createUsageTracker(shape)
         const nameSseEvent = createResponsesSseEventNamer()
@@ -831,7 +852,7 @@ export async function handleGrokProtocol({
         const recordAttempt = (startedAt, result) =>
           noteGrokAttempt(attemptsRepo, ops.requestId, hops, {
             vmId: vm.id,
-            accountId: vm.id,
+            accountId,
             model: outbound.body?.model,
             selectionReason,
             startedAt,
