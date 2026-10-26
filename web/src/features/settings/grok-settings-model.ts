@@ -142,7 +142,7 @@ export type GrokView = {
   maxSessions: number
   billingBackground: boolean
   billingIntervalMin: number
-  /** 优先使用临近重置（period_end）的账号，默认开。 */
+  /** 优先使用周额度临近重置的账号，默认开。 */
   resetPriority: boolean
   /** 会话空闲多久后可换号（秒），默认 300。 */
   resetPriorityIdleSec: number

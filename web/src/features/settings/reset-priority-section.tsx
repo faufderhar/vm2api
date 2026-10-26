@@ -13,17 +13,20 @@ export function ResetPrioritySection({
   resetLabel,
   defaultIdleSec,
   idleReason,
+  resetNote,
   saving = false,
   label,
 }: {
   block: Block
   /** 只回传两项平铺字段，调用方合并进自己的段。 */
   onChange: (patch: Block) => void
-  /** 例如「7 天额度窗口」「Grok Build 账单周期」。 */
+  /** 例如「7 天额度窗口」「Grok Build 周额度重置」。 */
   resetLabel: string
   defaultIdleSec: number
   /** 默认空闲时间的来由，一句话。 */
   idleReason: string
+  /** 补充说明重置时间的来源，可选。 */
+  resetNote?: string
   saving?: boolean
   /** 无障碍名前缀，例如 GPT / Grok。 */
   label: string
@@ -33,7 +36,7 @@ export function ResetPrioritySection({
     <PaneSection
       icon={CalendarClock}
       title='优先使用临近重置的账号'
-      desc={`${resetLabel}越早重置的账号越先用；剩余额度不足 5%、没有重置数据或重置时间已过的账号按原顺序。槽位权重分档仍然优先，限流、冷却、停用的账号照旧不参与。`}
+      desc={`${resetLabel}越早重置的账号越先用；剩余额度不足 5%、没有重置数据或重置时间已过的账号按原顺序。槽位权重分档仍然优先，限流、冷却、停用的账号照旧不参与。${resetNote ? ` ${resetNote}` : ''}`}
       aside={
         <Switch
           checked={view.enabled}

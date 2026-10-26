@@ -37,13 +37,44 @@ function buildUsageOf(vm) {
   return usage && typeof usage === 'object' ? usage : null
 }
 
+/**
+ * Which reset the Grok reset priority follows. The credits document's
+ * `currentPeriod` is the shared weekly pool (`type: USAGE_PERIOD_TYPE_WEEKLY`);
+ * the official client shows its `end` as "Resets:" under "Weekly limit" and only
+ * falls back to the deprecated `billingPeriodEnd`. The parser stores that same
+ * chain in `period_end` and the type in `period_type`, so: weekly when the type
+ * says so, else whatever period end was reported (monthly or legacy).
+ */
+export function grokResetWindow(vm) {
+  const usage = buildUsageOf(vm)
+  if (!usage?.period_end) return null
+  const weekly = /WEEKLY/i.test(String(usage.period_type || ''))
+  return { at: usage.period_end, kind: weekly ? 'weekly' : 'period' }
+}
+
+/** Share of the current (weekly) pool left, 0..1; null when the percent was not reported. */
+function grokPoolRemaining(usage) {
+  // A percent derived from on-demand counters is not the included pool.
+  if (usage.credit_usage_source === 'on_demand') return null
+  const used = Number(usage.credit_usage_percent)
+  if (usage.credit_usage_percent == null || !Number.isFinite(used)) return null
+  return 1 - Math.min(100, Math.max(0, used)) / 100
+}
+
+/** Deprecated monthly included budget spent in full. */
+function grokMonthlyExhausted(usage) {
+  const limit = Number(usage.monthly_limit)
+  const used = Number(usage.included_used)
+  return Number.isFinite(limit) && limit > 0 && Number.isFinite(used) && used >= limit
+}
+
 export function grokResetBoostAt(vm, now = Date.now()) {
   const usage = buildUsageOf(vm)
-  // A failed read keeps the last numbers; an elapsed period_end still earns nothing.
+  // A failed read keeps the last numbers; an elapsed reset still earns nothing.
   if (!usage) return null
-  const used = Number(usage.credit_usage_percent)
-  const remaining = Number.isFinite(used) ? 1 - Math.min(100, Math.max(0, used)) / 100 : null
-  return resetBoostAt(usage.period_end, remaining, now)
+  const window = grokResetWindow(vm)
+  if (!window || grokMonthlyExhausted(usage)) return null
+  return resetBoostAt(window.at, grokPoolRemaining(usage), now)
 }
 
 function expiresAtOf(vm) {
@@ -103,7 +134,8 @@ export function grokAccountCandidate(vm, now = Date.now(), signals = null, polic
     quotaResetAt: limitedUntilOf(vm),
     quotaRemainingRank: null,
     window7dAt: vm?.reset_7d || null,
-    // reset_first: the monthly Grok Build billing period end, with at least 5% credit left.
+    // reset_first: the weekly pool reset (fallback: reported period end), with at least
+    // 5% of the pool left and the monthly included budget not spent.
     resetBoostAt: grokResetBoostAt(vm, now),
     failureRateBps: runtime.failureRateBps || 0,
     firstOutputLatencyMs: runtime.firstOutputLatencyMs ?? null,

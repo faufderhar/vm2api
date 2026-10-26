@@ -22,7 +22,8 @@ import {
 import { orderOpenAIAccounts } from '../../src/lib/pool/openai-account-selector.mjs'
 import { resetOpenAIAccountRuntime, grokRuntime } from '../../src/lib/pool/openai-account-runtime.mjs'
 import { codexAccountCandidate, orderCodexSessionSlots } from '../../src/lib/pool/codex-slot-pool.mjs'
-import { grokResetBoostAt, orderGrokSessionSlots } from '../../src/lib/pool/grok-slot-pool.mjs'
+import { grokResetBoostAt, grokResetWindow, orderGrokSessionSlots } from '../../src/lib/pool/grok-slot-pool.mjs'
+import { parseGrokBuildBilling } from '../../src/lib/oauth/grok-build-usage.mjs'
 import { rankSeatCandidates } from '../../src/lib/pool/seat-planner.mjs'
 import { PoolScheduler, normalizePoolRouting } from '../../src/lib/pool/pool-scheduler.mjs'
 import { FailoverRunner } from '../../src/lib/pool/failover-runner.mjs'
@@ -255,7 +256,40 @@ function grok(id, buildUsage = null) {
   }
 }
 
-test('Grok candidate reads the Grok Build billing period end', () => {
+test('Grok follows the weekly pool reset from the credits document', () => {
+  const now = Date.parse('2026-10-26T00:00:00.000Z')
+  const weekEnd = new Date(now + 3 * DAY).toISOString()
+  const monthEnd = new Date(now + 20 * DAY).toISOString()
+  // Shape of the official credits document: currentPeriod is the weekly pool,
+  // billingPeriodEnd the deprecated monthly cycle.
+  const usage = parseGrokBuildBilling({
+    config: {
+      creditUsagePercent: 40,
+      currentPeriod: { type: 'USAGE_PERIOD_TYPE_WEEKLY', start: new Date(now - 4 * DAY).toISOString(), end: weekEnd },
+      billingPeriodStart: new Date(now - 10 * DAY).toISOString(),
+      billingPeriodEnd: monthEnd,
+    },
+  })
+  const vm = grok('w', usage)
+  assert.deepEqual(grokResetWindow(vm), { at: weekEnd, kind: 'weekly' })
+  assert.equal(grokResetBoostAt(vm, now), now + 3 * DAY)
+  // Under 5% of the weekly pool left: no boost.
+  assert.equal(grokResetBoostAt(grok('w', { ...usage, credit_usage_percent: 95.5 }), now), null)
+  // No currentPeriod: falls back to the reported (legacy monthly) period end.
+  const legacy = parseGrokBuildBilling({ config: { creditUsagePercent: 10, billingPeriodEnd: monthEnd } })
+  assert.deepEqual(grokResetWindow(grok('l', legacy)), { at: monthEnd, kind: 'period' })
+  assert.equal(grokResetBoostAt(grok('l', legacy), now), now + 20 * DAY)
+  // Monthly included budget spent: no boost even with weekly room.
+  assert.equal(grokResetBoostAt(grok('m', { ...usage, monthly_limit: 20, included_used: 20 }), now), null)
+  assert.equal(grokResetBoostAt(grok('m', { ...usage, monthly_limit: 20, included_used: 5 }), now), now + 3 * DAY)
+  // A percent derived from on-demand counters does not gate the pool.
+  assert.equal(
+    grokResetBoostAt(grok('o', { ...usage, credit_usage_percent: 99, credit_usage_source: 'on_demand' }), now),
+    now + 3 * DAY,
+  )
+})
+
+test('Grok candidate reads the reported period end', () => {
   const now = Date.parse('2026-10-26T00:00:00.000Z')
   const end = new Date(now + 5 * DAY).toISOString()
   assert.equal(grokResetBoostAt(grok('a', { period_end: end, credit_usage_percent: 30 }), now), now + 5 * DAY)

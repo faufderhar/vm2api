@@ -2,7 +2,8 @@
  * Reset-first account ordering ("优先使用临近重置的账号").
  *
  * Each provider names one reset clock: Claude and Codex the 7d usage window,
- * Grok the monthly billing period end. An account whose clock is in the future
+ * Grok the weekly pool reset (credits `currentPeriod.end`, falling back to the
+ * reported period end). An account whose clock is in the future
  * and that still has at least MIN_REMAINING of its quota gets a boost: the
  * earlier its reset hour, the sooner it is picked. Everything else (no data,
  * an elapsed reset, under 5% left) keeps the provider's existing order.
