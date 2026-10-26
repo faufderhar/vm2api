@@ -13,6 +13,7 @@ import {
 import { isLeftoverQuotaScheduleOff, isQuotaWindowReason } from './availability.mjs'
 import { orderOpenAIAccounts } from './openai-account-selector.mjs'
 import { compareWindow7dAsc } from './refresh-order.mjs'
+import { resetBoostAt } from './reset-priority.mjs'
 import { expiresAtToMs } from '../oauth/oauth-credentials.mjs'
 import {
   bumpOpenAICursor,
@@ -203,6 +204,8 @@ export function codexSlotAllowsModel(vm, model) {
 export function codexAccountCandidate(vm, now = Date.now(), signals = null, policy = null) {
   const runtime = signals || openAIRuntimeSignals(vm?.id, now)
   const effective = effectiveOpenAIPolicy(vm, normalizeOpenAIQuotaPolicy(policy))
+  const remainingRank = quotaRemainingRank(vm)
+  const window7dAt = window7dResetOf(vm)
   return {
     id: vm.id,
     weight: Number(vm?.policy?.weight ?? vm?.weight ?? 1) || 1,
@@ -215,8 +218,10 @@ export function codexAccountCandidate(vm, now = Date.now(), signals = null, poli
     inFlight: runtime.inFlight || 0,
     lastStartedAt: runtime.lastStartedAt ?? null,
     quotaResetAt: quotaResetAt(vm),
-    quotaRemainingRank: quotaRemainingRank(vm),
-    window7dAt: window7dResetOf(vm),
+    quotaRemainingRank: remainingRank,
+    window7dAt,
+    // reset_first: a future 7d reset with at least 5% left. Elapsed = stale, no boost.
+    resetBoostAt: resetBoostAt(window7dAt, remainingRank == null ? null : remainingRank / 10_000, now),
     failureRateBps: runtime.failureRateBps || 0,
     firstOutputLatencyMs: runtime.firstOutputLatencyMs ?? null,
   }

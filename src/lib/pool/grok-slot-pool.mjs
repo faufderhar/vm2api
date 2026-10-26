@@ -7,6 +7,7 @@ import { isGrokVm } from '../vm/vm-kind.mjs'
 import { isLeftoverQuotaScheduleOff } from './availability.mjs'
 import { orderOpenAIAccounts } from './openai-account-selector.mjs'
 import { compareWindow7dAsc } from './refresh-order.mjs'
+import { resetBoostAt } from './reset-priority.mjs'
 import { grokRuntime } from './openai-account-runtime.mjs'
 import { modelMatchesAllowlist } from './slot-model-gate.mjs'
 import { proxyBlockedReason } from '../vm/proxy-policy.mjs'
@@ -28,6 +29,21 @@ function authErrorOf(vm) {
 function limitedUntilOf(vm) {
   const at = Number(vm?.grok_limited_until ?? bagOf(vm).limited_until)
   return Number.isFinite(at) && at > 0 ? at : null
+}
+
+/** Last Grok Build billing read: the summary copy, or the stored bag. */
+function buildUsageOf(vm) {
+  const usage = vm?.grok_build || bagOf(vm).build_usage
+  return usage && typeof usage === 'object' ? usage : null
+}
+
+export function grokResetBoostAt(vm, now = Date.now()) {
+  const usage = buildUsageOf(vm)
+  // A failed read keeps the last numbers; an elapsed period_end still earns nothing.
+  if (!usage) return null
+  const used = Number(usage.credit_usage_percent)
+  const remaining = Number.isFinite(used) ? 1 - Math.min(100, Math.max(0, used)) / 100 : null
+  return resetBoostAt(usage.period_end, remaining, now)
 }
 
 function expiresAtOf(vm) {
@@ -87,6 +103,8 @@ export function grokAccountCandidate(vm, now = Date.now(), signals = null, polic
     quotaResetAt: limitedUntilOf(vm),
     quotaRemainingRank: null,
     window7dAt: vm?.reset_7d || null,
+    // reset_first: the monthly Grok Build billing period end, with at least 5% credit left.
+    resetBoostAt: grokResetBoostAt(vm, now),
     failureRateBps: runtime.failureRateBps || 0,
     firstOutputLatencyMs: runtime.firstOutputLatencyMs ?? null,
   }

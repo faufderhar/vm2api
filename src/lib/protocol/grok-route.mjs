@@ -6,6 +6,7 @@
  */
 import { normalizeGrokQuotaPolicy, validateGrokQuotaPatch } from '../pool/openai-quota-policy.mjs'
 import { typedError } from '../core/errors.mjs'
+import { normalizeResetPriorityFields, resetPriorityPatchError } from '../pool/reset-priority.mjs'
 
 /** Grok Build CLI chat proxy. Paths append `/v1/chat/completions` and `/v1/responses`. */
 export const DEFAULT_GROK_BASE_URL = 'https://cli-chat-proxy.grok.com'
@@ -55,6 +56,8 @@ export const DEFAULT_GROK_ROUTING = Object.freeze({
   billing: { background: true, min_interval_sec: 1800 },
   // Official /v1/settings `inference_idle_timeout_secs` (3600 on 1.0.70).
   inference: { idle_timeout_sec: 3600 },
+  // Prefer accounts whose Grok Build billing period ends soonest; idle sessions may re-pick.
+  ...normalizeResetPriorityFields(),
 })
 
 /**
@@ -201,6 +204,7 @@ export function normalizeGrokRouting(raw = {}) {
     quota: normalizeGrokQuotaPolicy(src.quota),
     billing: normalizeBilling(src.billing),
     inference: normalizeInference(src.inference),
+    ...normalizeResetPriorityFields(src),
   }
 }
 
@@ -212,6 +216,8 @@ export function validateGrokRoutingPatch(body = {}) {
   if (Object.prototype.hasOwnProperty.call(grok, 'enabled') && typeof grok.enabled !== 'boolean') {
     throw typedError('grok.enabled 必须是布尔', 'invalid_grok')
   }
+  const resetError = resetPriorityPatchError(grok, 'grok')
+  if (resetError) throw typedError(resetError, 'invalid_grok_reset_priority')
   if (Object.prototype.hasOwnProperty.call(grok, 'base_url') && !isGrokBaseUrl(str(grok.base_url))) {
     throw typedError('grok.base_url 必须是 https://*.grok.com 或 https://*.x.ai', 'invalid_grok_base_url')
   }

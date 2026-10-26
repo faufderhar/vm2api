@@ -5,6 +5,7 @@ import { isCodexVm } from '../vm/vm-kind.mjs'
 import { normalizeOpenAIQuotaPolicy } from '../pool/openai-quota-policy.mjs'
 import { normalizeCodexModelMappings, validateCodexModelMappingsPatch } from './codex-model-mapping.mjs'
 import { typedError } from '../core/errors.mjs'
+import { normalizeResetPriorityFields, resetPriorityPatchError } from '../pool/reset-priority.mjs'
 
 export { isCodexVm, normalizeVmKind } from '../vm/vm-kind.mjs'
 
@@ -41,6 +42,8 @@ export const DEFAULT_CODEX_ROUTING = Object.freeze({
     unknown: 'allow',
   },
   quota: normalizeOpenAIQuotaPolicy(),
+  // Prefer accounts whose 7d window resets soonest; idle sessions may re-pick.
+  ...normalizeResetPriorityFields(),
 })
 
 function asObject(raw) {
@@ -88,6 +91,8 @@ export function validateInferenceWebsocketPatch(body = {}) {
       throw typedError('codex.upstream_transport 必须是 prefer_websocket 或 http', 'invalid_upstream_transport')
     }
   }
+  const resetError = resetPriorityPatchError(codex, 'codex')
+  if (resetError) throw typedError(resetError, 'invalid_codex_reset_priority')
   if (Object.prototype.hasOwnProperty.call(codex, 'user_agent')) {
     if (typeof codex.user_agent !== 'string' || !codex.user_agent.trim()) {
       throw typedError('codex.user_agent 必须是非空字符串', 'invalid_user_agent')
@@ -144,6 +149,7 @@ export function normalizeCodexRouting(raw = {}) {
     clients,
     quota: normalizeOpenAIQuotaPolicy(src.quota),
     model_mappings: normalizeCodexModelMappings(src.model_mappings),
+    ...normalizeResetPriorityFields(src),
   }
 }
 

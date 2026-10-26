@@ -51,6 +51,7 @@ import {
 import { assembleGrokNonStreamBody, grokStreamFailure } from './grok-sse-assemble.mjs'
 import { anthropicToGrokResponses } from './grok-convert.mjs'
 import { clientGoneSignal } from './client-gone.mjs'
+import { boundSessionIdle, resetPriorityOf, sessionActivity } from '../pool/reset-priority.mjs'
 
 export const GROK_VIA = 'grok-kernel'
 
@@ -387,11 +388,13 @@ function noteGrokAttempt(repo, requestId, attemptNo, fields) {
 export function pickGrokCandidates(
   projectRoot,
   req,
-  { stickyRouter = null, sessions = null, body = null, excluded = null, routing = {} } = {},
+  { stickyRouter = null, sessions = null, body = null, excluded = null, routing = {}, activity = sessionActivity } = {},
 ) {
   const pin = pinnedVmId(req)
   const model = body?.model || null
-  const quotaPolicy = grokRoutingOf(routing).quota
+  const grokRouting = grokRoutingOf(routing)
+  const quotaPolicy = grokRouting.quota
+  const resetFirst = resetPriorityOf(grokRouting)
   const scope = keyScopeFromRequest(req)
   const poolDenial = vmPoolDenial(scope)
   if (poolDenial) return { error: 'vm_pool_unavailable', message: poolDenial.message, ids: [], candidates: [] }
@@ -409,9 +412,18 @@ export function pickGrokCandidates(
   }
   const stickyKeys = stickyRouter?.collectPoolKeys?.(req, body || {}, { platform: 'xai' }) || []
   const sessionKey = stickyRouter?.extractPoolKey?.(req, body || {}, { platform: 'xai' }) || stickyKeys[0] || null
-  const bound = sessionKey ? stickyRouter?.resolve?.(sessionKey) : null
+  let bound = sessionKey ? stickyRouter?.resolve?.(sessionKey) : null
   const vms = listVms(projectRoot, routing).filter((vm) => isGrokVm(vm) && keyAllowsVm(scope, vm))
   const continuesResponse = !!body?.previous_response_id && !!bound?.vmId
+  // reset_priority: a conversation idle past the threshold re-picks by billing
+  // period end. A stored response can only continue where it lives, so it stays.
+  if (bound?.vmId && !continuesResponse && boundSessionIdle(bound, sessionKey, { ...resetFirst, activity })) {
+    for (const key of stickyKeys.length ? stickyKeys : [sessionKey]) stickyRouter?.unbind?.(key)
+    try {
+      sessions?.drop?.(bound.vmId, sessionKey)
+    } catch {}
+    bound = null
+  }
   if (scope.vm_pool_id && vms.length === 0 && !continuesResponse) {
     return { error: 'vm_pool_unavailable', message: '账号池没有可调度的 Grok 槽位', ids: [], candidates: [] }
   }
@@ -422,6 +434,7 @@ export function pickGrokCandidates(
     model,
     excluded,
     quotaPolicy,
+    strategy: resetFirst.enabled ? 'reset_first' : 'smart',
   })
   const boundLeft = ordered.boundState === 'gone' || ordered.boundState === 'resting'
   if (bound?.vmId && sessionKey && boundLeft) {
@@ -768,6 +781,9 @@ export async function handleGrokProtocol({
         } catch {}
         for (const key of stickyKeys) stickyRouter?.unbind?.(key)
       }
+      // reset_priority: a conversation with a request running is never idle.
+      const activeKey = picked.sessionKey || null
+      if (activeKey) sessionActivity.begin(activeKey)
       try {
         hops += 1
         logBag.vm_id = vm.id
@@ -911,6 +927,7 @@ export async function handleGrokProtocol({
         break
       } finally {
         lease.release()
+        if (activeKey) sessionActivity.end(activeKey)
         if (claimsWindow) {
           try {
             sessions?.release?.(vm.id, picked.sessionKey, { gen: windowGen })
