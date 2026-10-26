@@ -10,7 +10,12 @@ import { typedError } from '../core/errors.mjs'
 /** Grok Build CLI chat proxy. Paths append `/v1/chat/completions` and `/v1/responses`. */
 export const DEFAULT_GROK_BASE_URL = 'https://cli-chat-proxy.grok.com'
 export const GROK_OAUTH_CLIENT_ID = 'b1a00492-073a-47ea-816f-4c329264a828'
-export const GROK_OAUTH_SCOPE = 'openid profile email offline_access grok-cli:access api:access'
+/**
+ * Device-login scope, as granted to the official 1.0.70 client. Refresh sends no scope,
+ * so tokens issued with the older, shorter scope keep refreshing unchanged.
+ */
+export const GROK_OAUTH_SCOPE =
+  'openid profile email offline_access grok-cli:access api:access conversations:read conversations:write workspaces:read workspaces:write'
 export const GROK_OAUTH_ISSUER = 'https://auth.x.ai'
 export const GROK_OAUTH_DISCOVERY_URL = `${GROK_OAUTH_ISSUER}/.well-known/openid-configuration`
 export const GROK_OAUTH_DEVICE_GRANT = 'urn:ietf:params:oauth:grant-type:device_code'

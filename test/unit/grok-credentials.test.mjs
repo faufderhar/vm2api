@@ -65,6 +65,7 @@ test('routing defaults are disabled and fail closed without OAuth config', () =>
   assert.equal(cfg.config.client_id, 'b1a00492-073a-47ea-816f-4c329264a828')
   assert.equal(cfg.config.token_url, '')
   assert.match(cfg.config.scope, /grok-cli:access/)
+  assert.match(cfg.config.scope, /conversations:read conversations:write workspaces:read workspaces:write/)
   assert.equal(isGrokProtocolAllowed('openai.chat', {}).code, 'grok_disabled')
 })
 
