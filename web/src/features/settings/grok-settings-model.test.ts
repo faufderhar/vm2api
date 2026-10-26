@@ -27,6 +27,8 @@ describe('grokView', () => {
       maxSessions: 0,
       billingBackground: true,
       billingIntervalMin: 30,
+      resetPriority: true,
+      resetPriorityIdleSec: 300,
     })
     expect(v.protocols).toEqual({
       'openai.responses': 'native',
@@ -51,6 +53,8 @@ describe('grokView', () => {
       clients: { claude_code: 'allow', unknown: 'reject' },
       quota: { max_concurrency: 4, max_rpm: 60, max_sessions: 3 },
       billing: { background: false, min_interval_sec: 7200 },
+      reset_priority: false,
+      reset_priority_idle_sec: 1800,
     })
     expect(v.enabled).toBe(true)
     expect(v.baseUrl).toBe('https://api.x.ai')
@@ -61,6 +65,8 @@ describe('grokView', () => {
     expect([v.maxConcurrency, v.maxRpm, v.maxSessions]).toEqual([4, 60, 3])
     expect(v.billingBackground).toBe(false)
     expect(v.billingIntervalMin).toBe(120)
+    expect(v.resetPriority).toBe(false)
+    expect(v.resetPriorityIdleSec).toBe(1800)
   })
 
   it('treats an unknown protocol mode as reject, like the backend', () => {
