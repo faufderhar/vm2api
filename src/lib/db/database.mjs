@@ -269,14 +269,19 @@ export function withTransaction(db, fn) {
  * @returns {string} destination path
  */
 export function vacuumInto(db, destPath) {
-  fs.mkdirSync(path.dirname(destPath), { recursive: true })
+  // P3: the destination is a bound parameter (never spliced into SQL) and
+  // must be a plain absolute filesystem path — no URI forms, no control chars.
+  const dest = typeof destPath === 'string' ? destPath : ''
+  if (!dest || !path.isAbsolute(dest) || /[\x00-\x1f]/.test(dest) || /^file:/i.test(dest)) {
+    throw new Error('vacuumInto: destination must be an absolute file path')
+  }
+  fs.mkdirSync(path.dirname(dest), { recursive: true })
   try {
-    fs.rmSync(destPath, { force: true })
+    fs.rmSync(dest, { force: true })
   } catch {}
-  const esc = String(destPath).replace(/'/g, "''")
-  db.exec(`VACUUM INTO '${esc}'`)
+  db.prepare('VACUUM INTO ?').run(dest)
   try {
-    fs.chmodSync(destPath, 0o600)
+    fs.chmodSync(dest, 0o600)
   } catch {}
-  return destPath
+  return dest
 }
