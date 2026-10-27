@@ -7,6 +7,7 @@ import { hasSession } from '@/lib/session'
 import { AuthenticatedLayout } from '@/components/layout/authenticated-layout'
 import { meQueryOptions } from '@/features/auth/queries'
 import { FleetActions } from '@/features/fleet/fleet-actions'
+import { GuideGate } from '@/features/welcome/guide-gate'
 
 export const Route = createFileRoute('/_authenticated')({
   beforeLoad: ({ location }) => {
@@ -36,5 +37,10 @@ function Authenticated() {
   if (meQuery.error instanceof ApiError && meQuery.error.status === 401) {
     return null
   }
-  return <AuthenticatedLayout headerActions={<FleetActions />} />
+  return (
+    <AuthenticatedLayout
+      headerActions={<FleetActions />}
+      gate={<GuideGate />}
+    />
+  )
 }
