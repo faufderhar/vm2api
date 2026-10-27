@@ -1544,7 +1544,7 @@ test('Codex upstream_model is the model the stream reports, not the request mode
         streamCodexKernel: async ({ onEvent }) => {
           await onEvent('data: {"type":"response.created","response":{"id":"r1","model":"gpt-5.4-served"}}\n')
           await onEvent(
-            'data: {"type":"response.completed","response":{"id":"r1","model":"gpt-5.4-served","usage":{"input_tokens":5,"output_tokens":2}}}\n',
+            'data: {"type":"response.completed","response":{"id":"r1","model":"gpt-5.4-served","usage":{"input_tokens":5,"output_tokens":2,"output_tokens_details":{"reasoning_tokens":2}}}}\n',
           )
           return { ok: true, status: 200, terminalState: 'verified' }
         },
@@ -1552,6 +1552,7 @@ test('Codex upstream_model is the model the stream reports, not the request mode
     })
     assert.equal(logBag.final_state, 'verified')
     assert.equal(logBag.upstream_model, 'gpt-5.4-served')
+    assert.equal(logBag.reasoning_tokens, 2)
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }

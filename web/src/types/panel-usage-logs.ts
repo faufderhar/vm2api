@@ -149,6 +149,8 @@ export type UsageLogRow = {
   /** 长上下文（1M）计价档是否生效；null = 未计价。 */
   context1mApplied: boolean | null
   reasoningEffort: ReasoningEffort | null
+  /** 上游回报的推理 tokens（output 的子集，不另计费）；null = 上游未给。 */
+  reasoningTokens?: number | null
   /** 读时派生，不落库。 */
   errorClass: string | null
   errorLabel: string | null

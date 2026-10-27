@@ -34,6 +34,7 @@ function usageObject(body) {
  *   cached_tokens?: number,
  *   cache_write_tokens?: number,
  *   total_tokens?: number,
+ *   reasoning_tokens?: number,
  * }}
  */
 export function extractOpenaiUsage(body) {
@@ -54,6 +55,12 @@ export function extractOpenaiUsage(body) {
     nestedU64(usage, ['prompt_tokens_details', 'cache_creation_tokens']) ??
     asU64(usage.cache_creation_tokens) ??
     asU64(usage.cache_creation_input_tokens)
+
+  // Subset of output_tokens (OpenAI / xAI); kept for visibility, never billed on top.
+  const reasoning_tokens =
+    nestedU64(usage, ['output_tokens_details', 'reasoning_tokens']) ??
+    nestedU64(usage, ['completion_tokens_details', 'reasoning_tokens']) ??
+    asU64(usage.reasoning_tokens)
 
   const hasUsage =
     usage.input_tokens != null ||
@@ -81,6 +88,7 @@ export function extractOpenaiUsage(body) {
   if (cached_tokens != null) out.cached_tokens = cached_tokens
   if (cache_write_tokens != null) out.cache_write_tokens = cache_write_tokens
   if (total_tokens != null) out.total_tokens = total_tokens
+  if (reasoning_tokens != null) out.reasoning_tokens = reasoning_tokens
   return out
 }
 

@@ -286,6 +286,9 @@ function LogRow({
             <TooltipContent align='end' className='space-y-1 text-xs'>
               <div>输入: {formatTokenAmount(row.inputTokens)}</div>
               <div>输出: {formatTokenAmount(row.outputTokens)}</div>
+              {row.reasoningTokens != null ? (
+                <div>推理: {formatTokenAmount(row.reasoningTokens)}</div>
+              ) : null}
             </TooltipContent>
           </Tooltip>
         </div>

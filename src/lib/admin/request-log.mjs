@@ -207,6 +207,12 @@ function costColumnsForLog(usage, model, extra = {}) {
   }
 }
 
+/** Non-negative integer or null; reasoning tokens are informational only. */
+function reasoningTokensForLog(value) {
+  const n = Number(value)
+  return value != null && Number.isFinite(n) && n >= 0 ? Math.floor(n) : null
+}
+
 /** Tri-state model mismatch: null = upstream did not declare a model. */
 function modelMismatch(requested, upstream) {
   if (!requested || !upstream) return null
@@ -612,6 +618,7 @@ export class RequestLogStore {
       session_id: sessionIdForLog(extra.session_id),
       outbound_session_id: sessionIdForLog(extra.outbound_session_id),
       reasoning_effort: REASONING_EFFORTS.has(extra.reasoning_effort) ? extra.reasoning_effort : null,
+      reasoning_tokens: reasoningTokensForLog(extra.reasoning_tokens),
       inbound_device_id: sessionIdForLog(extra.inbound_device_id),
       // Gate verdict JSON from intercept-gate; the risk audit groups on it.
       intercept: extra.intercept ? String(extra.intercept).slice(0, 400) : null,

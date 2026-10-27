@@ -92,3 +92,25 @@ test('normalizeUsage reads top-level cached_tokens and cache_write_tokens', () =
   assert.equal(n.input_tokens, 70)
   assert.equal(n.cache_read_input_tokens, 25)
 })
+
+test('extractOpenaiUsage reads reasoning_tokens from Responses and Chat details', () => {
+  assert.equal(
+    extractOpenaiUsage({
+      usage: { input_tokens: 9, output_tokens: 40, output_tokens_details: { reasoning_tokens: 31 } },
+    }).reasoning_tokens,
+    31,
+  )
+  assert.equal(
+    extractOpenaiUsage({ prompt_tokens: 9, completion_tokens: 40, completion_tokens_details: { reasoning_tokens: 12 } })
+      .reasoning_tokens,
+    12,
+  )
+  assert.equal(extractOpenaiUsage({ input_tokens: 1, output_tokens: 1 }).reasoning_tokens, undefined)
+  // Reasoning is a subset of output: the disjoint billing shape does not add it on top.
+  const extracted = extractOpenaiUsage({
+    input_tokens: 9,
+    output_tokens: 40,
+    output_tokens_details: { reasoning_tokens: 31 },
+  })
+  assert.equal(openaiAnthropicUsageFromExtract(extracted).output_tokens, 40)
+})

@@ -355,6 +355,7 @@ function logUsage(logBag, usage, shape) {
   logBag.output_tokens = disjoint?.output_tokens ?? usage.output_tokens ?? usage.completion_tokens ?? null
   logBag.cache_read_tokens = disjoint?.cache_read_input_tokens ?? extracted?.cached_tokens ?? null
   logBag.cache_creation_tokens = disjoint?.cache_creation_input_tokens ?? extracted?.cache_write_tokens ?? null
+  logBag.reasoning_tokens = extracted?.reasoning_tokens ?? null
 }
 
 function grokAttemptsRepo(ops) {

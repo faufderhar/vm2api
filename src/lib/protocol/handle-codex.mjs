@@ -466,6 +466,7 @@ function noteCodexUsage(logBag, usage, { serviceTier = null, imageUsage = null }
     usage?.input_tokens_details?.cache_write_tokens ??
     usage?.cache_creation_tokens ??
     null
+  logBag.reasoning_tokens = extracted?.reasoning_tokens ?? null
   return true
 }
 

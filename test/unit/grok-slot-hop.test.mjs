@@ -283,7 +283,7 @@ test('upstream always streams; a non-stream caller gets the stream folded back',
       'data: {"type":"response.output_text.delta","delta":"Hi","sequence_number":1}',
       '',
       'event: response.completed',
-      'data: {"type":"response.completed","sequence_number":2,"response":{"id":"r1","object":"response","status":"completed","model":"grok-4.3-served","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hi"}]}],"usage":{"input_tokens":3,"output_tokens":1}}}',
+      'data: {"type":"response.completed","sequence_number":2,"response":{"id":"r1","object":"response","status":"completed","model":"grok-4.3-served","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hi"}]}],"usage":{"input_tokens":3,"output_tokens":1,"output_tokens_details":{"reasoning_tokens":1}}}}',
       '',
     ],
   }
@@ -357,6 +357,7 @@ test('upstream always streams; a non-stream caller gets the stream folded back',
   assert.equal(responses.status, 200)
   assert.equal(responses.payload.id, 'r1')
   assert.equal(responses.logBag.upstream_model, 'grok-4.3-served')
+  assert.equal(responses.logBag.reasoning_tokens, 1)
   assert.equal(responses.payload.output[0].content[0].text, 'Hi')
   const sentResponses = envelopes[1]
   assert.equal(sentResponses.body.stream, true)
