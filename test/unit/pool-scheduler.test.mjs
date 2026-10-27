@@ -1763,20 +1763,31 @@ test('a full pool queue still lets a free account be selected without waiting', 
 })
 
 test('rpm window expiry rechecks instead of failing the waiter', async (t) => {
+  // R4: no wall-clock margin assertions. The quota gate itself records when it
+  // refused and when it let the request through, so the test proves "waited for
+  // the reset, then granted" regardless of how slow the host is.
   const root = project()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
-  const resetAt = Date.now() + 40
+  let resetAt = Number.POSITIVE_INFINITY
+  const refusedAt = []
+  let grantedAt = null
   const pool = scheduler(root, {
     accountQuota: {
       canAccept: () => {
-        if (Date.now() < resetAt) return { ok: false, reason: 'rpm_limit', detail: { reset_at: resetAt } }
+        const now = Date.now()
+        if (now < resetAt) {
+          refusedAt.push(now)
+          return { ok: false, reason: 'rpm_limit', detail: { reset_at: resetAt } }
+        }
+        grantedAt ??= now
         return { ok: true }
       },
       tryAcquire: () => ({ ok: true }),
     },
   })
-  applyShortWaits(pool, { sticky: 400, fallback: 400 })
-  const started = Date.now()
+  // generous wait budget: only the reset, not the timeout, may end the wait
+  applyShortWaits(pool, { sticky: 5000, fallback: 5000 })
+  resetAt = Date.now() + 40
   const selected = await pool.selectAndReserve({
     model: 'claude-test',
     excluded: new Set(['account-2']),
@@ -1784,7 +1795,8 @@ test('rpm window expiry rechecks instead of failing the waiter', async (t) => {
   })
   assert.equal(selected.ok, true)
   assert.equal(selected.accountId, 'account-1')
-  assert.ok(Date.now() - started >= 30)
+  assert.ok(refusedAt.length >= 1, 'the first check hit the rpm limit')
+  assert.ok(grantedAt >= resetAt, 'granted only after the rpm window reset')
   selected.release()
 })
 
