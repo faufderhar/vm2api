@@ -79,6 +79,22 @@ test('Grok convert: effort only for models that take it; errors and named tools 
   assert.deepEqual(anthropicToGrokResponses({ model: 'grok-4.5', output_config: { effort: 'low' }, messages: [] }).reasoning, {
     effort: 'low',
   })
+  assert.deepEqual(
+    anthropicToGrokResponses({
+      model: 'grok-4.20-0309-reasoning',
+      thinking: { type: 'enabled', budget_tokens: 8000 },
+      messages: [],
+    }).reasoning,
+    { effort: 'medium' },
+  )
+  assert.deepEqual(
+    anthropicToGrokResponses({
+      model: 'openrouter/grok-4.20-multi-agent-0309',
+      reasoning_effort: 'high',
+      messages: [],
+    }).reasoning,
+    { effort: 'high' },
+  )
 })
 
 test('buildGrokOutbound convert mode uses the Grok converter and drops caller identity', () => {

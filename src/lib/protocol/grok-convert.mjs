@@ -8,7 +8,24 @@
  */
 import { responsesToolChoice } from './codex-convert.mjs'
 
-const EFFORT_MODEL = /^grok-4\.(?:5|6|7)(?:-|$)/i
+/**
+ * Models that accept Responses `reasoning.effort` on the Grok convert path.
+ * Matches grok-4.5 / 4.6 / 4.7 and grok-4.20+ (reasoning and dated builds).
+ * Non-reasoning / code-fast / older lines stay out so we do not send a rejected field.
+ */
+export function grokModelAcceptsEffort(model) {
+  const id = String(model || '')
+    .split('/')
+    .filter(Boolean)
+    .pop()
+    .toLowerCase()
+  if (!id.startsWith('grok-4.')) return false
+  // grok-4.20* (reasoning, non-reasoning, multi-agent, dated builds)
+  if (/^grok-4\.20(?:-|$)/.test(id)) return true
+  // Classic effort-capable minors: 4.5 / 4.6 / 4.7
+  return /^grok-4\.(?:5|6|7)(?:-|$)/.test(id)
+}
+
 const EFFORTS = new Set(['low', 'medium', 'high'])
 
 function textOf(content) {
@@ -167,6 +184,6 @@ export function anthropicToGrokResponses(body = {}) {
     if (typeof body[key] === 'number' && Number.isFinite(body[key])) out[key] = body[key]
   }
   const effort = effortOf(body)
-  if (effort && EFFORT_MODEL.test(String(body.model || ''))) out.reasoning = { effort }
+  if (effort && grokModelAcceptsEffort(body.model)) out.reasoning = { effort }
   return out
 }
