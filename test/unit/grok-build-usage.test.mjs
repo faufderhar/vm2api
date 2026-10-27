@@ -14,12 +14,15 @@ import { getVm } from '../../src/lib/vm/vm-registry.mjs'
 import { enrichVm } from '../../src/lib/admin/panel-api.mjs'
 import { grokUsageProbeTiming } from '../../src/lib/oauth/grok-refresh-monitor.mjs'
 
-test('Grok Build credit percent is percent points above 1 and a fraction at or below 1', () => {
+test('Grok Build credit percent is 0–100 points; 1 is 1%, not a full pool', () => {
   assert.equal(grokCreditUsedPercent(37), 37)
-  assert.equal(grokCreditUsedPercent(0.37), 37)
-  assert.equal(grokCreditUsedPercent(1), 100)
+  assert.equal(grokCreditUsedPercent(0.37), 0.37)
+  assert.equal(grokCreditUsedPercent(1), 1)
+  assert.equal(grokCreditUsedPercent(1.0), 1)
+  assert.equal(grokCreditUsedPercent(0), 0)
   assert.equal(grokCreditUsedPercent(140), 100)
   assert.equal(grokCreditUsedPercent(null), null)
+  assert.equal(parseGrokBuildBilling({ config: { creditUsagePercent: 1 } }).credit_usage_percent, 1)
 })
 
 test('billing response maps the weekly pool and the latest monthly included spend', () => {
