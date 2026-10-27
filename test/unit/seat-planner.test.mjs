@@ -574,3 +574,48 @@ test('a new device takes an open VM before a draining one, and a draining one wh
   fresh.release()
   last.release()
 })
+
+test('R1: a seated ticket moved to the global queue re-arms grace so the seat cannot stick', async () => {
+  const planner = new SeatPlanner({ graceMs: 30 })
+  const seat = planner.open('dev-r1', { vmId: 'vm-r1', cap: 1 })
+  const ticket = {
+    seatKey: 'dev-r1',
+    vmId: 'vm-r1',
+    kind: 'conc',
+    enqueuedAt: 1,
+    tryGrant: () => false,
+    accepts: () => false,
+  }
+  planner.enqueue(ticket)
+  // last request finished while this device still waits on the VM: grace is suppressed
+  planner.armGrace(seat)
+  assert.equal(seat.timer, null)
+  assert.equal(seat.live, true)
+  // its sticky wait times out and it goes global: nothing else will ever release this seat
+  planner.toGlobal(ticket)
+  assert.ok(seat.timer, 'grace re-armed after leaving the VM queue')
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  assert.equal(seat.live, false)
+  assert.equal(planner.openCount('vm-r1'), 0)
+})
+
+test('R1: grace that fired while a ticket was queued re-arms once the queue drains via remove', async () => {
+  const planner = new SeatPlanner({ graceMs: 20 })
+  const seat = planner.open('dev-r1b', { vmId: 'vm-r1b', cap: 1 })
+  planner.armGrace(seat)
+  const ticket = {
+    seatKey: 'dev-r1b',
+    vmId: 'vm-r1b',
+    kind: 'conc',
+    enqueuedAt: 2,
+    tryGrant: () => false,
+    accepts: () => false,
+  }
+  planner.enqueue(ticket)
+  await new Promise((resolve) => setTimeout(resolve, 40))
+  assert.equal(seat.live, true, 'kept for the queued device')
+  assert.equal(seat.graceUntil, null)
+  planner.remove(ticket)
+  await new Promise((resolve) => setTimeout(resolve, 40))
+  assert.equal(seat.live, false)
+})
