@@ -426,13 +426,12 @@ for (const subscriptionType of [undefined, 'pro']) {
       }),
     )
     const source = fs.readFileSync(new URL('../../src/server.mjs', import.meta.url), 'utf8')
-    const start = source.indexOf(
-      'for (const vm of listVms(cfg.paths.project)) {\n  if (!isClaudeVm(vm)) continue\n  try {\n    await ensureSlotSubscriptionType',
-    )
+    // server.mjs runs the migration after listen via backfillSlotSubscriptionTypes().
+    const start = source.indexOf('async function backfillSlotSubscriptionTypes(')
     assert.ok(start >= 0, 'the startup credential migration must be exercised')
     const end = source.indexOf('\ncliNodeGuard =', start)
     assert.ok(end > start)
-    await runInNewContext(`(async () => {\n${source.slice(start, end)}\n})()`, {
+    await runInNewContext(`(async () => {\n${source.slice(start, end)}\nawait backfillSlotSubscriptionTypes()\n})()`, {
       listVms,
       isClaudeVm,
       ensureSlotSubscriptionType,
@@ -447,7 +446,7 @@ for (const subscriptionType of [undefined, 'pro']) {
     assert.equal(doc.kinGeneration, 42)
     const written = fs.readFileSync(file, 'utf8')
     const mtime = fs.statSync(file).mtimeMs
-    await runInNewContext(`(async () => {\n${source.slice(start, end)}\n})()`, {
+    await runInNewContext(`(async () => {\n${source.slice(start, end)}\nawait backfillSlotSubscriptionTypes()\n})()`, {
       listVms,
       isClaudeVm,
       ensureSlotSubscriptionType,

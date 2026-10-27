@@ -23,6 +23,11 @@ function findOAuthAuthBin() {
   return candidates.find((item) => fs.existsSync(item)) || null
 }
 
+/** Resolved path of the closed kin-oauth-auth payload, or null (tests skip on null). */
+export function oauthAuthBinPath() {
+  return findOAuthAuthBin()
+}
+
 function serviceFailure(code, message) {
   const error = new Error(message)
   error.code = code

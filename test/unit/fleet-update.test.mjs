@@ -23,6 +23,14 @@ function writeSlot(root, id, extra = {}) {
   )
 }
 
+// Real helper needed (bin/ is gitignored): build with `npm run build:egress`, never fake it.
+const fleetEgressSkip =
+  process.platform !== 'linux'
+    ? 'linux only'
+    : fs.existsSync(process.env.KIN_EGRESS_BIN || path.resolve(import.meta.dirname, '../../bin/kin-egress'))
+      ? false
+      : 'bin/kin-egress missing: run npm run build:egress'
+
 test('fleet roll reloads then collects every target', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-fleet-'))
   writeSlot(root, 'vm-01')
@@ -153,7 +161,7 @@ test('fleet collect skips reload', async () => {
 })
 
 test('fleet refresh replaces an egress process whose binary was deleted', {
-  skip: process.platform !== 'linux',
+  skip: fleetEgressSkip,
 }, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-fleet-egress-'))
   const oldBin = path.join(root, 'kin-egress-old')
@@ -215,7 +223,7 @@ test('fleet refresh replaces an egress process whose binary was deleted', {
 })
 
 test('concurrent fleet telemetry on two slots sharing one proxy restarts egress once', {
-  skip: process.platform !== 'linux',
+  skip: fleetEgressSkip,
 }, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-fleet-shared-'))
   const bin = process.env.KIN_EGRESS_BIN || path.resolve(import.meta.dirname, '../../bin/kin-egress')
