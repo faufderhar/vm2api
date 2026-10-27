@@ -1502,3 +1502,57 @@ test('tool argument disagreement terminates the client stream instead of recordi
     fs.rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('Codex upstream_model is the model the stream reports, not the request model', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-served-'))
+  writeGptVm(root, 'vm-gpt-served')
+  const res = {
+    headersSent: false,
+    writableEnded: false,
+    write() {
+      this.headersSent = true
+    },
+    end() {
+      this.writableEnded = true
+    },
+    once() {},
+    off() {},
+  }
+  const logBag = {}
+  try {
+    await handleCodexProtocol({
+      req: { headers: {}, apiKeyKind: 'master' },
+      res,
+      protocol: 'openai.responses',
+      ctx: { body: { model: 'gpt-5.4', input: 'hi', stream: true } },
+      inbound: { stream: true },
+      logBag,
+      stats: { errors: 0, requests: 0, by_route: {} },
+      json: (_res, status, body) => {
+        res.statusCode = status
+        res.body = body
+        return body
+      },
+      writeSSEHeaders() {
+        res.headersSent = true
+      },
+      routing: {},
+      projectRoot: root,
+      ops: {
+        writeCodexKernelConfig() {},
+        ensureCodexKernel: async () => ({ ok: true }),
+        streamCodexKernel: async ({ onEvent }) => {
+          await onEvent('data: {"type":"response.created","response":{"id":"r1","model":"gpt-5.4-served"}}\n')
+          await onEvent(
+            'data: {"type":"response.completed","response":{"id":"r1","model":"gpt-5.4-served","usage":{"input_tokens":5,"output_tokens":2}}}\n',
+          )
+          return { ok: true, status: 200, terminalState: 'verified' }
+        },
+      },
+    })
+    assert.equal(logBag.final_state, 'verified')
+    assert.equal(logBag.upstream_model, 'gpt-5.4-served')
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})

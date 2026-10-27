@@ -22,7 +22,7 @@ import { redactSecrets, requestClientAddress } from '../core/security.mjs'
 import { resolveStoreDb } from '../db/database.mjs'
 import { UsageLogsRepo } from '../db/repos/usage-logs-repo.mjs'
 import { classifyRequestError, resolveMutedErrorClasses } from './error-class.mjs'
-import { costColumnsFromUsage, normalizeUsage } from './pricing.mjs'
+import { costColumnsFromUsage, normalizeUsage, pricingModelFor } from './pricing.mjs'
 import { disjointOpenaiUsage } from '../protocol/openai-usage.mjs'
 import { REASONING_EFFORTS, sessionIdForLog } from '../protocol/log-fields.mjs'
 
@@ -624,7 +624,11 @@ export class RequestLogStore {
       vm_owner_user_id: this.repo.vmOwnerOf(extra.vm_id),
       group_id: extra.group_id ?? 1,
       rate_multiplier: Number.isFinite(Number(extra.rate_multiplier)) ? Number(extra.rate_multiplier) : 1,
-      ...costColumnsForLog(billedUsage, extra.upstream_model || extra.model || extra.requested_model, extra),
+      ...costColumnsForLog(
+        billedUsage,
+        pricingModelFor(extra.upstream_model, extra.model, extra.requested_model),
+        extra,
+      ),
     }
     // sub2api actual_cost: official cost × group rate multiplier (0 is a valid rate)
     if (summary.total_cost != null) {

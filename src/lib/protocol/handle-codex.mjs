@@ -375,6 +375,18 @@ export function serviceTierFromSseLine(line) {
   }
 }
 
+/** Model the upstream says served the turn (`response.model` on created / completed frames). */
+export function modelFromSseLine(line) {
+  if (typeof line !== 'string' || !line.startsWith('data:') || !line.includes('"model"')) return null
+  try {
+    const ev = JSON.parse(line.slice(5).trim())
+    const model = ev?.response?.model ?? ev?.model
+    return typeof model === 'string' && model.trim() ? model.trim().slice(0, 200) : null
+  } catch {
+    return null
+  }
+}
+
 /** Responses `usage` object from one SSE data line, if it carries token counts. */
 export function usageFromSseLine(line) {
   if (typeof line !== 'string' || !line.startsWith('data:') || !line.includes('usage')) return null
@@ -828,6 +840,7 @@ export async function handleCodexProtocol({
         const chunks = []
         const nameSseEvent = createResponsesSseEventNamer()
         let responseServiceTier = null
+        let responseModel = null
         let streamedUsage = null
         let streamedImageUsage = null
         let conversionError = null
@@ -883,6 +896,8 @@ export async function handleCodexProtocol({
               if (conversionError) return
               const tier = serviceTierFromSseLine(line)
               if (tier) responseServiceTier = tier
+              const servedModel = modelFromSseLine(line)
+              if (servedModel) responseModel = servedModel
               const seen = usageFromSseLine(line)
               if (seen) streamedUsage = preferUsage(streamedUsage, seen)
               const imageGen = imageGenUsageFromSseLine(line)
@@ -963,7 +978,8 @@ export async function handleCodexProtocol({
           noteCodexUsage(logBag, usage, { serviceTier, imageUsage })
           logBag.final_state = 'cancelled'
           logBag.upstream_status = result?.status ?? 499
-          logBag.upstream_model = converted.body.model
+          logBag.upstream_model =
+            responseModel || result.body?.response?.model || result.body?.model || converted.body.model
           logBag.error_code = null
           logBag.error_message = null
           const accountId = codexQuotaAccountId(vm)
@@ -987,7 +1003,8 @@ export async function handleCodexProtocol({
           noteCodexUsage(logBag, usage, { serviceTier, imageUsage })
           reportOpenAIAttempt(vm.id, 'succeeded', result.ttftMs ?? null)
           logBag.final_state = result?.ok ? result.terminalState || 'verified' : 'verified'
-          logBag.upstream_model = converted.body.model
+          logBag.upstream_model =
+            responseModel || result.body?.response?.model || result.body?.model || converted.body.model
           if (hops > 1) logBag.codex_failed_over = true
           if (!stream) {
             let body

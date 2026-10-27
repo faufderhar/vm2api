@@ -301,18 +301,29 @@ function dataJson(line) {
 /** Running usage across stream lines for each wire shape. */
 function createUsageTracker(shape) {
   let usage = null
+  let served = null
+  const noteModel = (value) => {
+    if (typeof value === 'string' && value.trim()) served = value.trim().slice(0, 200)
+  }
   return {
     see(line) {
       const ev = dataJson(line)
       if (!ev) return
       if (shape === 'anthropic') {
+        if (ev.type === 'message_start') noteModel(ev.message?.model)
         const start = ev.type === 'message_start' ? ev.message?.usage : null
         if (start) usage = { ...(usage || {}), ...start }
         if (ev.type === 'message_delta' && ev.usage) usage = { ...(usage || {}), ...ev.usage }
         return
       }
+      noteModel(ev.response?.model ?? ev.model)
       const found = ev.response?.usage || ev.usage
       if (found && typeof found === 'object') usage = found
+    },
+    /** Model id the upstream reported serving, from the stream or the folded body. */
+    model(body) {
+      const fromBody = body?.response?.model ?? body?.model
+      return served || (typeof fromBody === 'string' && fromBody.trim() ? fromBody.trim() : null)
     },
     take(body) {
       if (shape === 'anthropic') return body?.usage || usage
@@ -896,7 +907,8 @@ export async function handleGrokProtocol({
           logUsage(logBag, produced, shape)
           grokRuntime.reportAttempt(vm.id, 'succeeded', result.ttftMs ?? null)
           logBag.final_state = 'verified'
-          logBag.upstream_model = outbound.body.model
+          // What xAI says served the turn; a silent reroute or downgrade shows here.
+          logBag.upstream_model = usage.model(result?.body) || outbound.body.model
           if (hops > 1) logBag.grok_failed_over = true
           if (!stream) {
             const failure = grokStreamFailure(outbound.convert ? 'openai.responses' : protocol, chunks)

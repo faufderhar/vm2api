@@ -354,6 +354,19 @@ export function imageCostFromUsage(usage, imageModel = null) {
 }
 
 /**
+ * Model id to price a row with. The served id (upstream_model) comes first, but a
+ * dated or rerouted id the price table does not know must not zero the bill, so the
+ * next candidate (request model) is used instead. Falls back to the first given id.
+ */
+export function pricingModelFor(...candidates) {
+  const ids = candidates.map((value) => (typeof value === 'string' ? value.trim() : '')).filter(Boolean)
+  for (const id of ids) {
+    if (resolvePrice(id)) return id
+  }
+  return ids[0] || null
+}
+
+/**
  * `image` = `{ usage, model, only }`: image generation usage on the same row. `only` marks an
  * Images endpoint row, which has no text-model usage. Either part unpriced → the whole row is.
  */

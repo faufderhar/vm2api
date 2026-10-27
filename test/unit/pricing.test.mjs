@@ -662,3 +662,12 @@ test('Images endpoint rows bill only the image usage', () => {
   assert.equal(unpriced.pricing_model, 'unpriced')
   assert.equal(unpriced.total_cost, null)
 })
+
+test('pricingModelFor keeps a priced served id and falls back when it is unknown', async () => {
+  const { pricingModelFor } = await import('../../src/lib/admin/pricing.mjs')
+  assert.equal(pricingModelFor('gpt-5.4-2026-03-05', 'gpt-5.4'), 'gpt-5.4-2026-03-05')
+  assert.equal(pricingModelFor('grok-4.7-unlisted-build', 'grok-4.7'), 'grok-4.7')
+  assert.equal(pricingModelFor('', 'grok-4.7'), 'grok-4.7')
+  assert.equal(pricingModelFor('mystery-a', 'mystery-b'), 'mystery-a')
+  assert.equal(pricingModelFor(null, undefined), null)
+})
