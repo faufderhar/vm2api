@@ -6,6 +6,7 @@
 - [API.md](API.md) — `/v1`
 - [RISK.md](RISK.md) — 封控拦截（蒸馏 → 硬正则 → 拒答缓存 → 决策模型 → 放行出站）
 - [PANEL_API.md](PANEL_API.md) — 管理台 API
+- `src/config/routing.json` 只放策略默认值，`bot_token` / `webhook` / `token_url` 等必须留空；真实密钥走面板设置或环境变量（`test/unit/tracked-config-secrets.test.mjs` 会拦截误提交）
 - 抄本：[deploy/env.example](deploy/env.example) · [deploy/vm2api.service](deploy/vm2api.service)
 
 总览：[README](../README.md)。版本：[CHANGELOG.md](../CHANGELOG.md)
