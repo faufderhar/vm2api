@@ -273,6 +273,15 @@ test('Grok follows the weekly pool reset from the credits document', () => {
   const vm = grok('w', usage)
   assert.deepEqual(grokResetWindow(vm), { at: weekEnd, kind: 'weekly' })
   assert.equal(grokResetBoostAt(vm, now), now + 3 * DAY)
+  // Ambiguous 1 from the credits document is 1% used (99% left), still boosts.
+  const onePct = parseGrokBuildBilling({
+    config: {
+      creditUsagePercent: 1,
+      currentPeriod: { type: 'USAGE_PERIOD_TYPE_WEEKLY', start: new Date(now - 4 * DAY).toISOString(), end: weekEnd },
+    },
+  })
+  assert.equal(onePct.credit_usage_percent, 1)
+  assert.equal(grokResetBoostAt(grok('one', onePct), now), now + 3 * DAY)
   // Under 5% of the weekly pool left: no boost.
   assert.equal(grokResetBoostAt(grok('w', { ...usage, credit_usage_percent: 95.5 }), now), null)
   // No currentPeriod: falls back to the reported (legacy monthly) period end.

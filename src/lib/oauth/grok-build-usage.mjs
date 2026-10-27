@@ -51,15 +51,16 @@ function money(value) {
 }
 
 /**
- * CLI field `creditUsagePercent`. Values above 1 are already percent points.
- * 0..1 is a fraction (1 means the pool is full).
+ * CLI field `creditUsagePercent` is always percent points 0–100 (same contract
+ * as the official client's weekly bar). Never rescale small values: `1` is 1%
+ * and `0.4` is 0.4%, not 100% / 40% — the same trap Claude's `/usage` hit when
+ * KIN treated small values as a ratio.
  */
 export function grokCreditUsedPercent(value) {
   if (value == null || value === '') return null
   const amount = Number(value)
   if (!Number.isFinite(amount) || amount < 0) return null
-  const points = amount <= 1 ? amount * 100 : amount
-  return Math.min(100, points)
+  return Math.min(100, amount)
 }
 
 function timeOf(value) {

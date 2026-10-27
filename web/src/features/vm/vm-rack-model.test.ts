@@ -227,6 +227,22 @@ describe('vmWindows', () => {
     expect(grok[0].pct).toBe(42)
     expect(grok[1].pct).toBe(25)
   })
+
+  it('shows Grok credit_usage_percent 1 as 1%, not 100%', () => {
+    const grok = vmWindows(
+      vm({
+        platform: 'xai',
+        family: 'grok',
+        grok_build: {
+          credit_usage_percent: 1,
+          period_end: '2099-01-01T00:00:00.000Z',
+        },
+      })
+    )
+    expect(grok).toHaveLength(1)
+    expect(grok[0].label).toBe('7D')
+    expect(grok[0].pct).toBe(1)
+  })
 })
 
 describe('bladeState', () => {
