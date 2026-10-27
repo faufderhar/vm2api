@@ -9,6 +9,7 @@
  * other HTTP status skips the rest of that host for this call only.
  * A line may be `https://host[/v1/systemone] <key>`.
  */
+import net from 'node:net'
 import { ErrorCode, ErrorType, makeError } from '../core/errors.mjs'
 import { refusalUserDocument } from '../core/refusal-similarity.mjs'
 import { normalizeText } from '../core/distill-detect.mjs'
@@ -926,9 +927,86 @@ export function readJevConfig(readSetting) {
   }
 }
 
-export function validateJevPatch(body = {}) {
+/**
+ * S1 (SSRF): where a policy endpoint may point. The external Jev provider must
+ * be https to a public host. Laya / ModernBERT are local sidecars by design
+ * (their shipped default is http://127.0.0.1:8000), so choosing them is the
+ * opt-in for loopback over http; any other host still needs https + public.
+ * Link-local (cloud metadata), unspecified and private ranges are refused for
+ * every provider. Hostnames are not DNS-resolved here (no rebinding defence).
+ * @returns {string|null} problem text, or null when allowed
+ */
+export function jevBaseUrlProblem(raw, provider = 'jev') {
+  let url
+  try {
+    url = new URL(String(raw || '').trim())
+  } catch {
+    return 'base_url 必须是 http(s)'
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return 'base_url 必须是 http(s)'
+  if (url.username || url.password) return 'base_url 不能内嵌账号密码'
+  const kind = hostKind(url.hostname)
+  if (kind === 'blocked') return 'base_url 不能指向链路本地/元数据/未指定地址'
+  const localSidecar = providerOf(provider).id !== 'jev'
+  if (kind === 'loopback') {
+    return localSidecar ? null : 'Jev 外部服务不能指向本机地址（本地服务请选 Laya / ModernBERT）'
+  }
+  if (kind === 'private') return 'base_url 不能指向内网地址'
+  if (url.protocol !== 'https:') return '非本机地址必须使用 https'
+  return null
+}
+
+function ipv4Kind(ip) {
+  const [a, b] = ip.split('.').map(Number)
+  if (a === 127) return 'loopback'
+  if (a === 0 || (a === 169 && b === 254) || a >= 224) return 'blocked'
+  if (a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127)) {
+    return 'private'
+  }
+  return 'public'
+}
+
+function hostKind(hostname) {
+  const host = String(hostname || '')
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '')
+    .replace(/\.$/, '')
+  if (!host) return 'blocked'
+  if (host === 'localhost' || host.endsWith('.localhost')) return 'loopback'
+  if (host === 'metadata' || host === 'metadata.google.internal' || host.endsWith('.internal')) return 'blocked'
+  if (net.isIPv4(host)) return ipv4Kind(host)
+  if (net.isIPv6(host)) {
+    if (host === '::1') return 'loopback'
+    if (host === '::') return 'blocked'
+    const mapped = host.match(/^::ffff:(?:(\d+\.\d+\.\d+\.\d+)|([0-9a-f]{1,4}):([0-9a-f]{1,4}))$/)
+    if (mapped) {
+      if (mapped[1]) return ipv4Kind(mapped[1])
+      const hi = Number.parseInt(mapped[2], 16)
+      const lo = Number.parseInt(mapped[3], 16)
+      return ipv4Kind(`${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`)
+    }
+    if (/^fe[89ab]/.test(host) || /^ff/.test(host)) return 'blocked'
+    if (/^f[cd]/.test(host)) return 'private'
+    return 'public'
+  }
+  return 'public'
+}
+
+/** Runtime guard for stored (possibly legacy) configs: only the never-valid targets are dropped. */
+function runtimeUrlBlocked(raw) {
+  try {
+    return hostKind(new URL(raw).hostname) === 'blocked'
+  } catch {
+    return true
+  }
+}
+
+export function validateJevPatch(body = {}, current = null) {
   const problems = []
   if (body == null || typeof body !== 'object' || Array.isArray(body)) return ['body 必须是对象']
+  const providerFor = POLICY_PROVIDERS.some((item) => item.id === body.provider)
+    ? body.provider
+    : current?.provider || 'jev'
   if (Object.hasOwn(body, 'enabled') && typeof body.enabled !== 'boolean') problems.push('enabled 必须是布尔')
   if (Object.hasOwn(body, 'hard_regex_enabled') && typeof body.hard_regex_enabled !== 'boolean') {
     problems.push('hard_regex_enabled 必须是布尔')
@@ -939,13 +1017,18 @@ export function validateJevPatch(body = {}) {
   if (Object.hasOwn(body, 'base_url') && body.base_url != null && typeof body.base_url !== 'string') {
     problems.push('base_url 必须是字符串')
   } else if (typeof body.base_url === 'string' && body.base_url.trim()) {
-    let url
-    try {
-      url = new URL(body.base_url.trim())
-    } catch {
-      url = null
+    const problem = jevBaseUrlProblem(body.base_url, providerFor)
+    if (problem) problems.push(problem)
+  }
+  if (Array.isArray(body.api_keys)) {
+    for (const line of body.api_keys) {
+      const bound = typeof line === 'string' ? splitKeyLine(line).baseUrl : ''
+      const problem = bound ? jevBaseUrlProblem(bound, providerFor) : null
+      if (problem) {
+        problems.push(`api_keys 绑定地址：${problem}`)
+        break
+      }
     }
-    if (!url || (url.protocol !== 'http:' && url.protocol !== 'https:')) problems.push('base_url 必须是 http(s)')
   }
   if (Object.hasOwn(body, 'model') && body.model != null && typeof body.model !== 'string') {
     problems.push('model 必须是字符串')
@@ -1055,9 +1138,16 @@ export function validateJevPatch(body = {}) {
 
 /** Apply a panel PUT. Omitted keys stay. An empty api_key, or api_keys: [], clears them. */
 export function applyJevPatch(settings, body = {}) {
-  const problems = validateJevPatch(body)
-  if (problems.length) return { ok: false, problems }
   const current = normalizeJevConfig(settings.get(JEV_SETTING, null))
+  const problems = validateJevPatch(body, current)
+  if (!problems.length && body && typeof body === 'object' && Object.hasOwn(body, 'provider')) {
+    // Switching provider re-checks the stored address against the new provider's rules.
+    if (!Object.hasOwn(body, 'base_url') && current.base_url) {
+      const problem = jevBaseUrlProblem(current.base_url, body.provider)
+      if (problem) problems.push(problem)
+    }
+  }
+  if (problems.length) return { ok: false, problems }
   const next = normalizeJevConfig({
     ...current,
     ...body,
@@ -1307,7 +1397,7 @@ export async function listPolicyModels(
   fetchImpl = globalThis.fetch,
 ) {
   const url = policyModelsUrl(baseUrl)
-  if (!url || typeof fetchImpl !== 'function') {
+  if (!url || runtimeUrlBlocked(url) || typeof fetchImpl !== 'function') {
     throw Object.assign(new Error('先填模型地址'), { code: 'base_url_required' })
   }
   const key = String(apiKey || '').trim()
@@ -1381,7 +1471,7 @@ function jevTargets(config) {
   for (const line of lines) {
     const split = splitKeyLine(line)
     const url = decisionUrl(split.baseUrl || config.base_url)
-    if (!url) continue
+    if (!url || runtimeUrlBlocked(url)) continue
     out.push({ url, apiKey: split.apiKey, id: jevKeyId(url, split.apiKey) })
   }
   return out
@@ -1407,7 +1497,7 @@ export async function classifyJev(text, cfg, fetchImpl = globalThis.fetch, now =
   }).slice(-config.max_state_chars)
   if (!config.enabled || !config.base_url || !document) return { action: 'pass', reason: 'skip' }
   const url = decisionUrl(config.base_url)
-  if (!url || typeof fetchImpl !== 'function') return { action: 'pass', reason: 'skip' }
+  if (!url || runtimeUrlBlocked(url) || typeof fetchImpl !== 'function') return { action: 'pass', reason: 'skip' }
   const model = resolvedPolicyModel(config)
   const windowMs = config.dedup_sec * 1000
   const key = dedupKey(url, model, config, document)

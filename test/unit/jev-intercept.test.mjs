@@ -354,7 +354,13 @@ test('panel patch keeps a stored key unless cleared', () => {
     set: (key, value) => saved.set(key, value),
   }
   assert.equal(
-    applyJevPatch(settings, { enabled: true, base_url: 'http://127.0.0.1:9/v1', model: 'jev', api_key: 'secret' }).ok,
+    applyJevPatch(settings, {
+      enabled: true,
+      provider: 'laya',
+      base_url: 'http://127.0.0.1:9/v1',
+      model: 'jev',
+      api_key: 'secret',
+    }).ok,
     true,
   )
   const kept = applyJevPatch(settings, { timeout_ms: 1500 })
@@ -835,7 +841,7 @@ test('api_keys accepts 999 and rejects 1000', () => {
 test('401 retires that key until the key list is saved again', async () => {
   const cfg = {
     enabled: true,
-    base_url: 'http://auth.example/v1',
+    base_url: 'https://auth.example.test/v1',
     api_keys: ['k-auth-retire', 'k-ok-retire'],
     dedup_sec: 0,
     timeout_ms: 500,
@@ -927,4 +933,60 @@ test('rules that can backtrack exponentially are refused when saved, not silentl
   for (const source of ['(foo|bar)+', '[a-z]+', '\\d{3}', '(a|b)?', '(\\.|x)+']) {
     assert.deepEqual(validateJevPatch({ patterns: [source] }), [], source)
   }
+})
+
+test('S1: policy base_url refuses SSRF targets; local sidecars keep loopback http', async () => {
+  const { jevBaseUrlProblem } = await import('../../src/lib/protocol/jev-intercept.mjs')
+  // External Jev: https + public only
+  assert.equal(jevBaseUrlProblem('https://api.example.test/v1', 'jev'), null)
+  for (const bad of [
+    'http://api.example.test/v1',
+    'https://127.0.0.1:8000',
+    'https://localhost/v1',
+    'https://[::1]/v1',
+    'https://10.0.0.5/v1',
+    'https://172.20.1.1/v1',
+    'https://192.168.1.10/v1',
+    'https://100.64.0.1/v1',
+    'https://[fd00::1]/v1',
+    'https://169.254.169.254/latest/meta-data',
+    'https://[fe80::1]/v1',
+    'https://0.0.0.0/v1',
+    'https://metadata.google.internal/',
+    'https://[::ffff:7f00:1]/v1',
+    'https://2130706433/v1',
+    'https://user:pw@api.example.test/v1',
+    'ftp://api.example.test',
+    'not a url',
+  ]) {
+    assert.ok(jevBaseUrlProblem(bad, 'jev'), bad)
+  }
+  // Laya / ModernBERT sidecars: loopback http is the shipped default
+  assert.equal(jevBaseUrlProblem('http://127.0.0.1:8000', 'laya'), null)
+  assert.equal(jevBaseUrlProblem('http://localhost:8000', 'modernbert'), null)
+  assert.ok(jevBaseUrlProblem('http://169.254.169.254', 'laya'))
+  assert.ok(jevBaseUrlProblem('http://192.168.1.10:8000', 'laya'))
+  assert.ok(jevBaseUrlProblem('http://sidecar.example.test:8000', 'laya'))
+
+  const saved = new Map()
+  const settings = { get: (k, f) => (saved.has(k) ? saved.get(k) : f), set: (k, v) => saved.set(k, v) }
+  assert.equal(applyJevPatch(settings, { base_url: 'https://169.254.169.254/v1' }).ok, false)
+  assert.equal(applyJevPatch(settings, { api_keys: ['http://10.0.0.1/v1 k1'] }).ok, false)
+  assert.equal(applyJevPatch(settings, { provider: 'laya', base_url: 'http://127.0.0.1:8000' }).ok, true)
+  // switching back to external Jev re-checks the stored loopback address
+  assert.equal(applyJevPatch(settings, { provider: 'jev' }).ok, false)
+
+  // Runtime: a stored metadata address is never called, even from a legacy config
+  let called = 0
+  const verdict = await classifyJev(
+    'runtime-ssrf',
+    { enabled: true, base_url: 'http://169.254.169.254/v1' },
+    async () => {
+      called += 1
+      return { ok: true, json: async () => ({}) }
+    },
+  )
+  assert.equal(called, 0)
+  assert.equal(verdict.action, 'pass')
+  await assert.rejects(listPolicyModels('http://169.254.169.254/v1', '', 500, async () => ({ ok: true })))
 })

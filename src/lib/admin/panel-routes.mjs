@@ -29,6 +29,7 @@ import { applyRefusalGuardPatch, refusalGuardPolicy } from '../core/refusal-guar
 import {
   applyJevPatch,
   buildScopeInventory,
+  jevBaseUrlProblem,
   listPolicyModels as listDecisionModels,
   publicJevConfig,
   readJevConfig,
@@ -5908,6 +5909,8 @@ export function createPanelHandler(ctx) {
         const typedKey = String(body?.api_key || '').trim()
         const stored = readJevConfig((key, fallback) => new SettingsRepo().get(key, fallback))
         const apiKey = typedKey || stored.api_keys[0] || ''
+        const urlProblem = baseUrl ? jevBaseUrlProblem(baseUrl, body?.provider || stored.provider) : null
+        if (urlProblem) return json(res, 400, { ok: false, error: { message: urlProblem, code: 'base_url_rejected' } })
         try {
           const listed = await listDecisionModels(baseUrl, apiKey, Number(body?.timeout_ms) || current.timeout_ms)
           return json(res, 200, panel.ok({ models: listed.models, url: listed.url }))
