@@ -244,3 +244,18 @@ test('the alpha/search route authenticates, logs and reaches the Codex search ho
   assert.equal(rows[0].api_key_kind, 'managed')
   fs.rmSync(root, { recursive: true, force: true })
 })
+
+test('search logs the Codex account (email, then ChatGPT account id), not the slot id', async () => {
+  const root = tempRoot('acct')
+  writeGptVm(root, 'vm-gpt-a', { email: 'codex-a@example.test', chatgpt_account_id: 'org-example-a' })
+  const fetchImpl = async () => upstream(200, { output: 'ok', results: [] })
+  const { logBag } = await search(root, { ops: { fetchImpl } })
+  assert.equal(logBag.vm_id, 'vm-gpt-a')
+  assert.equal(logBag.account_id, 'codex-a@example.test')
+  assert.equal(logBag.final_account_id, 'codex-a@example.test')
+
+  const root2 = tempRoot('acct-id')
+  writeGptVm(root2, 'vm-gpt-b', { chatgpt_account_id: 'org-example-b' })
+  const second = await search(root2, { ops: { fetchImpl } })
+  assert.equal(second.logBag.account_id, 'org-example-b')
+})

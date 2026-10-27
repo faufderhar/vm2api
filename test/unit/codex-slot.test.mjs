@@ -407,3 +407,20 @@ test('imported Codex account defaults to unlimited kernel concurrency', () => {
   assert.equal(parsed.account.max_concurrency, 0)
   assert.equal(parsed.account.rpm, 0)
 })
+
+test('codexLogAccountId prefers email, then chatgpt_account_id, then the slot id', async () => {
+  const { codexLogAccountId } = await import('../../src/lib/vm/codex-slot.mjs')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-logacct-'))
+  const write = (id, accounts) => {
+    fs.mkdirSync(path.join(root, 'vms', id), { recursive: true })
+    fs.writeFileSync(path.join(root, 'vms', id, 'codex-credentials.json'), JSON.stringify({ accounts }))
+  }
+  write('vm-a', [{ email: 'a@example.test', chatgpt_account_id: 'org-a' }])
+  write('vm-b', [{ chatgpt_account_id: 'org-b' }])
+  write('vm-c', [])
+  assert.equal(codexLogAccountId(root, { id: 'vm-a' }), 'a@example.test')
+  assert.equal(codexLogAccountId(root, { id: 'vm-b' }), 'org-b')
+  assert.equal(codexLogAccountId(root, { id: 'vm-c', codex: { chatgpt_account_id: 'org-c' } }), 'org-c')
+  assert.equal(codexLogAccountId(root, { id: 'vm-d' }), 'vm-d')
+  assert.equal(codexLogAccountId(null, null), null)
+})

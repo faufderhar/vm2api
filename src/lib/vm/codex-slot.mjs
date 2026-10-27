@@ -24,6 +24,21 @@ export function readCodexAccounts(projectRoot, vmId) {
   }
 }
 
+/**
+ * Account label for request logs: the signed-in email, else the ChatGPT account id,
+ * else the slot id. Mirrors grokLogAccountId so usage groups by account, not slot.
+ */
+export function codexLogAccountId(projectRoot, vm) {
+  let accounts = []
+  try {
+    accounts = projectRoot && vm?.id ? readCodexAccounts(projectRoot, vm.id) : []
+  } catch {}
+  const account = accounts.find((row) => row && typeof row === 'object') || {}
+  const bag = vm?.codex && typeof vm.codex === 'object' ? vm.codex : {}
+  const pick = (...values) => values.map((v) => (typeof v === 'string' ? v.trim() : '')).find(Boolean) || ''
+  return pick(account.email, bag.email, account.chatgpt_account_id, bag.chatgpt_account_id, vm?.id) || null
+}
+
 export function writeCodexAccounts(projectRoot, vmId, accounts) {
   if (!projectRoot || !vmId) throw new Error('projectRoot and vmId required')
   atomicWriteJson(

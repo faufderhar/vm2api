@@ -35,7 +35,7 @@ import { isLocalEgressProxy } from '../vm/egress.mjs'
 import { assertKernelProxyResolved } from '../vm/proxy-policy.mjs'
 import { vmNodeId } from '../cluster/placement.mjs'
 import { hostProxyUrlForVm } from '../vm/slot-host.mjs'
-import { readCodexAccounts, upsertCodexAccount } from '../vm/codex-slot.mjs'
+import { codexLogAccountId, readCodexAccounts, upsertCodexAccount } from '../vm/codex-slot.mjs'
 import { scopeAccountFromVm } from './jev-intercept.mjs'
 import {
   CODEX_APP_VERSION,
@@ -728,6 +728,8 @@ export async function handleCodexProtocol({
       // means the 403 is already written.
       if (accountGate) {
         logBag.vm_id = vm.id
+        logBag.final_account_id = codexLogAccountId(projectRoot, vm)
+        if (!logBag.account_id) logBag.account_id = logBag.final_account_id
         const blocked = await accountGate(scopeAccountFromVm(vm))
         if (blocked) {
           lease.release()
@@ -819,6 +821,9 @@ export async function handleCodexProtocol({
         }
         hops += 1
         logBag.vm_id = vm.id
+        // account_id is the first account tried, final_account_id the one that served.
+        logBag.final_account_id = codexLogAccountId(projectRoot, vm)
+        if (!logBag.account_id) logBag.account_id = logBag.final_account_id
         logBag.attempt_count = hops
         const chunks = []
         const nameSseEvent = createResponsesSseEventNamer()
@@ -1309,7 +1314,8 @@ export async function handleCodexSearch({
         }
         attempts += 1
         logBag.vm_id = vm.id
-        logBag.account_id = vm.id
+        logBag.final_account_id = codexLogAccountId(projectRoot, vm)
+        if (!logBag.account_id) logBag.account_id = logBag.final_account_id
         logBag.attempt_count = attempts
         last = await post({
           projectRoot,
@@ -1461,7 +1467,8 @@ export async function handleCodexImages({
         }
         attempts += 1
         logBag.vm_id = vm.id
-        logBag.account_id = vm.id
+        logBag.final_account_id = codexLogAccountId(projectRoot, vm)
+        if (!logBag.account_id) logBag.account_id = logBag.final_account_id
         logBag.attempt_count = attempts
         last = await post({
           url: CODEX_IMAGES_URLS[kind] || CODEX_IMAGE_GENERATIONS_URL,
