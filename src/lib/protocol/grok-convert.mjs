@@ -26,7 +26,36 @@ export function grokModelAcceptsEffort(model) {
   return /^grok-4\.(?:5|6|7)(?:-|$)/.test(id)
 }
 
-const EFFORTS = new Set(['low', 'medium', 'high'])
+const EFFORT_ORDER = ['low', 'medium', 'high', 'xhigh']
+
+/**
+ * Effort values a Grok model takes, lowest first. A live /v1/models row
+ * (`reasoning_efforts`, synced into the policy) wins; this is the fallback when
+ * no list was passed. Grok Build 1.0.70 lists xhigh/high/medium/low for
+ * grok-4.6 / 4.7 (incl. -build-fast) and high/medium/low for grok-4.5.
+ */
+export function grokDefaultEfforts(model) {
+  if (!grokModelAcceptsEffort(model)) return []
+  const id = String(model || '')
+    .split('/')
+    .filter(Boolean)
+    .pop()
+    .toLowerCase()
+  if (/^grok-4\.(?:6|7)(?:-|$)/.test(id)) return ['low', 'medium', 'high', 'xhigh']
+  return ['low', 'medium', 'high']
+}
+
+function normalizeEfforts(list) {
+  if (!Array.isArray(list)) return null
+  const seen = new Set()
+  for (const item of list) {
+    const value = String(typeof item === 'string' ? item : item?.value || '')
+      .trim()
+      .toLowerCase()
+    if (EFFORT_ORDER.includes(value)) seen.add(value)
+  }
+  return EFFORT_ORDER.filter((value) => seen.has(value))
+}
 
 function textOf(content) {
   if (typeof content === 'string') return content
@@ -142,24 +171,41 @@ function toolsOf(tools) {
   return out.length ? out : undefined
 }
 
-/** Anthropic thinking / effort → Responses reasoning.effort, only on models that take one. */
-function effortOf(body) {
-  const asked = String(body?.output_config?.effort || body?.reasoning_effort || '').toLowerCase()
-  if (EFFORTS.has(asked)) return asked
-  if (asked === 'max' || asked === 'xhigh') return 'high'
+/**
+ * Anthropic thinking / effort → Responses reasoning.effort, clamped to what the
+ * model takes. xhigh / max ask for the top level, so they become xhigh where the
+ * model lists it, high otherwise. Adaptive thinking without an explicit effort is
+ * left unset: Grok's server default is high, and pinning medium here made
+ * Claude Code traffic think less than the official client does.
+ */
+export function grokEffortFor(body, allowed) {
+  if (!allowed.length) return ''
+  const top = allowed[allowed.length - 1]
+  const pick = (want) => {
+    if (allowed.includes(want)) return want
+    const rank = EFFORT_ORDER.indexOf(want)
+    const below = allowed.filter((value) => EFFORT_ORDER.indexOf(value) <= rank)
+    return below.length ? below[below.length - 1] : allowed[0]
+  }
+  const asked = String(body?.output_config?.effort || body?.reasoning_effort || body?.reasoning?.effort || '')
+    .trim()
+    .toLowerCase()
+  if (asked === 'max' || asked === 'xhigh') return top
+  if (EFFORT_ORDER.includes(asked)) return pick(asked)
+  if (asked === 'minimal') return allowed[0]
+  if (asked === 'none') return ''
   const thinking = body?.thinking
   if (thinking?.type === 'enabled') {
     const budget = Number(thinking.budget_tokens)
-    if (!Number.isFinite(budget) || budget <= 0) return 'medium'
-    if (budget <= 4096) return 'low'
-    if (budget <= 16384) return 'medium'
-    return 'high'
+    if (!Number.isFinite(budget) || budget <= 0) return pick('medium')
+    if (budget <= 4096) return pick('low')
+    if (budget <= 16384) return pick('medium')
+    return pick('high')
   }
-  if (thinking?.type === 'adaptive') return 'medium'
   return ''
 }
 
-export function anthropicToGrokResponses(body = {}) {
+export function anthropicToGrokResponses(body = {}, { efforts } = {}) {
   const input = []
   const system = textOf(body.system)
   if (system) input.push({ role: 'system', content: system })
@@ -183,7 +229,8 @@ export function anthropicToGrokResponses(body = {}) {
   for (const key of ['temperature', 'top_p']) {
     if (typeof body[key] === 'number' && Number.isFinite(body[key])) out[key] = body[key]
   }
-  const effort = effortOf(body)
-  if (effort && grokModelAcceptsEffort(body.model)) out.reasoning = { effort }
+  const allowed = normalizeEfforts(efforts) ?? grokDefaultEfforts(body.model)
+  const effort = grokEffortFor(body, allowed)
+  if (effort) out.reasoning = { effort }
   return out
 }

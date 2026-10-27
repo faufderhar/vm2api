@@ -112,3 +112,32 @@ test('a request model drops its provider prefix, follows aliases, and respects a
     assert.deepEqual(resolveGrokRequestModel('grok-5').ok, true)
   })
 })
+
+test('a live sync stores the xAI effort menu and the convert path reads it', async () => {
+  const { grokReasoningEffortsFor } = await import('../../src/lib/protocol/grok-model-policy.mjs')
+  const { liveEffortFields } = await import('../../src/lib/protocol/grok-models.mjs')
+  withDb(() => {
+    const rows = [
+      {
+        id: 'grok-4.7',
+        name: 'Grok 4.7',
+        reasoning_effort: 'high',
+        reasoning_efforts: [
+          { value: 'xhigh', label: 'Extra High Effort' },
+          { value: 'high', default: true },
+          { value: 'medium' },
+          { value: 'low' },
+        ],
+      },
+      { id: 'grok-4.5', reasoning_efforts: [{ value: 'high', default: true }, { value: 'medium' }, { value: 'low' }] },
+      { id: 'grok-4.20-0309-non-reasoning', supports_reasoning_effort: false },
+      { id: 'grok-4.6' },
+    ].map((row) => ({ id: row.id, display_name: row.name || row.id, ...liveEffortFields(row) }))
+    syncGrokIdsIntoPolicy(rows)
+    assert.deepEqual(grokReasoningEffortsFor('grok-4.7'), ['xhigh', 'high', 'medium', 'low'])
+    assert.deepEqual(grokReasoningEffortsFor('xai/grok-4.5'), ['high', 'medium', 'low'])
+    assert.deepEqual(grokReasoningEffortsFor('grok-4.20-0309-non-reasoning'), [])
+    assert.equal(grokReasoningEffortsFor('grok-4.6'), null)
+    assert.equal(loadGrokModelPolicy().models['grok-4.7'].capabilities.reasoning_effort_default, 'high')
+  })
+})

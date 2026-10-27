@@ -8,7 +8,7 @@ import { StringDecoder } from 'node:string_decoder'
 import { isValidVmId } from '../vm/vm-file.mjs'
 import { isGrokVm } from '../vm/vm-kind.mjs'
 import { grokRoutingOf, isGrokProtocolAllowed } from './grok-route.mjs'
-import { resolveGrokRequestModel } from './grok-model-policy.mjs'
+import { grokReasoningEffortsFor, resolveGrokRequestModel } from './grok-model-policy.mjs'
 import { keyAllowsVm, keyScopeFromRequest, vmPoolDenial } from '../admin/key-scope.mjs'
 import { restrictCodexClient } from './codex-restriction.mjs'
 import {
@@ -109,10 +109,10 @@ function stripGrokCallerIdentity(body) {
  * Outbound body and upstream route per inbound protocol. Native modes pass the body through
  * (identity fields stripped); `anthropic.messages` convert goes through Responses like Codex.
  */
-export function buildGrokOutbound(protocol, body, mode, { stream } = {}) {
+export function buildGrokOutbound(protocol, body, mode, { stream, efforts } = {}) {
   const clean = stripGrokCallerIdentity(body)
   if (protocol === 'anthropic.messages' && mode === 'convert') {
-    const converted = anthropicToGrokResponses(clean)
+    const converted = anthropicToGrokResponses(clean, { efforts: efforts ?? grokReasoningEffortsFor(clean.model) })
     return {
       path: UPSTREAM_PATHS['openai.responses'],
       body: { ...stripGrokCallerIdentity(converted), stream: true },
