@@ -13,6 +13,36 @@ import { ensureGrokKernel, writeGrokKernelConfig } from '../transport/grok-kerne
 
 const HARD_DOWN = new Set(['stopped', 'dead', 'error', 'disabled'])
 
+/**
+ * Effort menu from a /v1/models row, as Grok Build reads it: `reasoning_efforts`
+ * (objects with `value`, one marked `default`), else the deprecated
+ * `supports_reasoning_effort` flag. Values only; labels stay upstream.
+ */
+export function liveEffortFields(row) {
+  if (!row || typeof row !== 'object') return {}
+  const out = {}
+  if (Array.isArray(row.reasoning_efforts)) {
+    const values = []
+    let fallbackDefault = ''
+    for (const item of row.reasoning_efforts) {
+      const value = String(typeof item === 'string' ? item : item?.value || '')
+        .trim()
+        .toLowerCase()
+      if (!/^[a-z]{1,16}$/.test(value) || values.includes(value)) continue
+      values.push(value)
+      if (item?.default === true) fallbackDefault = value
+    }
+    out.reasoning_efforts = values
+    const serverDefault = String(row.reasoning_effort_server_default || row.reasoning_effort || fallbackDefault || '')
+      .trim()
+      .toLowerCase()
+    if (values.includes(serverDefault)) out.reasoning_effort_default = serverDefault
+  } else if (row.supports_reasoning_effort === false) {
+    out.reasoning_efforts = []
+  }
+  return out
+}
+
 export async function fetchGrokUpstreamModels({ projectRoot, vm, forward, readJson = readGrokKernelJson } = {}) {
   const call =
     forward ||
@@ -43,7 +73,7 @@ export async function fetchGrokUpstreamModels({ projectRoot, vm, forward, readJs
     const id = String(row?.id || '').trim()
     if (!isGrokSeriesId(id) || ids.includes(id)) continue
     ids.push(id)
-    models.push({ id, display_name: row?.name || row?.id })
+    models.push({ id, display_name: row?.name || row?.id, ...liveEffortFields(row) })
   }
   return { ok: true, ids, models, status }
 }

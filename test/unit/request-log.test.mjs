@@ -1042,7 +1042,10 @@ test('exportRows + csv/jsonl keep ip and drop the presented key', () => {
 test('a presented key is stored as its first 8 and last 4 characters only', () => {
   const store = tmpStore('normal')
   const key = 'sk-vm-' + 'ab'.repeat(32)
-  const ctx = store.start({ method: 'POST', headers: {}, socket: { remoteAddress: '198.51.100.5' } }, { pathName: '/v1/messages' })
+  const ctx = store.start(
+    { method: 'POST', headers: {}, socket: { remoteAddress: '198.51.100.5' } },
+    { pathName: '/v1/messages' },
+  )
   const row = store.finish(ctx, { status: 429, error_code: 'key_quota_exceeded', api_key_presented: key })
   assert.equal(row.api_key_presented, 'sk-vm-ab…abab')
   const listed = store.queryNormal({ status: 'error', include_muted: true })
@@ -1056,7 +1059,11 @@ test('a presented key is stored as its first 8 and last 4 characters only', () =
 test('authFailureLogFields records a recognised key by id, never by its secret', () => {
   const secret = 'sk-vm-' + 'cd'.repeat(32)
   assert.deepEqual(
-    authFailureLogFields({ presentedApiKey: secret, authKeyKind: 'managed', authKeyRecord: { id: 'k-1', user_id: 'u-1' } }),
+    authFailureLogFields({
+      presentedApiKey: secret,
+      authKeyKind: 'managed',
+      authKeyRecord: { id: 'k-1', user_id: 'u-1' },
+    }),
     { api_key_kind: 'managed', api_key_id: 'k-1', user_id: 'u-1', api_key_presented: null },
   )
   assert.deepEqual(authFailureLogFields({ presentedApiKey: secret, authKeyKind: 'master' }), {
@@ -1296,4 +1303,33 @@ test('the logged client address ignores a forwarded header without a trusted pro
   } finally {
     if (previous != null) process.env.TRUST_PROXY = previous
   }
+})
+
+test('finish stores reasoning_tokens and the log row exposes it', async () => {
+  const { toUsageLogRow } = await import('../../src/lib/db/repos/usage-logs-view.mjs')
+  const store = tmpStore('normal')
+  const ctx = store.start(
+    { method: 'POST', headers: {}, socket: {} },
+    { protocol: 'openai.responses', pathName: '/v1/responses' },
+  )
+  const sum = store.finish(ctx, {
+    status: 200,
+    model: 'grok-4.7',
+    upstream_model: 'grok-4.7',
+    reasoning_tokens: 321,
+    usage: { input_tokens: 10, output_tokens: 400 },
+  })
+  assert.equal(sum.reasoning_tokens, 321)
+  const row = store.queryNormal({ limit: 1 }).items[0]
+  assert.equal(row.reasoning_tokens, 321)
+  const names = { users: new Map(), keys: new Map(), vms: new Map(), accounts: new Map() }
+  assert.equal(toUsageLogRow(row, names).reasoningTokens, 321)
+  const bad = store.finish(
+    store.start(
+      { method: 'POST', headers: {}, socket: {} },
+      { protocol: 'openai.chat', pathName: '/v1/chat/completions' },
+    ),
+    { status: 200, model: 'grok-4.7', reasoning_tokens: -5, usage: { input_tokens: 1, output_tokens: 1 } },
+  )
+  assert.equal(bad.reasoning_tokens, null)
 })

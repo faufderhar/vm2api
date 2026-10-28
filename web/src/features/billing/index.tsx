@@ -4,7 +4,6 @@ import { Link } from '@tanstack/react-router'
 import { VIEW_TITLES } from '@/config/nav'
 import { fmtNum, fmtUsd } from '@/lib/format'
 import type { VmKind } from '@/lib/vm-kind'
-import { useVmIndex } from '@/hooks/use-vm-index'
 import { Button } from '@/components/ui/button'
 import {
   Table,
@@ -21,6 +20,7 @@ import { SlotIdentity } from '@/components/platform-chip'
 import { QueryGate } from '@/components/query-gate'
 import { StatCard } from '@/components/stat-card'
 import { billingQueryOptions } from '@/features/billing/queries'
+import { useVmIndex } from '@/features/vm/use-vm-index'
 import { emptyTotals, splitBilling } from './split'
 
 type PlatformFilter = 'all' | VmKind
@@ -30,7 +30,7 @@ export function BillingPage() {
   const [platform, setPlatform] = useState<PlatformFilter>('all')
   const q = useQuery(billingQueryOptions(groupBy))
   const { vms } = useVmIndex()
-  const items = q.data?.items || []
+  const items = useMemo(() => q.data?.items || [], [q.data?.items])
 
   const split = useMemo(
     () => splitBilling(items, groupBy, vms),

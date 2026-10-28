@@ -222,6 +222,18 @@ export function resolveGrokRequestModel(raw) {
   return { ok: true, model: id, alias: id !== bare ? bare : null, requested }
 }
 
+/**
+ * Effort values xAI listed for this model on the last live sync, or null when the
+ * catalog never said (seed rows, older syncs). The convert path falls back to its
+ * static table on null.
+ */
+export function grokReasoningEffortsFor(model) {
+  const resolved = resolveGrokRequestModel(model)
+  if (!loaded) loadGrokModelPolicy()
+  const list = policy.models?.[resolved.model]?.capabilities?.reasoning_efforts
+  return Array.isArray(list) ? list.slice() : null
+}
+
 export function resetGrokModelPolicy() {
   policy = seedGrokPolicy()
   loaded = true
@@ -241,10 +253,15 @@ export function syncGrokIdsIntoPolicy(ids = [], { displayNameOf = null } = {}) {
     const id = String(typeof item === 'string' ? item : item?.id || '').trim()
     if (!isGrokSeriesId(id) || seen.has(id.toLowerCase())) continue
     seen.add(id.toLowerCase())
-    live.push({
+    const row = {
       id,
       display_name: String((typeof item === 'object' && (item.display_name || item.name)) || '').trim(),
-    })
+    }
+    if (typeof item === 'object' && Array.isArray(item.reasoning_efforts)) {
+      row.reasoning_efforts = item.reasoning_efforts.map((value) => String(value))
+      if (item.reasoning_effort_default) row.reasoning_effort_default = String(item.reasoning_effort_default)
+    }
+    live.push(row)
   }
   if (!live.length) {
     return { ok: true, synced: 0, added: [], ids: listGrokPolicyModels().map((row) => row.id) }
@@ -254,8 +271,15 @@ export function syncGrokIdsIntoPolicy(ids = [], { displayNameOf = null } = {}) {
   for (const row of live) {
     const prev = policy.models[row.id]
     if (!prev) added.push(row.id)
+    const capabilities = { ...(prev?.capabilities || {}) }
+    if (row.reasoning_efforts) {
+      capabilities.reasoning_efforts = row.reasoning_efforts
+      if (row.reasoning_effort_default) capabilities.reasoning_effort_default = row.reasoning_effort_default
+      else delete capabilities.reasoning_effort_default
+    }
     next[row.id] = entry(row.id, {
       ...prev,
+      capabilities: prev || row.reasoning_efforts ? capabilities : undefined,
       display_name: row.display_name || prev?.display_name || displayNameOf?.(row.id) || row.id,
       enabled: prev ? prev.enabled !== false : false,
     })

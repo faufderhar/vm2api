@@ -9,10 +9,16 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { exchangeAuthCode, generateAuthUrl, peekAuthUrlSession } from '../../src/lib/oauth/oauth-auth-url.mjs'
 import { FULL_OAUTH_SCOPE } from '../../src/lib/oauth/oauth-contract.mjs'
-import { sessionKeyToOAuth } from '../../src/lib/oauth/cookie-auth.mjs'
+import { oauthAuthBinPath, sessionKeyToOAuth } from '../../src/lib/oauth/cookie-auth.mjs'
+
+// kin-oauth-auth is a closed payload with no build step in this repo: skip, never fake it.
+const noOAuthBin = oauthAuthBinPath()
+  ? false
+  : 'bin/kin-oauth-auth not present (closed payload; set KIN_OAUTH_AUTH_BIN)'
 
 test('OAuth binary exchanges provider state with session PKCE and preserves cookie authorization', {
   timeout: 30000,
+  skip: noOAuthBin,
 }, async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-oauth-authorize-'))
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))

@@ -252,7 +252,7 @@ export function WrapSamplePage() {
   const qc = useQueryClient()
   const sample = useQuery(wrapSampleQueryOptions())
   const dash = useQuery(dashboardQueryOptions())
-  const vms: Vm[] = dash.data?.vms || []
+  const vms: Vm[] = useMemo(() => dash.data?.vms || [], [dash.data?.vms])
   const [restart, setRestart] = useState(true)
   const [selected, setSelected] = useState<string[]>([])
   const [pendingDataplane, setPendingDataplane] = useState<

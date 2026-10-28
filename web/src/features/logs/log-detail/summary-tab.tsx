@@ -301,6 +301,7 @@ export function SummaryTab({
       row.clientSessionId ||
       row.inboundDeviceId ||
       row.reasoningEffort ||
+      row.reasoningTokens != null ||
       row.requestId ? (
         <div className='space-y-2'>
           <h4 className='text-sm font-semibold'>会话信息</h4>
@@ -359,6 +360,16 @@ export function SummaryTab({
                   思考强度
                 </span>
                 <ThinkingEffortBadge effort={row.reasoningEffort} />
+              </div>
+            ) : null}
+            {row.reasoningTokens != null ? (
+              <div className='flex items-center gap-2 p-4'>
+                <span className='shrink-0 text-xs text-muted-foreground'>
+                  推理 tokens
+                </span>
+                <span className='font-mono text-xs tabular-nums'>
+                  {row.reasoningTokens}
+                </span>
               </div>
             ) : null}
           </div>

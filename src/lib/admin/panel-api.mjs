@@ -44,7 +44,13 @@ import { accountTierKey, isNearLimit, normalizeTiers, resolveTierPolicy } from '
 import { applyVmQuotaConfig, applyVmQuotaPolicy, vmQuotaOverrideOf, vmQuotaView } from '../pool/vm-quota-override.mjs'
 import { GATE_OPEN, gatePolicyFields, gateZone, quotaGateOf } from '../pool/quota-gate.mjs'
 import { inferClaudeTier } from '../pool/claude-tier.mjs'
-import { listQuotaFromHeaders, isOfficialWindowLimited } from '../pool/quota-window.mjs'
+import {
+  listQuotaFromHeaders,
+  isOfficialWindowLimited,
+  effectiveRateWindow,
+  WINDOW_5H_MS,
+  WINDOW_7D_MS,
+} from '../pool/quota-window.mjs'
 import { hardBlockOf } from '../pool/rate-limit-service.mjs'
 import { unitCircuit } from '../pool/unit-circuit.mjs'
 import { accountIdOf, normalizePoolRouting } from '../pool/pool-scheduler.mjs'
@@ -1660,24 +1666,36 @@ export function quotaFromAccount(acc, quotaConfig) {
   const extra = u.extra_usage || null
   const o5 = u.official?.['5h'] || u['5h'] || {}
   const o7 = u.official?.['7d'] || u['7d'] || {}
-  const o5Limited = isOfficialWindowLimited(o5)
-  const o7Limited = isOfficialWindowLimited(o7)
+  // C6: same rule as the gateway's applyEffectiveWindows. A probe-source sticky
+  // 100%/rejected whose current window has no gateway traffic (last_used before
+  // the window start) is leftover from the previous window, not a live limit.
+  // Without last_used it stays limited, exactly like the scheduler.
+  const lastUsedAt = acc?.last_used_at ?? null
+  const probeSource = u.source || acc?.last_probe?.source || 'vm-oauth-usage'
+  const e5 = effectiveRateWindow(o5, { lastUsedAt, source: probeSource, durationMs: WINDOW_5H_MS })
+  const e7 = effectiveRateWindow(o7, { lastUsedAt, source: probeSource, durationMs: WINDOW_7D_MS })
+  const o5Limited = isOfficialWindowLimited(o5) && !e5.stale
+  const o7Limited = isOfficialWindowLimited(o7) && !e7.stale
   const effectiveU5 = o5Limited
     ? 1.0
     : listed.utilization_5h != null
       ? listed.utilization_5h
-      : o5.utilization != null
-        ? Number(o5.utilization)
-        : null
+      : e5.stale
+        ? e5.utilization
+        : o5.utilization != null
+          ? Number(o5.utilization)
+          : null
   const effectiveU7 = o7Limited
     ? 1.0
     : listed.utilization_7d != null
       ? listed.utilization_7d
-      : o7.utilization != null
-        ? Number(o7.utilization)
-        : null
-  const effectiveStatus5 = o5Limited ? 'rejected' : listed.status_5h || o5.status || null
-  const effectiveStatus7 = o7Limited ? 'rejected' : listed.status_7d || o7.status || null
+      : e7.stale
+        ? e7.utilization
+        : o7.utilization != null
+          ? Number(o7.utilization)
+          : null
+  const effectiveStatus5 = o5Limited ? 'rejected' : listed.status_5h || (e5.stale ? e5.status : o5.status) || null
+  const effectiveStatus7 = o7Limited ? 'rejected' : listed.status_7d || (e7.stale ? e7.status : o7.status) || null
   const q = {
     utilization_5h: effectiveU5,
     utilization_7d: effectiveU7,
@@ -1699,6 +1717,9 @@ export function quotaFromAccount(acc, quotaConfig) {
     probe_source: u.source || acc?.last_probe?.source || null,
     account_tier: u.account_tier || null,
     usage_has_fable: u.usage_has_fable ?? null,
+    // Official sticky leftover the panel no longer shows as 100% (null when live).
+    official_stale_5h: isOfficialWindowLimited(o5) && e5.stale ? e5.stale_reason || 'stale' : null,
+    official_stale_7d: isOfficialWindowLimited(o7) && e7.stale ? e7.stale_reason || 'stale' : null,
   }
   const cfg = weeklySplitConfig(quotaConfig || {})
   const split = publicWeeklySplit(

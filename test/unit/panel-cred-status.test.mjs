@@ -582,3 +582,34 @@ test('quotaFromAccount clears to 0 and active when reset has elapsed', () => {
   assert.equal(q.utilization_5h, 0)
   assert.equal(q.status_5h, 'active')
 })
+
+test('C6: quotaFromAccount drops a sticky official rejected when last_used predates the window', () => {
+  const now = Date.now()
+  const reset5 = String(Math.floor((now + 2 * 3600_000) / 1000)) // window started 3h ago
+  const reset7 = String(Math.floor((now + 3 * 24 * 3600_000) / 1000))
+  const sticky = {
+    source: 'vm-oauth-usage',
+    official: {
+      '5h': { utilization: 1.0, status: 'rejected', reset: reset5 },
+      '7d': { utilization: 1.0, status: 'rejected', reset: reset7 },
+    },
+  }
+  // no gateway traffic since 5 days ago: both windows started after that
+  const idle = quotaFromAccount({ unified: sticky, last_used_at: now - 5 * 24 * 3600_000 })
+  assert.equal(idle.utilization_5h, 0)
+  assert.equal(idle.status_5h, 'active')
+  assert.equal(idle.official_stale_5h, 'probe_no_in_window_usage')
+  assert.equal(idle.utilization_7d, 0)
+  assert.equal(idle.official_stale_7d, 'probe_no_in_window_usage')
+
+  // traffic inside the current 5h window: the limit is real, keep 100%
+  const busy = quotaFromAccount({ unified: sticky, last_used_at: now - 3600_000 })
+  assert.equal(busy.utilization_5h, 1.0)
+  assert.equal(busy.status_5h, 'rejected')
+  assert.equal(busy.official_stale_5h, null)
+
+  // no last_used at all: conservative, same as the scheduler (stays limited)
+  const unknown = quotaFromAccount({ unified: sticky })
+  assert.equal(unknown.utilization_5h, 1.0)
+  assert.equal(unknown.status_7d, 'rejected')
+})

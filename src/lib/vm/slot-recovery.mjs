@@ -74,6 +74,9 @@ export function redactSecrets(text) {
     .replace(/([a-z][\w+.-]*:\/\/)[^/@\s]+@/gi, '$1***@')
     .replace(/(bearer\s+)[\w.~+/=-]+/gi, '$1***')
     .replace(SECRET_VALUE, '$1***')
+    .replace(/\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]*/g, 'eyJ***')
+    .replace(/\brt_[\w.-]{20,}/g, 'rt_***')
+    .replace(/\bxai-[\w-]{20,}/g, 'xai-***')
     .replace(/\bsk-[\w-]{6,}/gi, 'sk-***')
 }
 

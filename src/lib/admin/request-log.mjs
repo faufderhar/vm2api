@@ -22,7 +22,7 @@ import { redactSecrets, requestClientAddress } from '../core/security.mjs'
 import { resolveStoreDb } from '../db/database.mjs'
 import { UsageLogsRepo } from '../db/repos/usage-logs-repo.mjs'
 import { classifyRequestError, resolveMutedErrorClasses } from './error-class.mjs'
-import { costColumnsFromUsage, normalizeUsage } from './pricing.mjs'
+import { costColumnsFromUsage, normalizeUsage, pricingModelFor } from './pricing.mjs'
 import { disjointOpenaiUsage } from '../protocol/openai-usage.mjs'
 import { REASONING_EFFORTS, sessionIdForLog } from '../protocol/log-fields.mjs'
 
@@ -205,6 +205,12 @@ function costColumnsForLog(usage, model, extra = {}) {
     speed: priced.speed ?? null,
     long_context: priced.long_context ?? null,
   }
+}
+
+/** Non-negative integer or null; reasoning tokens are informational only. */
+function reasoningTokensForLog(value) {
+  const n = Number(value)
+  return value != null && Number.isFinite(n) && n >= 0 ? Math.floor(n) : null
 }
 
 /** Tri-state model mismatch: null = upstream did not declare a model. */
@@ -612,6 +618,7 @@ export class RequestLogStore {
       session_id: sessionIdForLog(extra.session_id),
       outbound_session_id: sessionIdForLog(extra.outbound_session_id),
       reasoning_effort: REASONING_EFFORTS.has(extra.reasoning_effort) ? extra.reasoning_effort : null,
+      reasoning_tokens: reasoningTokensForLog(extra.reasoning_tokens),
       inbound_device_id: sessionIdForLog(extra.inbound_device_id),
       // Gate verdict JSON from intercept-gate; the risk audit groups on it.
       intercept: extra.intercept ? String(extra.intercept).slice(0, 400) : null,
@@ -624,7 +631,11 @@ export class RequestLogStore {
       vm_owner_user_id: this.repo.vmOwnerOf(extra.vm_id),
       group_id: extra.group_id ?? 1,
       rate_multiplier: Number.isFinite(Number(extra.rate_multiplier)) ? Number(extra.rate_multiplier) : 1,
-      ...costColumnsForLog(billedUsage, extra.upstream_model || extra.model || extra.requested_model, extra),
+      ...costColumnsForLog(
+        billedUsage,
+        pricingModelFor(extra.upstream_model, extra.model, extra.requested_model),
+        extra,
+      ),
     }
     // sub2api actual_cost: official cost × group rate multiplier (0 is a valid rate)
     if (summary.total_cost != null) {

@@ -87,10 +87,12 @@ export function vmCredentialQueryOptions(id: string, enabled = true) {
 }
 
 export function testModelsQueryOptions(vmId: string) {
-  const q = vmId ? `?vm_id=${encodeURIComponent(vmId)}` : ''
   return queryOptions({
     queryKey: ['panel', 'test-models', vmId || ''] as const,
-    queryFn: () => api<TestModelsPayload>(`/api/panel/test-models${q}`),
+    queryFn: () =>
+      api<TestModelsPayload>(
+        `/api/panel/test-models${vmId ? `?vm_id=${encodeURIComponent(vmId)}` : ''}`
+      ),
     enabled: !!vmId,
   })
 }

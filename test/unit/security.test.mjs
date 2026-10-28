@@ -468,3 +468,47 @@ test('a password check lasts five minutes and a wrong password keeps the session
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('redactSecrets masks JWTs, opaque refresh tokens and sensitive-key values (S2)', async () => {
+  const { redactSecrets } = await import('../../src/lib/core/security.mjs')
+  const slot = await import('../../src/lib/vm/slot-recovery.mjs')
+  const jwt = 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJleGFtcGxlIn0.c2lnbmF0dXJlLWV4YW1wbGU'
+  const input = {
+    headers: { authorization: 'Bearer abc.def', cookie: 'sid=example' },
+    refresh_token: 'opaque-refresh-example-123',
+    client_secret: 'example-client-secret',
+    usage: { input_tokens: 5, max_tokens: 9 },
+    token_type: 'Bearer',
+    text: `upstream said ${jwt}`,
+    nested: JSON.stringify({ access_token: 'inner-example-secret' }),
+    url: 'https://auth.example.test/oauth/token?grant_type=refresh_token&refresh_token=abc123example&x=1',
+    openai: 'sk-proj-EXAMPLEEXAMPLEEXAMPLEEX',
+    rt: 'rt_EXAMPLEEXAMPLEEXAMPLEEXAMPLE',
+    xai: 'xai-EXAMPLEEXAMPLEEXAMPLE',
+    model: 'grok-4.7',
+  }
+  const out = redactSecrets(input)
+  for (const leak of [
+    'abc.def',
+    'sid=example',
+    'opaque-refresh-example-123',
+    'example-client-secret',
+    jwt,
+    'eyJzdWIi',
+    'inner-example-secret',
+    'abc123example',
+    'EXAMPLEEXAMPLEEXAMPLE',
+  ]) {
+    assert.ok(!out.includes(leak), `leaked ${leak}: ${out}`)
+  }
+  const parsed = JSON.parse(out)
+  assert.deepEqual(parsed.usage, { input_tokens: 5, max_tokens: 9 })
+  assert.equal(parsed.token_type, 'Bearer')
+  assert.equal(parsed.model, 'grok-4.7')
+  assert.equal(JSON.parse(parsed.nested).access_token, '***REDACTED***')
+  assert.match(parsed.url, /grant_type=refresh_token&refresh_token=\*\*\*REDACTED\*\*\*&x=1$/)
+
+  const text = slot.redactSecrets(`kernel: token rejected ${jwt} rt_EXAMPLEEXAMPLEEXAMPLEEXAMPLE`)
+  assert.ok(!text.includes('eyJzdWIi'))
+  assert.ok(!text.includes('rt_EXAMPLE'))
+})

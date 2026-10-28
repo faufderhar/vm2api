@@ -269,7 +269,7 @@ test('upstream always streams; a non-stream caller gets the stream folded back',
   upsertGrokAccount(root, 'vm-g3', { access_token: 'at', refresh_token: 'rt', expires_at: Date.now() + 3_600_000 })
   const sse = {
     'openai.chat': [
-      'data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"grok-4.3","choices":[{"index":0,"delta":{"role":"assistant","content":"Hel"}}]}',
+      'data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"grok-4.3-served","choices":[{"index":0,"delta":{"role":"assistant","content":"Hel"}}]}',
       '',
       'data: {"id":"c1","choices":[{"index":0,"delta":{"content":"lo"},"finish_reason":"stop"}]}',
       '',
@@ -283,20 +283,22 @@ test('upstream always streams; a non-stream caller gets the stream folded back',
       'data: {"type":"response.output_text.delta","delta":"Hi","sequence_number":1}',
       '',
       'event: response.completed',
-      'data: {"type":"response.completed","sequence_number":2,"response":{"id":"r1","object":"response","status":"completed","model":"grok-4.3","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hi"}]}],"usage":{"input_tokens":3,"output_tokens":1}}}',
+      'data: {"type":"response.completed","sequence_number":2,"response":{"id":"r1","object":"response","status":"completed","model":"grok-4.3-served","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hi"}]}],"usage":{"input_tokens":3,"output_tokens":1,"output_tokens_details":{"reasoning_tokens":1}}}}',
       '',
     ],
   }
   const envelopes = []
   const run = async (protocol, body, ctxPath) => {
     const sent = {}
+    const logBag = {}
+    sent.logBag = logBag
     await handleGrokProtocol({
       req: { headers: {}, once() {}, off() {} },
       res: { headersSent: false, setHeader() {}, once() {}, off() {} },
       protocol,
       ctx: { body, path: ctxPath },
       inbound: body,
-      logBag: {},
+      logBag,
       stats: { errors: 0, requests: 0, by_route: {} },
       json: (_res, status, payload) => Object.assign(sent, { status, payload }),
       writeSSEHeaders() {},
@@ -337,6 +339,8 @@ test('upstream always streams; a non-stream caller gets the stream folded back',
   assert.equal(chat.payload.choices[0].message.content, 'Hello')
   assert.equal(chat.payload.choices[0].finish_reason, 'stop')
   assert.equal(chat.payload.usage.total_tokens, 5)
+  // The log keeps what was asked for and what xAI says served it apart.
+  assert.equal(chat.logBag.upstream_model, 'grok-4.3-served')
   const sentChat = envelopes[0]
   assert.equal(sentChat.body.stream, true)
   assert.equal(sentChat.body.stream_options.include_usage, true)
@@ -352,6 +356,8 @@ test('upstream always streams; a non-stream caller gets the stream folded back',
   )
   assert.equal(responses.status, 200)
   assert.equal(responses.payload.id, 'r1')
+  assert.equal(responses.logBag.upstream_model, 'grok-4.3-served')
+  assert.equal(responses.logBag.reasoning_tokens, 1)
   assert.equal(responses.payload.output[0].content[0].text, 'Hi')
   const sentResponses = envelopes[1]
   assert.equal(sentResponses.body.stream, true)
@@ -372,13 +378,25 @@ test('the request log names the xAI login a Grok hop used', async (t) => {
   const vm = { id: 'vm-g3', platform: 'xai', grok: {} }
   assert.equal(grokLogAccountId(root, vm), 'vm-g3')
   assert.equal(grokLogAccountId(root, { ...vm, grok: { account_id: 'xai-acct-1' } }), 'xai-acct-1')
-  assert.equal(grokLogAccountId(root, { ...vm, grok: { email: 'bag@example.com', account_id: 'x' } }), 'bag@example.com')
+  assert.equal(
+    grokLogAccountId(root, { ...vm, grok: { email: 'bag@example.com', account_id: 'x' } }),
+    'bag@example.com',
+  )
   upsertGrokAccount(root, 'vm-g3', { access_token: 'at', refresh_token: 'rt', email: 'login@example.com' })
   assert.equal(grokLogAccountId(root, { ...vm, grok: { email: 'stale@example.com' } }), 'login@example.com')
   assert.equal(grokLogAccountId(null, null), null)
 
   const names = { users: new Map(), keys: new Map(), vms: new Map(), accounts: new Map() }
-  const row = toUsageLogRow({ id: 1, created_at: '2026-10-25T00:00:00Z', vm_id: 'vm-g3', account_id: 'login@example.com', final_account_id: 'login@example.com' }, names)
+  const row = toUsageLogRow(
+    {
+      id: 1,
+      created_at: '2026-10-25T00:00:00Z',
+      vm_id: 'vm-g3',
+      account_id: 'login@example.com',
+      final_account_id: 'login@example.com',
+    },
+    names,
+  )
   assert.equal(row.providerName, 'login@example.com')
   assert.equal(row.accountId, 'login@example.com')
 })

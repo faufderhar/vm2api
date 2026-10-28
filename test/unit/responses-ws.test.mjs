@@ -842,7 +842,11 @@ test('real handleProtocol: one in-flight interrupt yields a single cancelled fin
     await nextFrame(opened.ws, (frame) => frame.type === 'response.interrupt.accepted')
     await new Promise((resolve) => setTimeout(resolve, 200))
     assert.equal(finishCalls.length, 1)
-    assert.equal(finishCalls[0].error_code, 'client_cancelled')
+    // A client cancel is a lifecycle terminal, not an error (f747e8f0, same as Claude's
+    // finishClientCancel): final_state carries it, error fields stay empty.
+    assert.equal(finishCalls[0].final_state, 'cancelled')
+    assert.equal(finishCalls[0].error_code, null)
+    assert.equal(finishCalls[0].upstream_status, 200)
     assert.equal(usageRecords.length, 0)
     opened.ws.close()
   } finally {

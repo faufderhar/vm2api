@@ -21,12 +21,45 @@ export function timingSafeEqualStr(a, b) {
   return crypto.timingSafeEqual(left, right)
 }
 
+// JSON keys whose string values are credentials. Token *counts* (input_tokens,
+// max_tokens …) are numbers and never match: only string values are masked.
+const SENSITIVE_JSON_KEY =
+  '(?:[a-z0-9_-]*_token|token|access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|x-api-key|client[_-]?secret|secret|password|passwd|authorization|cookie|set-cookie|session[_-]?key|session[_-]?token)'
+const SENSITIVE_JSON_VALUE = new RegExp(`("${SENSITIVE_JSON_KEY}"\\s*:\\s*")(?:[^"\\\\]|\\\\.)+(")`, 'gi')
+// Same, one JSON level deeper (a JSON string embedded in a string value).
+const SENSITIVE_ESCAPED_VALUE = new RegExp(
+  `(\\\\"${SENSITIVE_JSON_KEY}\\\\"\\s*:\\s*\\\\")(?:(?!\\\\").)+(\\\\")`,
+  'gi',
+)
+// Form / query encoding: refresh_token=…&
+const SENSITIVE_QUERY_VALUE =
+  /((?:^|[?&\s"])(?:access_token|refresh_token|id_token|api_key|client_secret|code_verifier)=)[^&\s"\\]+/gi
+
+/**
+ * Best-effort credential masking for request/debug logs. Returns the JSON
+ * string of `obj` with every replacement kept JSON-safe (no quotes or
+ * backslashes are introduced), so callers may JSON.parse the result.
+ */
 export function redactSecrets(obj) {
   const s = JSON.stringify(obj)
-  return s
-    .replace(/sk-ant-[a-z0-9-]{8,}/gi, (m) => m.slice(0, 14) + '***REDACTED***')
-    .replace(/sk-(?:kin|vm)-[a-f0-9]{8,}/gi, (m) => m.slice(0, 10) + '***REDACTED***')
-    .replace(/Bearer\s+[A-Za-z0-9._\-]+/gi, 'Bearer ***REDACTED***')
+  if (typeof s !== 'string') return s
+  return (
+    s
+      .replace(SENSITIVE_JSON_VALUE, '$1***REDACTED***$2')
+      .replace(SENSITIVE_ESCAPED_VALUE, '$1***REDACTED***$2')
+      .replace(SENSITIVE_QUERY_VALUE, '$1***REDACTED***')
+      .replace(/sk-ant-[a-z0-9-]{8,}/gi, (m) => m.slice(0, 14) + '***REDACTED***')
+      .replace(/sk-(?:kin|vm)-[a-f0-9]{8,}/gi, (m) => m.slice(0, 10) + '***REDACTED***')
+      .replace(/\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,}/g, (m) =>
+        m.includes('***REDACTED***') ? m : 'sk-***REDACTED***',
+      )
+      .replace(/\bxai-[A-Za-z0-9_-]{20,}/g, 'xai-***REDACTED***')
+      // JWT (access / id tokens): header.payload.signature, header always eyJ…
+      .replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*/g, 'eyJ***REDACTED***')
+      // Opaque OpenAI/ChatGPT refresh tokens (rt_… / v1.… long forms)
+      .replace(/\brt_[A-Za-z0-9._-]{20,}/g, 'rt_***REDACTED***')
+      .replace(/Bearer\s+[A-Za-z0-9._~+/=\-*]+/gi, 'Bearer ***REDACTED***')
+  )
 }
 
 export function extractApiKey(req) {

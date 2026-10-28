@@ -307,7 +307,13 @@ export class SeatPlanner {
   /** A sticky seat wait ran past its timeout: it may now take a seat on any VM, keeping its arrival order. */
   toGlobal(ticket) {
     if (!ticket?.queued || !ticket.vmId) return
+    const vmId = String(ticket.vmId)
     this.place(ticket, { kind: 'global', vmId: null })
+    // R1: leaving the VM queue is like remove(): a seat that was only kept for
+    // this queued ticket (inflight 0, grace suppressed) must re-arm its grace
+    // or it stays taken with no timer and no request.
+    const seat = this.seatOf(ticket.seatKey)
+    if (seat?.vmId === vmId) this.armGrace(seat)
   }
 
   /**

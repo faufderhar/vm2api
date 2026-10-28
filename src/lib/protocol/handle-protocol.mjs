@@ -43,7 +43,7 @@ import { handleGrokProtocol } from './handle-grok.mjs'
 import { isMultipartFormData, normalizeImageEditBody } from './image-edit-multipart.mjs'
 import { readRawBody } from '../http/respond.mjs'
 import { disjointOpenaiUsage } from './openai-usage.mjs'
-import { costColumnsFromUsage, normalizeUsage } from '../admin/pricing.mjs'
+import { costColumnsFromUsage, normalizeUsage, pricingModelFor } from '../admin/pricing.mjs'
 import { detectInboundPlatform } from './platform-detect.mjs'
 import { normalizeCodexRouting } from './codex-route.mjs'
 import { applyCodexInboundModelRewrite } from './codex-model-mapping.mjs'
@@ -226,7 +226,7 @@ export function createHandleProtocol(deps) {
   }
 
   function attachPricing(logBag, { managedKey = null, rateMultiplier = 1, bill = false } = {}) {
-    const model = logBag.upstream_model || logBag.model
+    const model = pricingModelFor(logBag.upstream_model, logBag.model)
     const priced = costColumnsFromUsage(logBag.usage || {}, model)
     Object.assign(logBag, priced)
     if (!bill || !managedKey) return
@@ -286,7 +286,7 @@ export function createHandleProtocol(deps) {
         only || logBag.image_usage
           ? { usage: logBag.image_usage || null, model: logBag.image_model || null, only }
           : null
-      const model = logBag.upstream_model || logBag.model || null
+      const model = pricingModelFor(logBag.upstream_model, logBag.model)
       const priced = costColumnsFromUsage(usage, model, image)
       apiKeyStore.recordUsage(managedKey, usage, {
         model,
@@ -933,7 +933,7 @@ export function createHandleProtocol(deps) {
               account,
             }),
           requestStartedAt: logCtx.t0,
-          ops: { requestId: logCtx.request_id, getAttemptsRepo },
+          ops: { ...(deps.grokOps || {}), requestId: logCtx.request_id, getAttemptsRepo },
           stickyRouter,
           sessions: accountQuota?.sessions || null,
           body: ctx.body,

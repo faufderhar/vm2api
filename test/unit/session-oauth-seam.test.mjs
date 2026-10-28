@@ -8,6 +8,7 @@ import {
   panelImportErrorPayload,
   buildSetupTokenAuthorizeURL,
   extractOAuthCodeFromRedirect,
+  oauthAuthBinPath,
 } from '../../src/lib/oauth/cookie-auth.mjs'
 import fs from 'node:fs'
 import {
@@ -22,6 +23,10 @@ import {
 const localAuthSkip = fs.existsSync(new URL('../../src/lib/oauth/auth.js', import.meta.url))
   ? false
   : 'src/lib/oauth/auth.js is local-only (shipped as bin/kin-oauth-auth)'
+// The production path spawns bin/kin-oauth-auth (closed payload, no build step here).
+const noOAuthBin = oauthAuthBinPath()
+  ? false
+  : 'bin/kin-oauth-auth not present (closed payload; set KIN_OAUTH_AUTH_BIN)'
 
 test('KIN_FAKE_SESSION_OAUTH returns deterministic creds without network', async () => {
   process.env.KIN_FAKE_SESSION_OAUTH = '1'
@@ -48,7 +53,7 @@ test('fake branch still rejects non-sid keys', async () => {
   delete process.env.KIN_FAKE_SESSION_OAUTH
 })
 
-test('sessionKeyToOAuth refuses an unbound VM in production', async () => {
+test('sessionKeyToOAuth refuses an unbound VM in production', { skip: noOAuthBin }, async () => {
   await assert.rejects(
     () => sessionKeyToOAuth('sk-ant-sid01-testaaaaaaaa', { proxyUrl: null }),
     (e) => e.code === 'proxy_required',
@@ -57,7 +62,7 @@ test('sessionKeyToOAuth refuses an unbound VM in production', async () => {
 
 // Spawns the shipped bin/kin-oauth-auth: a bundle with an unbound constant
 // fails with ReferenceError before dialing, instead of a transport error.
-test('sessionKeyToOAuth binary dials the claude.ai organizations hop', async () => {
+test('sessionKeyToOAuth binary dials the claude.ai organizations hop', { skip: noOAuthBin }, async () => {
   await assert.rejects(
     () => sessionKeyToOAuth('sk-ant-sid01-testaaaaaaaa', { scope: 'inference', proxyUrl: 'socks5://127.0.0.1:1' }),
     (e) => e.code === 'get_organizations_transport' && /claude\.ai\/api\/organizations/.test(e.message),

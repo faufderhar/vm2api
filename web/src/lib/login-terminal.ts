@@ -1,3 +1,5 @@
+// BEL (\u0007) ends an OSC 8 hyperlink in terminal output, so it must stop the URL.
+// eslint-disable-next-line no-control-regex
 const AUTH_URL = /https:\/\/claude\.com\/cai\/oauth\/authorize\?[^\s\u0007]+/
 
 /** The manual authorize URL Claude prints or copies. */

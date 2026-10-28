@@ -376,6 +376,24 @@ test('vacuumInto produces a consistent snapshot', () => {
   snap.close()
 })
 
+test('P3: vacuumInto binds the destination (quotes are safe) and rejects non-absolute/URI paths', () => {
+  const db = openDatabase({ dataDir: tmp })
+  db.prepare('INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)').run(
+    'k2',
+    '"v2"',
+    new Date().toISOString(),
+  )
+  const dest = path.join(tmp, "o'q dir", "snap'; DROP TABLE settings; --.db")
+  assert.equal(vacuumInto(db, dest), dest)
+  const snap = new DatabaseSync(dest)
+  assert.equal(snap.prepare('SELECT value FROM settings WHERE key = ?').get('k2').value, '"v2"')
+  snap.close()
+  assert.ok(db.prepare("SELECT 1 FROM settings WHERE key = 'k2'").get())
+  for (const bad of ['relative/snap.db', '', 'file:/tmp/x.db?mode=rwc', `${tmp}/a\nb.db`, null]) {
+    assert.throws(() => vacuumInto(db, bad), /absolute file path/)
+  }
+})
+
 test('withTransaction commits and rolls back', () => {
   const db = openDatabase({ dataDir: tmp })
   withTransaction(db, () => {

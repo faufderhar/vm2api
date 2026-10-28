@@ -39,6 +39,13 @@ import { hostProxyUrlForVm } from '../../src/lib/vm/slot-host.mjs'
 
 // Process-ownership tests need the native helper so /proc/<pid>/exe identifies it.
 const egressBin = process.env.KIN_EGRESS_BIN || path.resolve(import.meta.dirname, '../../bin/kin-egress')
+// bin/ is gitignored: build it with `npm run build:egress` (Go) instead of faking a helper.
+const egressSkip =
+  process.platform !== 'linux'
+    ? 'linux only'
+    : fs.existsSync(egressBin)
+      ? false
+      : 'bin/kin-egress missing: run npm run build:egress'
 
 async function waitForProcess(predicate, attempts = 100) {
   for (let i = 0; i < attempts; i++) {
@@ -89,7 +96,7 @@ function egressFixture(t, proxyId = 'px-process') {
 
 for (const sameConfig of [true, false]) {
   test(`a recycled PID is neither reused nor killed with ${sameConfig ? 'matching' : 'changed'} egress config`, {
-    skip: process.platform !== 'linux',
+    skip: egressSkip,
   }, async (t) => {
     const fx = egressFixture(t)
     const sleeper = spawn('sleep', ['60'])
@@ -129,7 +136,7 @@ for (const sameConfig of [true, false]) {
 }
 
 test('stop discards a recycled PID without signaling its new owner', {
-  skip: process.platform !== 'linux',
+  skip: egressSkip,
 }, async (t) => {
   const fx = egressFixture(t)
   const sleeper = spawn('sleep', ['60'])
@@ -148,7 +155,7 @@ test('stop discards a recycled PID without signaling its new owner', {
 })
 
 test('egress reload waits for the previous process to exit before spawning', {
-  skip: process.platform !== 'linux',
+  skip: egressSkip,
 }, async (t) => {
   const fx = egressFixture(t)
   const original = await fx.start()
@@ -168,7 +175,7 @@ test('egress reload waits for the previous process to exit before spawning', {
 })
 
 test('egress reload surfaces spawn failure after stopping the old helper', {
-  skip: process.platform !== 'linux',
+  skip: egressSkip,
 }, async (t) => {
   const fx = egressFixture(t)
   const original = await fx.start()
@@ -203,7 +210,7 @@ test('waitEgressExit escalates SIGTERM to SIGKILL', { skip: process.platform !==
 })
 
 test('an egress helper can be reused, replaced and stopped only by its own proxy', {
-  skip: process.platform !== 'linux',
+  skip: egressSkip,
 }, async (t) => {
   const fx = egressFixture(t)
   const original = await fx.start()
@@ -234,7 +241,7 @@ test('an egress helper can be reused, replaced and stopped only by its own proxy
 })
 
 test('a replaced egress binary is restarted onto the new file', {
-  skip: process.platform !== 'linux',
+  skip: egressSkip,
 }, async (t) => {
   const fx = egressFixture(t)
   const bin = path.join(fx.root, 'kin-egress')
@@ -264,7 +271,7 @@ test('a replaced egress binary is restarted onto the new file', {
 })
 
 test('a stale pidfile does not hide an egress process still holding its port', {
-  skip: process.platform !== 'linux',
+  skip: egressSkip,
 }, async (t) => {
   const fx = egressFixture(t)
   const orphanBin = path.join(fx.root, 'kin-egress')
@@ -290,7 +297,7 @@ test('a stale pidfile does not hide an egress process still holding its port', {
 })
 
 test('redundant separators in an egress config path do not change its owner', {
-  skip: process.platform !== 'linux',
+  skip: egressSkip,
 }, async (t) => {
   const fx = egressFixture(t)
   fs.writeFileSync(
@@ -562,7 +569,7 @@ test('egress config carries dns_upstream only when configured', async () => {
   fs.rmSync(root, { recursive: true, force: true })
 })
 
-test('egress readiness checks the exact listener without opening a connection', async (t) => {
+test('egress readiness checks the exact listener without opening a connection', { skip: egressSkip }, async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'egress-listen-'))
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   let accepted = 0
@@ -600,7 +607,7 @@ test('egress readiness checks the exact listener without opening a connection', 
   assert.equal(egressListening(root, proxyId, 100).reason, 'not_listening')
 })
 
-test('DNS override changes restart the helper and disabling clears the override', async (t) => {
+test('DNS override changes restart the helper and disabling clears the override', { skip: egressSkip }, async (t) => {
   const fx = egressFixture(t, 'px-dns-override')
   const original = await fx.start()
   assert.equal(original.ok, true)
@@ -643,7 +650,7 @@ test('runExclusiveProxyEgress runs overlapping work for one proxy serially', asy
 })
 
 test('concurrent starts for one proxy spawn a single helper and record it', {
-  skip: process.platform !== 'linux',
+  skip: egressSkip,
 }, async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'egress-race-'))
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))

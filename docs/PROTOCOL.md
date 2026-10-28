@@ -168,3 +168,14 @@ native CLI `2.1.296` 保留带 billing 的 wire system（含官方 CLI / 子代�
 | `X-Request-ID` | 回写响应头 |
 
 Go worker 用 trailer `X-Kin-Usage` / `X-Kin-Model` / `X-Kin-Stop-Reason` 回传合并 usage，与非流同一终态记账。
+
+## Grok：native 与 Anthropic convert 的差异
+
+| 项 | Native（`/v1/chat/completions`、`/v1/responses`） | Anthropic `/v1/messages` → convert |
+|----|----|----|
+| `reasoning_effort` / `reasoning.effort` | 原样透传，内核也不改 body | 由 `thinking` / `reasoning_effort` / `output_config.effort` 映射成 `reasoning.effort`，按该模型可用的档位就近取 |
+| 可用档位 | 由上游决定 | 优先用上游 `/v1/models` 回报的 `reasoning_efforts`；没有时 grok-4.6 / 4.7 为 low…xhigh，其它支持 effort 的型号为 low / medium / high |
+| `xhigh` / `max` | 透传 | 映射为该模型最高档（4.6 / 4.7 为 `xhigh`），不再压成 `high` |
+| adaptive thinking、未给 effort | — | 不写 effort，交给上游默认（官方默认 `high`），不再降为 `medium` |
+| `thinking` / `redacted_thinking` 历史块 | — | **丢弃**：Anthropic 签名对 xAI 无意义，是否接受回放未经验证（保守起见不送）；上游每轮重新推理，所以历史中的思考内容不会进入 Grok 上下文 |
+| 日志 | `upstream_model` 取上游响应里的 `model`，`reasoning_tokens` 单列（属于 output 的子集，不另计费） | 同左 |
