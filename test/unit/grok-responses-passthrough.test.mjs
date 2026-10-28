@@ -182,3 +182,44 @@ test('responses grok-4.7 xhigh: the kernel gets the caller body verbatim, only i
   assert.equal(res.payload.output[0].type, 'reasoning')
   assert.equal(res.payload.output[0].encrypted_content, 'enc-1')
 })
+
+test('a previous_response_id follow-up runs on the slot that produced that response', async (t) => {
+  // Two slots; the first turn lands somewhere, the follow-up sends only new input + previous id.
+  const h = harness(t, {
+    slots: ['vm-g1', 'vm-g2'],
+    kernel: (n, vmId) => ({ id: `resp_${n}_${vmId}`, model: 'grok-4.7' }),
+  })
+  const turn = (input, previous) => ({
+    model: 'grok-4.7',
+    stream: false,
+    reasoning: { effort: 'xhigh' },
+    input,
+    ...(previous ? { previous_response_id: previous } : {}),
+  })
+  const first = await h.send(turn('first question'))
+  assert.equal(first.res.status, 200)
+  const home = h.envelopes[0].vmId
+  let previous = first.res.payload.id
+  assert.equal(previous, `resp_1_${home}`)
+  for (let i = 0; i < 6; i++) {
+    const next = await h.send(turn(`follow-up ${i} ${'x'.repeat(i)}`, previous))
+    assert.equal(next.res.status, 200)
+    const hop = h.envelopes.at(-1)
+    assert.equal(hop.vmId, home, `turn ${i + 2} stays on the slot holding ${previous}`)
+    assert.equal(hop.envelope.body.previous_response_id, previous)
+    assert.equal(hop.envelope.body.reasoning.effort, 'xhigh')
+    // Same outbound conversation id, so xAI sees one conversation and keeps its prompt cache.
+    assert.equal(hop.envelope.session_id, h.envelopes[0].envelope.session_id)
+    previous = next.res.payload.id
+  }
+})
+
+test('response sticky keys are scoped to xai and to the calling key', async () => {
+  const { grokResponseStickyKey } = await import('../../src/lib/protocol/handle-grok.mjs')
+  const router = { isolateKey: (raw, req) => (req?.apiKeyRecord?.id ? `k${req.apiKeyRecord.id}:${raw}` : raw) }
+  assert.equal(grokResponseStickyKey(router, { apiKeyRecord: { id: 7 } }, 'resp_1'), 'p:xai:k7:resp:resp_1')
+  assert.equal(grokResponseStickyKey(null, null, ' resp_2 '), 'p:xai:resp:resp_2')
+  assert.equal(grokResponseStickyKey(router, null, ''), null)
+  assert.equal(grokResponseStickyKey(router, null, 42), null)
+  assert.equal(grokResponseStickyKey(router, null, 'r'.repeat(201)), null)
+})

@@ -40,6 +40,7 @@ import { CLIENT_POOL_BUSY_MESSAGE, CLIENT_POOL_UNAVAILABLE_MESSAGE, ErrorCode } 
 import { applyOpenaiWashLog } from './openai-wash.mjs'
 import { redactHeaders } from '../admin/request-log.mjs'
 import { sessionIdForLog } from './log-fields.mjs'
+import { scopeStickyKey } from '../pool/sticky-router.mjs'
 import {
   GROK_CLI_VERSION,
   grokCliRequestHeaders,
@@ -302,6 +303,7 @@ function dataJson(line) {
 function createUsageTracker(shape) {
   let usage = null
   let served = null
+  let responseId = null
   const noteModel = (value) => {
     if (typeof value === 'string' && value.trim()) served = value.trim().slice(0, 200)
   }
@@ -317,6 +319,8 @@ function createUsageTracker(shape) {
         return
       }
       noteModel(ev.response?.model ?? ev.model)
+      const id = ev.response?.id
+      if (typeof id === 'string' && id.trim() && String(ev.type || '').startsWith('response.')) responseId = id.trim()
       const found = ev.response?.usage || ev.usage
       if (found && typeof found === 'object') usage = found
     },
@@ -324,6 +328,11 @@ function createUsageTracker(shape) {
     model(body) {
       const fromBody = body?.response?.model ?? body?.model
       return served || (typeof fromBody === 'string' && fromBody.trim() ? fromBody.trim() : null)
+    },
+    /** Id of the Responses object this hop produced, from the stream or the folded body. */
+    responseId(body) {
+      const fromBody = body?.response?.id ?? (body?.object === 'response' ? body?.id : null)
+      return responseId || (typeof fromBody === 'string' && fromBody.trim() ? fromBody.trim() : null)
     },
     take(body) {
       if (shape === 'anthropic') return body?.usage || usage
@@ -395,6 +404,21 @@ function noteGrokAttempt(repo, requestId, attemptNo, fields) {
   } catch {}
 }
 
+const GROK_RESPONSE_ID_MAX = 200
+
+/**
+ * Sticky key for one stored Grok response. A follow-up that sends only `previous_response_id`
+ * and its new input has no stable conversation key (the first-user fingerprint changes every
+ * turn), so the slot that produced the response is remembered under its id.
+ */
+export function grokResponseStickyKey(stickyRouter, req, responseId) {
+  const id = typeof responseId === 'string' ? responseId.trim() : ''
+  if (!id || id.length > GROK_RESPONSE_ID_MAX) return null
+  const raw = `resp:${id}`
+  const isolated = typeof stickyRouter?.isolateKey === 'function' ? stickyRouter.isolateKey(raw, req) : raw
+  return scopeStickyKey(isolated, 'xai')
+}
+
 /**
  * Candidates re-read on every admission, same contract as pickCodexCandidates: a request that
  * continues a stored response (`previous_response_id`) can only run on the slot that holds it.
@@ -424,9 +448,18 @@ export function pickGrokCandidates(
     const ordered = orderGrokSessionSlots([listed], { pin, excluded, quotaPolicy })
     return { ...ordered, pin, sticky: false, sessionKey: null, stickyKeys: [] }
   }
-  const stickyKeys = stickyRouter?.collectPoolKeys?.(req, body || {}, { platform: 'xai' }) || []
-  const sessionKey = stickyRouter?.extractPoolKey?.(req, body || {}, { platform: 'xai' }) || stickyKeys[0] || null
+  let stickyKeys = stickyRouter?.collectPoolKeys?.(req, body || {}, { platform: 'xai' }) || []
+  let sessionKey = stickyRouter?.extractPoolKey?.(req, body || {}, { platform: 'xai' }) || stickyKeys[0] || null
   let bound = sessionKey ? stickyRouter?.resolve?.(sessionKey) : null
+  // The slot that produced previous_response_id is authoritative: the stored response lives there.
+  const responseKey = grokResponseStickyKey(stickyRouter, req, body?.previous_response_id)
+  const byResponse = responseKey ? stickyRouter?.resolve?.(responseKey) : null
+  const responsePinned = !!byResponse?.vmId
+  if (responsePinned && byResponse.vmId !== bound?.vmId) {
+    sessionKey = responseKey
+    stickyKeys = [responseKey, ...stickyKeys.filter((key) => key !== responseKey)]
+    bound = byResponse
+  }
   const vms = listVms(projectRoot, routing).filter((vm) => isGrokVm(vm) && keyAllowsVm(scope, vm))
   const continuesResponse = !!body?.previous_response_id && !!bound?.vmId
   // reset_priority: a conversation idle past the threshold re-picks by billing
@@ -460,7 +493,7 @@ export function pickGrokCandidates(
   if (continuesResponse && (boundLeft || ordered.error === 'candidates_exhausted')) {
     return { error: 'response_not_portable', ids: [], sessionKey, stickyKeys, boundVmId: bound.vmId }
   }
-  return { ...ordered, sessionKey, stickyKeys }
+  return { ...ordered, sessionKey, stickyKeys, continuesResponse, responsePinned }
 }
 
 async function admitGrokCandidate(projectRoot, req, opts, { deadline, signal }) {
@@ -790,6 +823,15 @@ export async function handleGrokProtocol({
         if (sessionId) payload.sessionId = sessionId
         for (const key of stickyKeys) stickyRouter.bind(key, payload)
       }
+      // Remember which slot holds this response, so a previous_response_id follow-up lands here.
+      const bindProducedResponse = (responseId) => {
+        if (protocol !== 'openai.responses' || outbound.convert || !stickyRouter?.bind) return
+        const key = grokResponseStickyKey(stickyRouter, req, responseId)
+        if (!key) return
+        const payload = { accountId: vm.id, vmId: vm.id }
+        if (outboundSessionId) payload.sessionId = outboundSessionId
+        stickyRouter.bind(key, payload)
+      }
       const leaveSticky = () => {
         if (!ownsPin || !picked.sessionKey) return
         try {
@@ -905,6 +947,7 @@ export async function handleGrokProtocol({
         if (produced) lastProduced = produced
         if (result?.ok) {
           bindSticky(outboundSessionId)
+          bindProducedResponse(usage.responseId(result?.body))
           logUsage(logBag, produced, shape)
           grokRuntime.reportAttempt(vm.id, 'succeeded', result.ttftMs ?? null)
           logBag.final_state = 'verified'
