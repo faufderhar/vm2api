@@ -933,7 +933,7 @@ export function createHandleProtocol(deps) {
               account,
             }),
           requestStartedAt: logCtx.t0,
-          ops: { requestId: logCtx.request_id, getAttemptsRepo },
+          ops: { ...(deps.grokOps || {}), requestId: logCtx.request_id, getAttemptsRepo },
           stickyRouter,
           sessions: accountQuota?.sessions || null,
           body: ctx.body,

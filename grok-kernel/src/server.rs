@@ -730,6 +730,19 @@ mod tests {
             r#"{"model":"grok-4","stream":true,"input":[{"role":"user","content":"hi"}],"instructions":"x","tools":[]}"#
         );
     }
+    #[test]
+    fn envelope_body_keeps_reasoning_effort_and_continuation_fields() {
+        let body = r#"{"model":"grok-4.7","input":[{"role":"user","content":"hi"}],"previous_response_id":"resp_1","reasoning":{"effort":"xhigh","summary":"concise"},"include":["reasoning.encrypted_content"],"store":false,"max_output_tokens":64000,"text":{"verbosity":"high"},"stream":true,"prompt_cache_key":"00000000-0000-5000-8000-000000000000"}"#;
+        let envelope: Envelope = serde_json::from_str(&format!(
+            r#"{{"purpose":"inference","path":"/v1/responses","model_id":"grok-4.7","body":{body}}}"#
+        ))
+        .unwrap();
+        assert_eq!(envelope.model_id, "grok-4.7");
+        assert_eq!(
+            serde_json::to_string(&envelope.body.unwrap()).unwrap(),
+            body
+        );
+    }
     #[tokio::test]
     async fn missing_proxy_fails_before_dial() {
         let config = Config {
