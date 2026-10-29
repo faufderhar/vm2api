@@ -8,6 +8,7 @@ import { ENVELOPE_NEEDLES, extractPrompt } from '../core/distill-detect.mjs'
 import { resolveStoreDb } from '../db/database.mjs'
 import { StickyRepo } from '../db/repos/sticky-repo.mjs'
 import {
+  apiKeyScoped,
   claudeCodeAgentRootSession,
   extractCallerSession,
   firstUserIdentityText,
@@ -252,9 +253,7 @@ export class StickyRouter {
   }
 
   isolateKey(raw, req = null) {
-    const id = req?.apiKeyRecord?.id
-    if (id == null || id === '') return String(raw)
-    return `k${id}:${raw}`
+    return apiKeyScoped(req?.apiKeyRecord?.id, String(raw))
   }
 
   /**
@@ -406,33 +405,34 @@ export class StickyRouter {
     return scopeStickyKey(this.isolateKey(`family:${id}`, req), platform)
   }
 
-  /** Canonical session identity — exact sticky, never scoped to an API key. */
-  canonicalSessionKey(sessionId) {
+  /** Canonical session identity. A managed key cannot pin another key's conversation. */
+  canonicalSessionKey(sessionId, req = null) {
     const id = String(sessionId || '').trim()
-    return id ? `sess:${id}` : null
+    return id ? this.isolateKey(`sess:${id}`, req) : null
   }
 
-  /** Canonical device identity — VM affinity, never scoped to an API key. */
-  canonicalDeviceKey(deviceId) {
+  /** Canonical device identity. VM affinity stays inside one managed key. */
+  canonicalDeviceKey(deviceId, req = null) {
     const id = String(deviceId || '').trim()
-    return id ? `dev2:${id}` : null
+    return id ? this.isolateKey(`dev2:${id}`, req) : null
   }
 
-  /** Canonical family identity — parent/root session, never scoped to an API key. */
-  canonicalFamilyKey(sessionId) {
+  /** Canonical family identity. Parent and child share it only on the same managed key. */
+  canonicalFamilyKey(sessionId, req = null) {
     const id = String(sessionId || '').trim()
-    return id ? `family2:${id}` : null
+    return id ? this.isolateKey(`family2:${id}`, req) : null
   }
 
   /**
-   * Anthropic session sticky keys. A trusted inbound session_id maps to one
-   * canonical key across API keys; a still-live legacy API-key-scoped row is
-   * copied onto it once. Without a trusted session_id the legacy aliases stay.
+   * Anthropic session sticky keys. A trusted inbound session_id maps to this
+   * managed key's canonical row. A still-live legacy row of the same key is
+   * copied onto it once. Another key's row is never read. Without a trusted
+   * session_id the legacy aliases stay.
    * @returns {{ stickyKey: string|null, stickyKeys: string[] }}
    */
   sessionPoolKeys(req, body = {}, { sessionId = '', deviceId = '', migrate = true } = {}) {
     if (!this.config.enabled) return { stickyKey: null, stickyKeys: [] }
-    const canonical = this.canonicalSessionKey(sessionId)
+    const canonical = this.canonicalSessionKey(sessionId, req)
     if (!canonical) {
       return {
         stickyKey: this.extractPoolKey(req, body, { platform: 'anthropic' }),
@@ -446,19 +446,19 @@ export class StickyRouter {
     ].filter((key) => key !== canonical && this.resolve(key))
     if (!this.resolve(canonical) && legacy.length) {
       if (!migrate) return { stickyKey: legacy[0], stickyKeys: legacy }
-      this.migrateLegacyIdentity(legacy[0], { sessionId, deviceId })
+      this.migrateLegacyIdentity(legacy[0], { sessionId, deviceId, req })
     }
     return { stickyKey: canonical, stickyKeys: [canonical, ...legacy] }
   }
 
   /**
-   * Family lock key. Trusted parent/root ids use the canonical key; a live
-   * legacy family row is copied onto it once so an in-flight family stays put.
+   * Family lock key. Trusted parent/root ids use this key's canonical family;
+   * a live legacy family row of the same key is copied onto it once.
    */
   familyPoolKey(req, sessionId, { trusted = false } = {}) {
     const legacy = this.familyKey(req, sessionId, 'anthropic')
     if (!trusted || !legacy) return legacy
-    const canonical = this.canonicalFamilyKey(sessionId)
+    const canonical = this.canonicalFamilyKey(sessionId, req)
     if (!this.resolve(canonical)) {
       const prev = this.resolve(legacy)
       if (prev?.accountId && prev?.vmId) {
@@ -582,32 +582,31 @@ export class StickyRouter {
   }
 
   /**
-   * A4: bridge a legacy (API-key-scoped) sticky hit to the canonical,
-   * key-less identity keys from A1. Call only when a request resolves
-   * through an existing legacy key *and* carries a trusted session_id /
-   * device_id (e.g. from resolveInboundIdentity/metadata.user_id) — this
-   * never guesses an identity and never runs as a batch migration.
+   * Bridge a legacy sticky hit of this same caller onto its canonical
+   * identity keys. Pass `req` so a managed key cannot mint a global row.
+   * Call only when a request resolves through an existing legacy key and
+   * carries a trusted session_id / device_id. This never guesses an identity
+   * and never runs as a batch migration.
    *
    * Session canonical key reuses bind()'s locked/generation semantics:
    * a row is locked only when both VM and account differ, so a stale
    * legacy hit cannot silently merge onto another session's home.
    * Same-account VM moves still write the new outbound session. Device
    * canonical key reuses bindDeviceAffinity()'s existing soft-preference
-   * semantics (A2), which is allowed to move — that is its documented
-   * behavior already.
+   * semantics, which is allowed to move.
    *
    * The legacy row itself, and any unrelated row, is never modified or
    * deleted here.
    *
    * @returns {{ sessionKey: string|null, deviceKey: string|null }}
    */
-  migrateLegacyIdentity(legacyKey, { sessionId = '', deviceId = '' } = {}) {
+  migrateLegacyIdentity(legacyKey, { sessionId = '', deviceId = '', req = null } = {}) {
     const result = { sessionKey: null, deviceKey: null }
     if (!this.config.enabled || !legacyKey) return result
     const bound = this.resolve(legacyKey)
     if (!bound || !bound.accountId || !bound.vmId) return result
 
-    const sessionKey = this.canonicalSessionKey(sessionId)
+    const sessionKey = this.canonicalSessionKey(sessionId, req)
     if (sessionKey && sessionKey !== legacyKey) {
       this.bind(
         sessionKey,
@@ -619,7 +618,7 @@ export class StickyRouter {
 
     // A live device affinity is the principal's home VM; a legacy session hit
     // must not move it.
-    const deviceKey = this.canonicalDeviceKey(deviceId)
+    const deviceKey = this.canonicalDeviceKey(deviceId, req)
     if (deviceKey && !this.resolve(deviceKey)) {
       this.bindDeviceAffinity(deviceKey, { accountId: bound.accountId, vmId: bound.vmId }, { countHit: false })
       result.deviceKey = deviceKey

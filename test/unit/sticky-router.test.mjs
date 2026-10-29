@@ -552,23 +552,39 @@ test('extractKey isolates the same session per API key', () => {
   assert.equal(r.extractKey({ ...raw, apiKeyRecord: { id: 7 } }, {}), 'k7:same-session')
 })
 
-test('canonical identity keys are not scoped to API keys', () => {
+test('canonical identity keys are scoped to the managed API key', () => {
   const r = new StickyRouter({ dataDir: tmpDir(), config: { sticky: { enabled: true } } })
   const reqA = { apiKeyRecord: { id: 'key-a' } }
   const reqB = { apiKeyRecord: { id: 'key-b' } }
 
   assert.equal(r.canonicalSessionKey('session-1'), 'sess:session-1')
   assert.equal(r.canonicalDeviceKey('device-1'), 'dev2:device-1')
-  assert.equal(r.canonicalSessionKey('session-1'), r.canonicalSessionKey('session-1', reqA))
-  assert.equal(r.canonicalSessionKey('session-1', reqA), r.canonicalSessionKey('session-1', reqB))
-  assert.equal(r.canonicalDeviceKey('device-1'), r.canonicalDeviceKey('device-1', reqA))
-  assert.equal(r.canonicalDeviceKey('device-1', reqA), r.canonicalDeviceKey('device-1', reqB))
-  assert.doesNotMatch(r.canonicalSessionKey('session-1', reqA), /key-a|key-b|^k/)
-  assert.doesNotMatch(r.canonicalDeviceKey('device-1', reqA), /key-a|key-b|^k/)
+  assert.equal(r.canonicalSessionKey('session-1', reqA), 'kkey-a:sess:session-1')
+  assert.equal(r.canonicalSessionKey('session-1', reqB), 'kkey-b:sess:session-1')
+  assert.notEqual(r.canonicalSessionKey('session-1', reqA), r.canonicalSessionKey('session-1', reqB))
+  assert.equal(r.canonicalDeviceKey('device-1', reqA), 'kkey-a:dev2:device-1')
+  assert.equal(r.canonicalDeviceKey('device-1', reqB), 'kkey-b:dev2:device-1')
+  assert.equal(r.canonicalFamilyKey('session-1', reqA), 'kkey-a:family2:session-1')
+  assert.notEqual(r.canonicalFamilyKey('session-1', reqA), r.canonicalFamilyKey('session-1', reqB))
   assert.notEqual(r.canonicalSessionKey('session-1'), r.canonicalSessionKey('session-2'))
   assert.notEqual(r.canonicalDeviceKey('device-1'), r.canonicalDeviceKey('device-2'))
   assert.equal(r.canonicalSessionKey(''), null)
   assert.equal(r.canonicalDeviceKey(''), null)
+})
+
+test('migration 046 drops unscoped canonical rows and keeps scoped and legacy ones', () => {
+  const r = new StickyRouter({ dataDir: tmpDir(), config: { sticky: { enabled: true } } })
+  const pin = { accountId: 'acc-1', vmId: 'vm-1' }
+  const dropped = ['sess:old', 'dev2:old', 'family2:old']
+  const kept = ['kkey-a:sess:old', 'kkey-a:dev2:old', 'kkey-a:family2:old', 'p:anthropic:kkey-a:old']
+  for (const key of [...dropped, ...kept]) r.bind(key, pin, { countHit: false })
+  const sql = fs.readFileSync(
+    new URL('../../src/lib/db/migrations/046_sticky_canonical_key_scope.sql', import.meta.url),
+    'utf8',
+  )
+  r.db.exec(sql)
+  for (const key of dropped) assert.equal(r.resolve(key), null, key)
+  for (const key of kept) assert.equal(r.resolve(key)?.vmId, 'vm-1', key)
 })
 
 test('canonical identity keys ignore account_uuid changes', () => {
@@ -696,7 +712,7 @@ test('migrateLegacyIdentity keeps a live device home VM', () => {
   assert.equal(r.resolve('dev2:device-home').vmId, 'vm-home')
 })
 
-test('sessionPoolKeys uses one canonical key across API keys and keeps legacy aliases', () => {
+test('sessionPoolKeys keeps a legacy alias on the same key and does not share it', () => {
   const r = new StickyRouter({ dataDir: tmpDir(), config: { sticky: { enabled: true, ttl_seconds: 60 } } })
   const body = { metadata: { user_id: JSON.stringify({ device_id: 'dev-s', session_id: 'sess-s' }) } }
   const reqA = { apiKeyRecord: { id: 'a' }, headers: {} }
@@ -706,14 +722,18 @@ test('sessionPoolKeys uses one canonical key across API keys and keeps legacy al
 
   const peek = r.sessionPoolKeys(reqA, body, { sessionId: 'sess-s', deviceId: 'dev-s', migrate: false })
   assert.deepEqual(peek, { stickyKey: legacy, stickyKeys: [legacy] })
-  assert.equal(r.resolve('sess:sess-s'), null)
+  assert.equal(r.resolve('ka:sess:sess-s'), null)
 
   const a = r.sessionPoolKeys(reqA, body, { sessionId: 'sess-s', deviceId: 'dev-s' })
-  assert.deepEqual(a, { stickyKey: 'sess:sess-s', stickyKeys: ['sess:sess-s', legacy] })
-  assert.equal(r.resolve('sess:sess-s').vmId, 'vm-s')
+  assert.deepEqual(a, { stickyKey: 'ka:sess:sess-s', stickyKeys: ['ka:sess:sess-s', legacy] })
+  assert.equal(r.resolve('ka:sess:sess-s').vmId, 'vm-s')
   const b = r.sessionPoolKeys(reqB, body, { sessionId: 'sess-s', deviceId: 'dev-s' })
-  assert.deepEqual(b, { stickyKey: 'sess:sess-s', stickyKeys: ['sess:sess-s'] })
-  assert.equal(r.familyPoolKey(reqA, 'sess-s', { trusted: true }), r.familyPoolKey(reqB, 'sess-s', { trusted: true }))
+  assert.deepEqual(b, { stickyKey: 'kb:sess:sess-s', stickyKeys: ['kb:sess:sess-s'] })
+  assert.equal(r.resolve('kb:sess:sess-s'), null)
+  assert.notEqual(
+    r.familyPoolKey(reqA, 'sess-s', { trusted: true }),
+    r.familyPoolKey(reqB, 'sess-s', { trusted: true }),
+  )
   assert.match(r.familyPoolKey(reqA, 'sess-s'), /ka:family:sess-s$/)
 })
 

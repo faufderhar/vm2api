@@ -103,21 +103,33 @@ export class ApiKeysRepo {
       VALUES (${COLUMNS.map(() => '?').join(', ')})
     `)
     this._delete = db.prepare('DELETE FROM api_keys WHERE id = ?')
+    // One statement against the row as it is. Each window resets (usage =
+    // cost, start = now) once its start is at or before @<usage>_cutoff.
+    // Starts compare as time (julianday), not text; one that does not parse
+    // reopens the window, as Date.parse NaN does in canAccept.
+    const windowAssignments = WINDOWS.map((win) => {
+      const closed = `julianday(${win.start}) IS NULL OR julianday(${win.start}) <= julianday(@${win.usage}_cutoff)`
+      return `${win.usage} = CASE WHEN ${closed} THEN @cost ELSE COALESCE(${win.usage}, 0) + @cost END,
+        ${win.start} = CASE WHEN ${closed} THEN @now ELSE ${win.start} END`
+    }).join(',\n        ')
     this._recordUsage = db.prepare(`
       UPDATE api_keys SET
         requests = requests + 1,
         quota_requests_used = quota_requests_used + 1,
-        tokens_in = tokens_in + ?,
-        tokens_out = tokens_out + ?,
-        cache_read_tokens = COALESCE(cache_read_tokens, 0) + ?,
-        cache_creation_tokens = COALESCE(cache_creation_tokens, 0) + ?,
-        quota_used = quota_used + ?,
-        usage_5h = ?, window_5h_start = ?,
-        usage_1d = ?, window_1d_start = ?,
-        usage_7d = ?, window_7d_start = ?,
-        last_used_at = ?,
-        updated_at = ?
-      WHERE id = ?
+        tokens_in = tokens_in + @tokens_in,
+        tokens_out = tokens_out + @tokens_out,
+        cache_read_tokens = COALESCE(cache_read_tokens, 0) + @cache_read_tokens,
+        cache_creation_tokens = COALESCE(cache_creation_tokens, 0) + @cache_creation_tokens,
+        quota_used = quota_used + @cost,
+        ${windowAssignments},
+        status = CASE
+          WHEN status = 'active' AND COALESCE(quota, 0) > 0 AND (COALESCE(quota_used, 0) + @cost) >= quota THEN 'quota_exhausted'
+          ELSE status
+        END,
+        last_used_at = @now,
+        updated_at = @now
+      WHERE id = @id AND deleted_at IS NULL
+      RETURNING *
     `)
   }
 
@@ -155,42 +167,21 @@ export class ApiKeysRepo {
     return info.changes > 0
   }
 
-  /**
-   * Sub2api APIKey window semantics: a window opens at first spend; once
-   * now - start >= size the window resets (usage=cost, start=now).
-   */
-  _rollWindow(rec, key, cost, nowMs) {
-    const start = rec[key.start] ? Date.parse(rec[key.start]) : NaN
-    if (!Number.isFinite(start) || nowMs - start >= key.ms) {
-      return { usage: cost, start: new Date(nowMs).toISOString() }
-    }
-    return { usage: (Number(rec[key.usage]) || 0) + cost, start: rec[key.start] }
-  }
-
+  /** @returns the updated row, or null when the key is missing or soft-deleted. */
   recordUsage(id, { tokens_in = 0, tokens_out = 0, cache_read_tokens = 0, cache_creation_tokens = 0, cost = 0 } = {}) {
-    const rec = this.getById(id)
-    if (!rec) return null
+    if (id == null || id === '') return null
     const nowMs = Date.now()
-    const now = new Date(nowMs).toISOString()
-    const usd = Number(cost) || 0
-    const w = WINDOWS.map((win) => this._rollWindow(rec, win, usd, nowMs))
-    this._recordUsage.run(
-      Number(tokens_in) || 0,
-      Number(tokens_out) || 0,
-      Number(cache_read_tokens) || 0,
-      Number(cache_creation_tokens) || 0,
-      usd,
-      w[0].usage,
-      w[0].start,
-      w[1].usage,
-      w[1].start,
-      w[2].usage,
-      w[2].start,
-      now,
-      now,
+    const params = {
       id,
-    )
-    return this.getById(id)
+      tokens_in: Number(tokens_in) || 0,
+      tokens_out: Number(tokens_out) || 0,
+      cache_read_tokens: Number(cache_read_tokens) || 0,
+      cache_creation_tokens: Number(cache_creation_tokens) || 0,
+      cost: Number(cost) || 0,
+      now: new Date(nowMs).toISOString(),
+    }
+    for (const win of WINDOWS) params[`${win.usage}_cutoff`] = new Date(nowMs - win.ms).toISOString()
+    return rowToRec(this._recordUsage.get(params))
   }
 
   count() {

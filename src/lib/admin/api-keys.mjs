@@ -177,6 +177,8 @@ export class ApiKeyStore {
         persistedPepper(dataDir),
     )
     this.inflight = new Map() // id → count
+    this.userInflight = new Map() // user id → sum of that user's key inflight
+    this.keyUsers = new Map() // key id → Map(user id → inflight taken under that owner)
     this.rpmBuckets = new Map() // id → number[] timestamps ms
     this.users = new UsersRepo(this.db)
     // null = unknown. Once no plaintext row is left, a wrong key no longer scans the table.
@@ -401,9 +403,41 @@ export class ApiKeyStore {
   remove(id) {
     const removed = this.repo.remove(id)
     if (!removed) return false
+    this._releaseAllOwners(id)
     this.inflight.delete(id)
     this.rpmBuckets.delete(id)
     return true
+  }
+
+  _addUserInflight(userId, delta) {
+    if (!userId || !delta) return
+    const next = (this.userInflight.get(userId) || 0) + delta
+    if (next <= 0) this.userInflight.delete(userId)
+    else this.userInflight.set(userId, next)
+  }
+
+  /**
+   * Give one slot back to the owner it was taken under. A key moved to another
+   * user mid-flight holds slots under both; a bare id release takes the oldest.
+   */
+  _releaseOwner(id, userId) {
+    const owners = this.keyUsers.get(id)
+    if (!owners) return
+    const owner = userId === undefined ? owners.keys().next().value : userId
+    const held = owners.get(owner) || 0
+    if (held <= 0) return
+    if (held > 1) owners.set(owner, held - 1)
+    else owners.delete(owner)
+    if (!owners.size) this.keyUsers.delete(id)
+    this._addUserInflight(owner, -1)
+  }
+
+  /** The key has nothing in flight: every owner gets back what it still holds. */
+  _releaseAllOwners(id) {
+    const owners = this.keyUsers.get(id)
+    if (!owners) return
+    for (const [owner, held] of owners) this._addUserInflight(owner, -held)
+    this.keyUsers.delete(id)
   }
 
   _expired(rec, now = Date.now()) {
@@ -506,10 +540,7 @@ export class ApiKeyStore {
       })()
       const cap = owner?.role === 'admin' ? 0 : Number(owner?.concurrency) || 0
       if (cap > 0) {
-        let total = 0
-        for (const k of this.repo.list()) {
-          if (k.user_id === rec.user_id) total += this.inflight.get(k.id) || 0
-        }
+        const total = this.userInflight.get(rec.user_id) || 0
         if (total >= cap) {
           return {
             ok: false,
@@ -529,6 +560,12 @@ export class ApiKeyStore {
     if (!gate.ok) return gate
     const id = rec.id
     this.inflight.set(id, (this.inflight.get(id) || 0) + 1)
+    if (rec.user_id) {
+      const owners = this.keyUsers.get(id) || new Map()
+      owners.set(rec.user_id, (owners.get(rec.user_id) || 0) + 1)
+      this.keyUsers.set(id, owners)
+      this._addUserInflight(rec.user_id, 1)
+    }
     const arr = this.rpmBuckets.get(id) || []
     arr.push(now)
     this.rpmBuckets.set(id, arr)
@@ -538,14 +575,22 @@ export class ApiKeyStore {
   release(recOrId) {
     const id = typeof recOrId === 'string' ? recOrId : recOrId?.id
     if (!id) return
-    const n = (this.inflight.get(id) || 0) - 1
-    if (n <= 0) this.inflight.delete(id)
-    else this.inflight.set(id, n)
+    const prev = this.inflight.get(id) || 0
+    if (prev <= 0) return
+    const n = prev - 1
+    if (n <= 0) {
+      this.inflight.delete(id)
+      this._releaseAllOwners(id)
+      return
+    }
+    this.inflight.set(id, n)
+    // The record a request acquired with names its owner; a bare id does not.
+    if (typeof recOrId === 'string') this._releaseOwner(id)
+    else if (recOrId.user_id) this._releaseOwner(id, recOrId.user_id)
   }
 
   recordUsage(recOrId, usage = {}, { model = null, rateMultiplier = 1, officialCost } = {}) {
     const id = typeof recOrId === 'string' ? recOrId : recOrId?.id
-    if (!this.repo.getById(id)) return null
     const normalized = normalizeUsage(usage)
     let billed = officialCost
     if (billed == null) billed = usage.total_cost
@@ -559,18 +604,14 @@ export class ApiKeyStore {
     // key quota/windows track actual (group-rated) spend, sub2api-style
     const rate = Number.isFinite(Number(rateMultiplier)) ? Number(rateMultiplier) : 1
     const cost = billed * rate
-    const rec = this.repo.recordUsage(id, {
+    // null: the key is gone or soft-deleted, nothing was charged
+    return this.repo.recordUsage(id, {
       tokens_in: Number(normalized.input_tokens) || Number(normalized.tokens_in) || 0,
       tokens_out: Number(normalized.output_tokens) || Number(normalized.tokens_out) || 0,
       cache_read_tokens: Number(normalized.cache_read_input_tokens ?? normalized.cache_read_tokens) || 0,
       cache_creation_tokens: Number(normalized.cache_creation_input_tokens ?? normalized.cache_creation_tokens) || 0,
       cost,
     })
-    // sub2api: the billing write flips the key when the USD quota runs out
-    if (rec && rec.status === 'active' && (rec.quota ?? 0) > 0 && (rec.quota_used ?? 0) >= rec.quota) {
-      this.repo.update({ ...rec, status: 'quota_exhausted', updated_at: nowIso() })
-    }
-    return rec
   }
 
   snapshot() {

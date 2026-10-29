@@ -283,20 +283,29 @@ function ephemeralCacheText(body = {}) {
 }
 
 /**
- * Pool seat identity: one key per inbound device; every request of it shares
- * one seat. Precedence (sub2api GenerateSessionHash without the API key):
- * device id → metadata session_id → short one-shot probe (no seat) →
+ * `k<id>:` prefix that keeps one managed key's pool identities (seat, sticky
+ * rows) apart from every other key's. No key id (the operator): no prefix.
+ */
+export function apiKeyScoped(apiKeyId, raw) {
+  if (apiKeyId == null || apiKeyId === '') return raw
+  return `k${apiKeyId}:${raw}`
+}
+
+/**
+ * Pool seat identity: one key per inbound device inside one managed key.
+ * Precedence: device id → metadata session_id → short one-shot probe (no seat) →
  * hash of `cache_control: ephemeral` content → hash of client IP +
- * normalized UA + system + first user turn. The API key never takes part.
+ * normalized UA + system + first user turn. `apiKeyId` scopes every non-empty
+ * key so a caller cannot take another key's seat by copying its device id.
  * @returns {{ key: string|null, source: 'device'|'session'|'probe'|'cache'|'fingerprint' }}
  */
-export function resolveSeatIdentity({ inbound = {}, body = {}, headers = {}, clientIp = '' } = {}) {
+export function resolveSeatIdentity({ inbound = {}, body = {}, headers = {}, clientIp = '', apiKeyId = '' } = {}) {
   const identity = resolveInboundIdentity({ inbound, body, headers })
-  if (identity.deviceId) return { key: `seat:dev:${identity.deviceId}`, source: 'device' }
-  if (identity.sessionId) return { key: `seat:sess:${identity.sessionId}`, source: 'session' }
+  if (identity.deviceId) return { key: apiKeyScoped(apiKeyId, `seat:dev:${identity.deviceId}`), source: 'device' }
+  if (identity.sessionId) return { key: apiKeyScoped(apiKeyId, `seat:sess:${identity.sessionId}`), source: 'session' }
   if (isShortProbeRequest(inbound)) return { key: null, source: 'probe' }
   const cached = ephemeralCacheText(inbound)
-  if (cached) return { key: `seat:h:${seatHash(['cache', cached])}`, source: 'cache' }
+  if (cached) return { key: apiKeyScoped(apiKeyId, `seat:h:${seatHash(['cache', cached])}`), source: 'cache' }
   const fingerprint = seatHash([
     'fingerprint',
     String(clientIp || '').trim(),
@@ -304,7 +313,7 @@ export function resolveSeatIdentity({ inbound = {}, body = {}, headers = {}, cli
     systemText(inbound?.system),
     extractFirstUserIdentity(inbound?.messages),
   ])
-  return { key: `seat:h:${fingerprint}`, source: 'fingerprint' }
+  return { key: apiKeyScoped(apiKeyId, `seat:h:${fingerprint}`), source: 'fingerprint' }
 }
 
 /**

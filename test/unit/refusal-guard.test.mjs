@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { createDatabase, openDatabase, closeDatabase } from '../../src/lib/db/database.mjs'
 import { createPanelHandler } from '../../src/lib/admin/panel-routes.mjs'
+import { createHandleProtocol } from '../../src/lib/protocol/handle-protocol.mjs'
 import { RefusalGuardsRepo } from '../../src/lib/db/repos/refusal-guards-repo.mjs'
 import { RefusalDeviceBlocksRepo } from '../../src/lib/db/repos/refusal-device-blocks-repo.mjs'
 import {
@@ -113,6 +114,31 @@ test('remember then lookup hits the same prompt', () => {
     assert.equal(bumped.hit_count, 1)
     const other = refusalFingerprint(body('Return exactly CACHE_30_5m_OK.', { model: 'claude-opus-4-8' }))
     assert.equal(repo.get(other), null)
+  } finally {
+    db.close()
+  }
+})
+
+test('a permanent refusal replaces the reason of a timed one on the same prompt', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-refusal-'))
+  const db = createDatabase({ dataDir: dir })
+  try {
+    const repo = new RefusalGuardsRepo(db)
+    const req = body('Return exactly CACHE_30_5m_OK.')
+    const fp = refusalFingerprint(req)
+    repo.remember({
+      fingerprint: fp,
+      model: req.model,
+      errorMessage: 'upstream 503',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    })
+    repo.remember({ fingerprint: fp, model: req.model, errorMessage: 'violate our Usage Policy' })
+    const row = repo.get(fp)
+    assert.equal(row.expires_at, null)
+    assert.equal(row.error_message, 'violate our Usage Policy')
+    // A remember without a reason keeps the stored one.
+    repo.remember({ fingerprint: fp, model: req.model })
+    assert.equal(repo.get(fp).error_message, 'violate our Usage Policy')
   } finally {
     db.close()
   }
@@ -320,5 +346,100 @@ test('panel setting and env can disable the guard', () => {
   } finally {
     if (prev == null) delete process.env.KIN_REFUSAL_GUARD
     else process.env.KIN_REFUSAL_GUARD = prev
+  }
+})
+
+test('a streamed refusal is remembered once with its own reason', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-refusal-stream-'))
+  const routingFile = path.join(root, 'routing.json')
+  fs.writeFileSync(routingFile, JSON.stringify({ compatibility: {} }))
+  const db = createDatabase({ dataDir: root })
+  const repo = new RefusalGuardsRepo(db)
+  const remembered = []
+  const remember = repo.remember.bind(repo)
+  let stored = null
+  repo.remember = (row) => {
+    remembered.push(row.errorMessage)
+    stored = row
+    return remember(row)
+  }
+  const inbound = body('Explain how the sticky router picks a VM for a long running session.', { stream: true })
+  const response = {
+    headersSent: false,
+    statusCode: 200,
+    writableEnded: false,
+    on() {},
+    once() {},
+    off() {},
+    write() {
+      return true
+    },
+    end() {
+      response.writableEnded = true
+    },
+  }
+  const handler = createHandleProtocol({
+    json: (_res, status, out) => {
+      response.status = status
+      return out
+    },
+    writeSSEHeaders(res) {
+      res.headersSent = true
+    },
+    readBody: async () => inbound,
+    requireAuth: () => true,
+    cfg: {
+      rewrite: { enabled: false },
+      intercept: { rules: [] },
+      distill: { enabled: false },
+      limits: { max_body_bytes: 1024 * 1024, upstream_timeout_ms: 2000, stream_idle_timeout_ms: 2000 },
+      paths: { data: root, project: root },
+    },
+    requestLog: { start: () => ({ request_id: 'refusal-stream', mode: 'normal' }), finish() {} },
+    stickyRouter: { extractPoolKey: () => null, collectPoolKeys: () => [] },
+    accountQuota: { ingestHeaders() {} },
+    apiKeyStore: { acquire: () => ({ ok: true }), release() {}, recordUsage() {} },
+    apiScheduler: {},
+    apiEndpointStore: {},
+    stats: { errors: 0, requests: 0, by_route: {}, passthrough: 0, rewrite: 0, convert: 0 },
+    routingConfigPath: routingFile,
+    routingConfig: { compatibility: {}, failover: {} },
+    refusalGuards: repo,
+    refusalDevices: new RefusalDeviceBlocksRepo(db),
+    settings: { get: (_key, fallback) => fallback },
+    failoverRunner: {
+      async run() {
+        // The stream already went out when the upstream refused.
+        response.headersSent = true
+        return {
+          ok: false,
+          committed: true,
+          finalState: 'content_filter',
+          accountId: 'account-1',
+          vmId: 'vm-01',
+          body: { type: 'message', role: 'assistant', content: [], stop_reason: 'refusal' },
+          headers: {},
+        }
+      },
+    },
+    groupsRepo: { rateMultiplier: () => 1 },
+  })
+  const req = {
+    method: 'POST',
+    url: '/v1/messages',
+    headers: { authorization: 'Bearer sk-vm-x', 'user-agent': 'test-client' },
+    apiKeyKind: 'managed',
+    apiKeyRecord: { id: 'key-1', group_id: 1 },
+    once() {},
+    off() {},
+  }
+  try {
+    await handler.handleProtocol(req, response, 'anthropic.messages', '/v1/messages')
+    assert.equal(response.writableEnded, true)
+    assert.deepEqual(remembered, ['upstream stop_reason=refusal'])
+    assert.equal(repo.get(stored.fingerprint, stored.ownerUserId).error_message, 'upstream stop_reason=refusal')
+  } finally {
+    db.close()
+    fs.rmSync(root, { recursive: true, force: true })
   }
 })
