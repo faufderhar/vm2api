@@ -18,7 +18,9 @@ test('chat chunks fold into one completion with tool calls', () => {
   const message = out.choices[0].message
   assert.equal(message.reasoning_content, 'think')
   assert.equal(message.content, null)
-  assert.deepEqual(message.tool_calls, [{ id: 'call_1', type: 'function', function: { name: 'get', arguments: '{"a":1}' } }])
+  assert.deepEqual(message.tool_calls, [
+    { id: 'call_1', type: 'function', function: { name: 'get', arguments: '{"a":1}' } },
+  ])
   assert.equal(out.choices[0].finish_reason, 'tool_calls')
 })
 

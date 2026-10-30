@@ -44,7 +44,9 @@ test('044 masks presented keys already stored in usage_logs and debug records', 
       rows.map((r) => r.api_key_presented),
       ['sk-vm-ef…efef', '…', null, 'sk-vm-ab…abcd'],
     )
-    const debug = JSON.parse(db.prepare('SELECT record_json FROM request_log_debug WHERE request_id = ?').get('r1').record_json)
+    const debug = JSON.parse(
+      db.prepare('SELECT record_json FROM request_log_debug WHERE request_id = ?').get('r1').record_json,
+    )
     assert.equal(debug.api_key_presented, 'sk-vm-ef…efef')
     assert.equal(debug.status, 429)
     db.close()

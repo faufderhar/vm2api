@@ -24,8 +24,14 @@ export function RefusalSettings() {
   const q = useQuery(refusalGuardsQueryOptions())
   const [clearOpen, setClearOpen] = useState(false)
   const [clearDevicesOpen, setClearDevicesOpen] = useState(false)
-  const [deleteFp, setDeleteFp] = useState<{ fingerprint: string; owner_user_id: string } | null>(null)
-  const [unblockId, setUnblockId] = useState<{ device_id: string; owner_user_id: string } | null>(null)
+  const [deleteFp, setDeleteFp] = useState<{
+    fingerprint: string
+    owner_user_id: string
+  } | null>(null)
+  const [unblockId, setUnblockId] = useState<{
+    device_id: string
+    owner_user_id: string
+  } | null>(null)
 
   const save = useMutation({
     mutationFn: (patch: Partial<RefusalGuardConfig>) =>
@@ -43,9 +49,12 @@ export function RefusalSettings() {
   const remove = useMutation({
     mutationFn: (item: { fingerprint: string; owner_user_id: string }) => {
       const query = new URLSearchParams({ owner_user_id: item.owner_user_id })
-      return api<RefusalGuardConfig>(`/api/panel/refusal-guards/${item.fingerprint}?${query}`, {
-        method: 'DELETE',
-      })
+      return api<RefusalGuardConfig>(
+        `/api/panel/refusal-guards/${item.fingerprint}?${query}`,
+        {
+          method: 'DELETE',
+        }
+      )
     },
     onSuccess: async () => {
       toast.success('已删除指纹')
@@ -77,7 +86,10 @@ export function RefusalSettings() {
     mutationFn: (item: { device_id: string; owner_user_id: string }) =>
       api<RefusalGuardConfig>('/api/panel/refusal-device-blocks', {
         method: 'DELETE',
-        body: JSON.stringify({ device_id: item.device_id, owner_user_id: item.owner_user_id }),
+        body: JSON.stringify({
+          device_id: item.device_id,
+          owner_user_id: item.owner_user_id,
+        }),
       }),
     onSuccess: async () => {
       toast.success('已解除 device 封禁')
@@ -119,7 +131,8 @@ export function RefusalSettings() {
   const similarity = data.similarity ?? 90
   const deleting = data.items.find(
     (item) =>
-      item.fingerprint === deleteFp?.fingerprint && (item.owner_user_id ?? '') === deleteFp.owner_user_id,
+      item.fingerprint === deleteFp?.fingerprint &&
+      (item.owner_user_id ?? '') === deleteFp.owner_user_id
   )
 
   return (
@@ -215,7 +228,8 @@ export function RefusalSettings() {
                       {item.device_id}
                     </p>
                     <p className='text-xs text-muted-foreground tabular-nums'>
-                      {item.owner_user_id || '平台'} · {item.reason || 'refusal_guard'} · 命中 {item.hit_count} ·{' '}
+                      {item.owner_user_id || '平台'} ·{' '}
+                      {item.reason || 'refusal_guard'} · 命中 {item.hit_count} ·{' '}
                       {fmtExpiresAt(item.last_seen_at)}
                     </p>
                   </div>
@@ -224,7 +238,10 @@ export function RefusalSettings() {
                     variant='ghost'
                     className='cursor-pointer'
                     onClick={() =>
-                      setUnblockId({ device_id: item.device_id, owner_user_id: item.owner_user_id ?? '' })
+                      setUnblockId({
+                        device_id: item.device_id,
+                        owner_user_id: item.owner_user_id ?? '',
+                      })
                     }
                   >
                     解除
@@ -267,8 +284,9 @@ export function RefusalSettings() {
                       {item.preview || '（无预览）'}
                     </p>
                     <p className='truncate font-mono text-xs text-muted-foreground tabular-nums'>
-                      {item.owner_user_id || '平台'} · {item.model || '—'} · {shortFp(item.fingerprint)} · 命中{' '}
-                      {item.hit_count} · {fmtExpiresAt(item.last_seen_at)}
+                      {item.owner_user_id || '平台'} · {item.model || '—'} ·{' '}
+                      {shortFp(item.fingerprint)} · 命中 {item.hit_count} ·{' '}
+                      {fmtExpiresAt(item.last_seen_at)}
                     </p>
                   </div>
                   <Button
@@ -276,7 +294,10 @@ export function RefusalSettings() {
                     variant='ghost'
                     className='cursor-pointer'
                     onClick={() =>
-                      setDeleteFp({ fingerprint: item.fingerprint, owner_user_id: item.owner_user_id ?? '' })
+                      setDeleteFp({
+                        fingerprint: item.fingerprint,
+                        owner_user_id: item.owner_user_id ?? '',
+                      })
                     }
                   >
                     删除
