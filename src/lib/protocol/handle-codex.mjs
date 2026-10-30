@@ -227,6 +227,22 @@ export function codexResponseStickyKey(stickyRouter, req, responseId) {
   return scopeStickyKey(isolated, 'openai')
 }
 
+export const CODEX_SCHEDULE_SYNC_MS = 5_000
+const codexScheduleSyncedAt = new Map()
+
+/** True at most once per CODEX_SCHEDULE_SYNC_MS per project: admission's quota-schedule sweep is throttled. */
+export function codexScheduleSyncDue(projectRoot, now = Date.now(), intervalMs = CODEX_SCHEDULE_SYNC_MS) {
+  const last = codexScheduleSyncedAt.get(projectRoot)
+  if (last != null && now - last < intervalMs && now >= last) return false
+  codexScheduleSyncedAt.set(projectRoot, now)
+  return true
+}
+
+/** Tests: forget when each project was last swept. */
+export function resetCodexScheduleSync() {
+  codexScheduleSyncedAt.clear()
+}
+
 /** Id of the Responses object one SSE data line names (`response.created` / `response.completed`). */
 export function responseIdFromSseLine(line) {
   if (typeof line !== 'string' || !line.startsWith('data:') || !line.includes('"response.')) return null
@@ -280,11 +296,16 @@ export function pickCodexCandidates(
     })
     return { ...ordered, pin, sticky: false, sessionKey: null, stickyKeys: [] }
   }
-  for (const item of listVms(projectRoot, { codex: { quota: routingPolicy } })) {
-    if (!isCodexVm(item)) continue
-    syncCodexQuotaSchedule(projectRoot, getVm(projectRoot, item.id) || item, {
-      policy: routingPolicy,
-    })
+  // The quota-schedule sweep re-reads and may rewrite every slot file. Each hop already syncs its
+  // own slot (persistCodexUsage) and the usage-probe monitor sweeps periodically, so admission
+  // only sweeps when the last sweep is older than CODEX_SCHEDULE_SYNC_MS (time-based releases).
+  if (codexScheduleSyncDue(projectRoot)) {
+    for (const item of listVms(projectRoot, { codex: { quota: routingPolicy } })) {
+      if (!isCodexVm(item)) continue
+      syncCodexQuotaSchedule(projectRoot, getVm(projectRoot, item.id) || item, {
+        policy: routingPolicy,
+      })
+    }
   }
   let stickyKeys = stickyRouter?.collectPoolKeys?.(req, body || {}, { platform: 'openai' }) || []
   let sessionKey = stickyRouter?.extractPoolKey?.(req, body || {}, { platform: 'openai' }) || stickyKeys[0] || null
