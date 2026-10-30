@@ -894,7 +894,7 @@ function realStickyRouter() {
   return { dir, router: new StickyRouter({ dataDir: dir, config: { sticky: { enabled: true, ttl_seconds: 600 } } }) }
 }
 
-test('inbound session and device keys match across API keys at the protocol entry', async () => {
+test('inbound session and device keys do not match across API keys', async () => {
   const { dir, router } = realStickyRouter()
   try {
     const body = sessionBody({ device_id: 'dev-cross', account_uuid: 'acct-a', session_id: 'sess-cross' })
@@ -904,22 +904,19 @@ test('inbound session and device keys match across API keys at the protocol entr
       stickyRouter: router,
       apiKeyRecord: { id: 'key-b', group_id: 1 },
     })
-    assert.equal(a.stickyKey, 'sess:sess-cross')
-    assert.equal(b.stickyKey, a.stickyKey)
-    assert.deepEqual(b.stickyKeys, [a.stickyKey])
-    assert.equal(a.deviceKey, 'dev2:dev-cross')
-    assert.equal(b.deviceKey, a.deviceKey)
-    for (const opts of [a, b]) {
-      for (const key of [opts.stickyKey, ...opts.stickyKeys, opts.deviceKey, opts.familyKey]) {
-        assert.doesNotMatch(String(key), /key-a|key-b|^k|:k/)
-      }
-    }
+    assert.equal(a.stickyKey, 'kkey-a:sess:sess-cross')
+    assert.equal(b.stickyKey, 'kkey-b:sess:sess-cross')
+    assert.notEqual(a.stickyKey, b.stickyKey)
+    assert.equal(a.deviceKey, 'kkey-a:dev2:dev-cross')
+    assert.equal(b.deviceKey, 'kkey-b:dev2:dev-cross')
+    assert.equal(a.familyKey, 'kkey-a:family2:sess-cross')
+    assert.notEqual(a.familyKey, b.familyKey)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
 
-test('the protocol entry hands the device seat key to the pool, independent of the API key', async () => {
+test('the protocol entry scopes the device seat key to the API key', async () => {
   const { dir, router } = realStickyRouter()
   try {
     const turn = {
@@ -936,8 +933,9 @@ test('the protocol entry hands the device seat key to the pool, independent of t
       apiKeyRecord: { id: 'key-b', group_id: 1 },
     })
     assert.equal(a.skipSessionSeat, false)
-    assert.equal(a.seatKey, 'seat:dev:dev-seat')
-    assert.equal(b.seatKey, a.seatKey)
+    assert.equal(a.seatKey, 'kkey-a:seat:dev:dev-seat')
+    assert.equal(b.seatKey, 'kkey-b:seat:dev:dev-seat')
+    assert.notEqual(a.seatKey, b.seatKey)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
@@ -972,9 +970,9 @@ test('explicit body device_id is the fallback when metadata has no device', asyn
       stickyRouter: router,
       apiKeyRecord: { id: 'key-fallback', group_id: 1 },
     })
-    assert.equal(opts.stickyKey, 'sess:sess-fallback')
+    assert.equal(opts.stickyKey, 'kkey-fallback:sess:sess-fallback')
     assert.equal(opts.stickyDeviceId, 'dev-explicit')
-    assert.equal(opts.deviceKey, 'dev2:dev-explicit')
+    assert.equal(opts.deviceKey, 'kkey-fallback:dev2:dev-explicit')
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
@@ -992,47 +990,55 @@ test('legacy API-key-scoped session row migrates lazily at the protocol entry', 
       stickyRouter: router,
       apiKeyRecord,
     })
-    assert.equal(opts.stickyKey, 'sess:sess-legacy')
-    assert.deepEqual(opts.stickyKeys, ['sess:sess-legacy', legacyKey])
-    const hit = router.resolve('sess:sess-legacy')
+    assert.equal(opts.stickyKey, 'kkey-old:sess:sess-legacy')
+    assert.deepEqual(opts.stickyKeys, ['kkey-old:sess:sess-legacy', legacyKey])
+    const hit = router.resolve('kkey-old:sess:sess-legacy')
     assert.equal(hit.vmId, 'vm-legacy')
     assert.equal(hit.accountId, 'acc-legacy')
-    assert.equal(router.resolve('dev2:dev-legacy').vmId, 'vm-legacy')
+    assert.equal(router.resolve('kkey-old:dev2:dev-legacy').vmId, 'vm-legacy')
+    assert.equal(router.resolve('sess:sess-legacy'), null)
     assert.equal(router.resolve(legacyKey).vmId, 'vm-legacy')
     assert.equal(router.resolve('p:anthropic:kkey-old:unrelated').vmId, 'vm-x')
 
-    // A different API key now reaches the same session binding.
     const other = await captureRunOpts({
       body: sessionBody({ device_id: 'dev-legacy', session_id: 'sess-legacy' }),
       stickyRouter: router,
       apiKeyRecord: { id: 'key-new', group_id: 1 },
     })
-    assert.equal(other.stickyKey, 'sess:sess-legacy')
-    assert.deepEqual(other.stickyKeys, ['sess:sess-legacy'])
+    assert.equal(other.stickyKey, 'kkey-new:sess:sess-legacy')
+    assert.equal(router.resolve(other.stickyKey), null)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
 
-test('parent and child family key is shared across API keys and inherits a live legacy family', async () => {
+test('parent and child of one API key share a family and another key does not inherit it', async () => {
   const { dir, router } = realStickyRouter()
   try {
     router.bind('p:anthropic:kkey-p:family:parent-sess', { accountId: 'acc-fam', vmId: 'vm-fam' })
+    const apiKeyRecord = { id: 'key-p', group_id: 1 }
     const parent = await captureRunOpts({
       body: sessionBody({ device_id: 'dev-fam', session_id: 'parent-sess' }),
       stickyRouter: router,
-      apiKeyRecord: { id: 'key-p', group_id: 1 },
+      apiKeyRecord,
     })
     const child = await captureRunOpts({
       body: sessionBody({ device_id: 'dev-fam', session_id: 'child-sess', parent_session_id: 'parent-sess' }),
       stickyRouter: router,
-      apiKeyRecord: { id: 'key-c', group_id: 1 },
+      apiKeyRecord,
     })
-    assert.equal(parent.familyKey, 'family2:parent-sess')
+    assert.equal(parent.familyKey, 'kkey-p:family2:parent-sess')
     assert.equal(child.familyKey, parent.familyKey)
     assert.equal(parent.familyVmId, 'vm-fam')
     assert.equal(child.familyVmId, 'vm-fam')
     assert.notEqual(child.stickyKey, parent.stickyKey)
+    const other = await captureRunOpts({
+      body: sessionBody({ device_id: 'dev-fam', session_id: 'parent-sess' }),
+      stickyRouter: router,
+      apiKeyRecord: { id: 'key-c', group_id: 1 },
+    })
+    assert.equal(other.familyKey, 'kkey-c:family2:parent-sess')
+    assert.notEqual(other.familyVmId, 'vm-fam')
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
@@ -1062,7 +1068,7 @@ test('Claude Code sub-agent hops run as child sessions of the main session', asy
     const b = await agentHop('agent-b')
     const nested = await agentHop('agent-c', 'agent-a')
 
-    assert.equal(main.stickyKey, 'sess:main-sess')
+    assert.equal(main.stickyKey, 'kkey-cc:sess:main-sess')
     // A one-shot short turn ('hello') holds no seat even with a device id.
     assert.equal(main.skipSessionSeat, true)
     assert.equal(main.seatKey, null)
@@ -1072,8 +1078,11 @@ test('Claude Code sub-agent hops run as child sessions of the main session', asy
     assert.equal(aAgain.stickyKey, a.stickyKey)
     assert.deepEqual(a.stickyKeys, [a.stickyKey])
     for (const child of [a, b, nested]) {
-      assert.match(child.stickyKey, /^sess:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
-      assert.equal(child.familyKey, 'family2:main-sess')
+      assert.match(
+        child.stickyKey,
+        /^kkey-cc:sess:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      )
+      assert.equal(child.familyKey, 'kkey-cc:family2:main-sess')
       assert.equal(child.familyVmId, 'vm-cc')
       assert.equal(child.deviceKey, main.deviceKey)
     }

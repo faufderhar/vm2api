@@ -35,7 +35,12 @@ import {
 import { summarizeCodexSlot } from './codex-slot.mjs'
 import { summarizeGrokSlot } from './grok-slot.mjs'
 import { evaluateCodexQuotaSchedule } from '../pool/codex-slot-pool.mjs'
-import { effectiveOpenAIPolicy, normalizeOpenAIQuotaPolicy } from '../pool/openai-quota-policy.mjs'
+import {
+  effectiveGrokPolicy,
+  effectiveOpenAIPolicy,
+  normalizeGrokQuotaPolicy,
+  normalizeOpenAIQuotaPolicy,
+} from '../pool/openai-quota-policy.mjs'
 import { runtimeKind } from './runtime-kind.mjs'
 import { hasBoundExit } from './egress.mjs'
 import { maybeEncrypt } from '../db/secure.mjs'
@@ -137,7 +142,30 @@ function credentialSummary(kind, vm, codex, grok) {
   }
 }
 
-function schedulingSummary(kind, vm, openAIPolicy, globalOpenAI) {
+function schedulingSummary(kind, vm, openAIPolicy, globalOpenAI, routing = null) {
+  if (kind === 'grok' && routing) {
+    // Grok follows routing.grok.quota (not the Claude tiers): report the caps the
+    // scheduler enforces and what an unpinned knob falls back to.
+    const globalGrok = normalizeGrokQuotaPolicy(routing.grok?.quota)
+    const effective = effectiveGrokPolicy(vm, globalGrok)
+    return {
+      max_concurrency: effective.max_concurrency,
+      max_concurrency_override: effective.concurrency_override,
+      max_rpm: effective.max_rpm,
+      max_rpm_override: effective.rpm_override,
+      max_sessions: effective.max_sessions,
+      max_sessions_override: effective.sessions_override,
+      session_slots: null,
+      session_slots_override: false,
+      scheduling_inherited: {
+        max_concurrency: globalGrok.max_concurrency,
+        max_rpm: globalGrok.max_rpm,
+        max_sessions: globalGrok.max_sessions,
+        session_slots: null,
+      },
+      quota_override: null,
+    }
+  }
   if (kind === 'codex') {
     return {
       max_concurrency: openAIPolicy.max_concurrency,
@@ -183,7 +211,7 @@ export function summarizeVm(vm, projectRoot = null, routing = null) {
   const openAIPolicy = isCodex ? effectiveOpenAIPolicy(vm, globalOpenAI) : null
   const quotaGate = isCodex ? evaluateCodexQuotaSchedule(vm, Date.now(), globalOpenAI) : null
   const cred = credentialSummary(kind.kind, vm, codex, grok)
-  const sched = schedulingSummary(kind.kind, vm, openAIPolicy, globalOpenAI)
+  const sched = schedulingSummary(kind.kind, vm, openAIPolicy, globalOpenAI, routing)
   return {
     id: vm.id,
     name: vm.name,

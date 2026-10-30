@@ -98,7 +98,12 @@ import {
 import { PERSONA_STANDING_MAX } from '../identity/crs-persona.mjs'
 import { MESSAGES_BREAKPOINT_MODES } from '../protocol/cache-ttl.mjs'
 import { normalizeCodexRouting, normalizeInferenceWebsocket } from '../protocol/codex-route.mjs'
-import { effectiveOpenAIPolicy, normalizeOpenAIQuotaPolicy } from '../pool/openai-quota-policy.mjs'
+import {
+  effectiveGrokPolicy,
+  effectiveOpenAIPolicy,
+  normalizeGrokQuotaPolicy,
+  normalizeOpenAIQuotaPolicy,
+} from '../pool/openai-quota-policy.mjs'
 import { openAIRuntimeSignals } from '../pool/openai-account-runtime.mjs'
 import { normalizeVmConfig, memoryMiB } from '../vm/machine-spec.mjs'
 import { runtimeKind } from '../vm/runtime-kind.mjs'
@@ -1890,6 +1895,11 @@ export function enrichVm(v, accountQuota, active, extras = {}) {
   }
   const openAIGlobalPolicy = normalizeOpenAIQuotaPolicy(extras.routingConfig?.codex?.quota)
   const openAIEffective = isCodex ? effectiveOpenAIPolicy(v, openAIGlobalPolicy) : null
+  // Grok caps come from routing.grok.quota, never the Claude tiers (tierKey 'grok' would
+  // fall through to tiers.default and show a Claude number as the slot's inherited value).
+  const grokGlobalPolicy = grokSlot ? normalizeGrokQuotaPolicy(extras.routingConfig?.grok?.quota) : null
+  const grokEffective = grokSlot ? effectiveGrokPolicy(v, grokGlobalPolicy) : null
+  const headlessEffective = openAIEffective || grokEffective
   const mergedQuota = isCodex ? v.codex_usage?.quota || {} : q
   const u5 = mergedQuota.utilization_5h
   const u7 = mergedQuota.utilization_7d
@@ -1915,12 +1925,8 @@ export function enrichVm(v, accountQuota, active, extras = {}) {
           },
           q,
         ).key
-  const inheritedPolicy = isCodex
-    ? {
-        max_concurrency: openAIGlobalPolicy.max_concurrency,
-        max_rpm: openAIGlobalPolicy.max_rpm,
-        max_sessions: openAIGlobalPolicy.max_sessions,
-      }
+  const tierPolicy = isCodex
+    ? null
     : resolveTierPolicy(
         {
           tiers: extras.routingConfig?.tiers || accountQuota?.tiers,
@@ -1929,9 +1935,18 @@ export function enrichVm(v, accountQuota, active, extras = {}) {
         },
         tierKey,
       )
+  const headlessGlobalPolicy = isCodex ? openAIGlobalPolicy : grokGlobalPolicy
+  // What the scheduling knobs fall back to: OpenAI / Grok global quota, or the Claude tier.
+  const inheritedPolicy = headlessGlobalPolicy
+    ? {
+        max_concurrency: headlessGlobalPolicy.max_concurrency,
+        max_rpm: headlessGlobalPolicy.max_rpm,
+        max_sessions: headlessGlobalPolicy.max_sessions,
+      }
+    : tierPolicy
   const policy = isCodex
     ? openAIGlobalPolicy
-    : { ...applyVmQuotaPolicy(inheritedPolicy, quotaOverride), ...gatePolicyFields(vmQuotaConfig) }
+    : { ...applyVmQuotaPolicy(tierPolicy, quotaOverride), ...gatePolicyFields(vmQuotaConfig) }
   const safety = Number(policy.limit_5h ?? policy.safety_ratio ?? 0.85)
   const weeklySafety = Number(policy.limit_7d ?? policy.weekly_safety_ratio ?? 0.8)
   const quotaGate = quotaGateOf(policy)
@@ -2070,26 +2085,26 @@ export function enrichVm(v, accountQuota, active, extras = {}) {
     can_import_credential: merged.can_import_credential,
     proxy_cli_enabled: !!v.proxy_cli_enabled,
     seed_policy: v.seed_policy || null,
-    max_concurrency: isCodex ? openAIEffective.max_concurrency : v.max_concurrency,
-    max_rpm: isCodex ? openAIEffective.max_rpm : (acc?.max_rpm ?? v.max_rpm ?? 0),
-    max_sessions: isCodex ? openAIEffective.max_sessions : null,
-    concurrency_override: isCodex
-      ? openAIEffective.concurrency_override
+    max_concurrency: headlessEffective ? headlessEffective.max_concurrency : v.max_concurrency,
+    max_rpm: headlessEffective ? headlessEffective.max_rpm : (acc?.max_rpm ?? v.max_rpm ?? 0),
+    max_sessions: headlessEffective ? headlessEffective.max_sessions : null,
+    concurrency_override: headlessEffective
+      ? headlessEffective.concurrency_override
       : !!(acc?.concurrency_override || v.max_concurrency_override),
-    rpm_override: isCodex ? openAIEffective.rpm_override : !!(acc?.rpm_override || v.max_rpm_override),
-    max_sessions_override: isCodex ? openAIEffective.sessions_override : false,
-    session_slots: isCodex ? null : resolveSessionSlots(v, extras.routingConfig || {}),
-    session_slots_override: isCodex ? false : v.session_slots_override === true,
+    rpm_override: headlessEffective ? headlessEffective.rpm_override : !!(acc?.rpm_override || v.max_rpm_override),
+    max_sessions_override: headlessEffective ? headlessEffective.sessions_override : false,
+    session_slots: headlessEffective ? null : resolveSessionSlots(v, extras.routingConfig || {}),
+    session_slots_override: headlessEffective ? false : v.session_slots_override === true,
     // What each knob falls back to when the slot drops its pin (PATCH field = null).
     scheduling_inherited: {
       max_concurrency: Number(inheritedPolicy.max_concurrency ?? 2),
       max_rpm: Number(inheritedPolicy.max_rpm ?? 0),
-      max_sessions: isCodex ? Number(inheritedPolicy.max_sessions ?? 0) : null,
-      session_slots: isCodex ? null : normalizeSessionSlots(extras.routingConfig?.inference?.session_slots),
+      max_sessions: headlessEffective ? Number(inheritedPolicy.max_sessions ?? 0) : null,
+      session_slots: headlessEffective ? null : normalizeSessionSlots(extras.routingConfig?.inference?.session_slots),
     },
     quota_override: quotaOverride,
     quota_policy: isCodex ? null : vmQuotaView(policy, vmQuotaConfig),
-    quota_inherited: isCodex ? null : vmQuotaView(inheritedPolicy, globalQuotaConfig),
+    quota_inherited: isCodex ? null : vmQuotaView(tierPolicy, globalQuotaConfig),
     openai_quota_policy: isCodex ? v.quota_policy || null : null,
     rpm: isCodex ? openAIRuntimeSignals(v.id).rpmCount : (acc?.rpm ?? 0),
     allowed_models: Array.isArray(v.allowed_models) ? v.allowed_models : null,

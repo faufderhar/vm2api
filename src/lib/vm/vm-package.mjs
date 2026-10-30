@@ -25,6 +25,7 @@ import { assignComputerFingerprint } from '../identity/slot-computer.mjs'
 import { VM_ORIGIN, canBindProxyToVm, normalizeOwnerId } from '../admin/resource-owner.mjs'
 import { readCodexAccounts, writeCodexAccounts } from './codex-slot.mjs'
 import { grokBagFromAccount, readGrokAccounts, writeGrokAccounts } from './grok-slot.mjs'
+import { normalizeGrokQuotaPolicy } from '../pool/openai-quota-policy.mjs'
 import { hasBoundExit, isLocalEgressProxy } from './egress.mjs'
 import { OS_CATALOG, STANDARD_LOCALE, nextNumericIndex, padVm, parseVmIndex } from './vm-runtime.mjs'
 import { parseSocks5Fields } from './proxy-pool.mjs'
@@ -85,12 +86,13 @@ function personaOf(value) {
 }
 
 function policyFromVm(vm, kind) {
-  const codex = kind === 'codex'
+  // Codex and Grok share the OpenAI-style knobs (concurrency floor 1, per-slot max_sessions).
+  const headless = kind === 'codex' || kind === 'grok'
   const policy = vm?.policy && typeof vm.policy === 'object' ? vm.policy : {}
   const out = {
     weight: integer(policy.weight, 1, 100) ? policy.weight : 1,
   }
-  if (integer(policy.maxConcurrency, codex ? 1 : 0, 256)) {
+  if (integer(policy.maxConcurrency, headless ? 1 : 0, 256)) {
     out.maxConcurrency = policy.maxConcurrency
     out.concurrencyOverride = policy.concurrencyOverride === true
   }
@@ -98,7 +100,7 @@ function policyFromVm(vm, kind) {
     out.maxRpm = policy.maxRpm
     out.rpmOverride = policy.rpmOverride === true
   }
-  if (codex && integer(policy.maxSessions, 0, 256)) {
+  if (headless && integer(policy.maxSessions, 0, 256)) {
     out.maxSessions = policy.maxSessions
     out.sessionsOverride = policy.sessionsOverride === true
   }
@@ -218,12 +220,12 @@ export function buildVmPackage({
 }
 
 function parsePolicy(raw, kind) {
-  const codex = kind === 'codex'
+  const headless = kind === 'codex' || kind === 'grok'
   if (raw == null) return { ok: true, value: {} }
   if (typeof raw !== 'object' || Array.isArray(raw)) return fail('invalid_package', 'vm.policy 必须是对象')
   const value = {}
   if (has(raw, 'maxConcurrency')) {
-    if (!integer(raw.maxConcurrency, codex ? 1 : 0, 256)) {
+    if (!integer(raw.maxConcurrency, headless ? 1 : 0, 256)) {
       return fail('invalid_package', 'maxConcurrency 超出范围')
     }
     value.maxConcurrency = raw.maxConcurrency
@@ -240,7 +242,7 @@ function parsePolicy(raw, kind) {
     if (typeof raw.rpmOverride !== 'boolean') return fail('invalid_package', 'rpmOverride 必须是布尔')
     value.rpmOverride = raw.rpmOverride
   }
-  if (codex && has(raw, 'maxSessions')) {
+  if (headless && has(raw, 'maxSessions')) {
     if (!integer(raw.maxSessions, 0, 256)) return fail('invalid_package', 'maxSessions 超出范围')
     value.maxSessions = raw.maxSessions
     value.sessionsOverride = raw.sessionsOverride !== false
@@ -421,7 +423,7 @@ export function parseVmPackage(doc) {
 }
 
 function applyPolicy(vm, policy, kind) {
-  const codex = kind === 'codex'
+  const headless = kind === 'codex' || kind === 'grok'
   vm.policy = { ...(vm.policy || {}), inflight: vm.policy?.inflight || 0 }
   if (has(policy, 'maxConcurrency')) {
     vm.policy.maxConcurrency = policy.maxConcurrency
@@ -435,7 +437,7 @@ function applyPolicy(vm, policy, kind) {
   } else if (has(policy, 'rpmOverride')) {
     vm.policy.rpmOverride = policy.rpmOverride
   }
-  if (codex && has(policy, 'maxSessions')) {
+  if (headless && has(policy, 'maxSessions')) {
     vm.policy.maxSessions = policy.maxSessions
     vm.policy.sessionsOverride = policy.sessionsOverride === true
   }
@@ -614,11 +616,12 @@ async function attachProxy(projectRoot, id, spec, proxyPool, ownerUserId) {
   return { ok: true }
 }
 
-function finishControl(projectRoot, id, spec, status) {
+function finishControl(projectRoot, id, spec, status, grokQuota = null) {
   const file = path.join(projectRoot, 'vms', `${id}.json`)
   const vm = JSON.parse(fs.readFileSync(file, 'utf8'))
   applyTraits(vm, spec)
   applySchedule(vm, spec, credentialPresent(spec, vm))
+  if (spec.kind === 'grok') inheritGrokGlobal(vm, grokQuota)
   vm.status = status
   // Do not reset proxy_cli_enabled: attachProxy/bindVmProxy owns it.
   vm.updated_at = new Date().toISOString()
@@ -656,6 +659,7 @@ export async function commitVmPackage({
   owner = { role: 'admin', userId: null },
   proxyPool,
   occupied = [],
+  grokQuota = null,
 }) {
   if (!parsed?.ok)
     return { ok: false, status: 400, error: parsed?.error || { code: 'invalid_package', message: '包无效' } }
@@ -736,6 +740,7 @@ export async function commitVmPackage({
   }
   applyTraits(vm, spec)
   applySchedule(vm, spec, false)
+  if (spec.kind === 'grok') inheritGrokGlobal(vm, grokQuota)
   atomicWriteJson(file, vm, { mode: 0o600 })
   if (create) {
     try {
@@ -748,7 +753,7 @@ export async function commitVmPackage({
 
   const written = await writeCredential(projectRoot, id, spec)
   if (!written.ok) return { ok: false, status: 400, error: written.error }
-  let saved = finishControl(projectRoot, id, spec, status)
+  let saved = finishControl(projectRoot, id, spec, status, grokQuota)
   if (written.account) {
     mirrorCredential(saved, spec.kind, written.account)
     saved.updated_at = new Date().toISOString()
@@ -756,12 +761,31 @@ export async function commitVmPackage({
   }
   const attached = await attachProxy(projectRoot, id, spec, proxyPool, saved.owner_user_id || null)
   if (!attached.ok) return { ok: false, status: 400, error: attached.error }
-  saved = finishControl(projectRoot, id, spec, status)
+  saved = finishControl(projectRoot, id, spec, status, grokQuota)
   if (written.account) mirrorCredential(saved, spec.kind, written.account)
   // Flag already follows the bound exit from attachProxy.
   saved.updated_at = new Date().toISOString()
   atomicWriteJson(file, saved, { mode: 0o600 })
   return { ok: true, status: create ? 201 : 200, vm: saved, renamed_from: renamedFrom }
+}
+
+/**
+ * A Grok slot written from a package follows this host's routing.grok.quota on every knob
+ * the package did not pin (the source host's global is not ours), the same rule as
+ * the Grok credential import and applyRoutingGrokQuota.
+ */
+function inheritGrokGlobal(vm, quota) {
+  const global = normalizeGrokQuotaPolicy(quota)
+  vm.policy = vm.policy && typeof vm.policy === 'object' ? vm.policy : {}
+  for (const [field, flag, key] of [
+    ['maxConcurrency', 'concurrencyOverride', 'max_concurrency'],
+    ['maxRpm', 'rpmOverride', 'max_rpm'],
+    ['maxSessions', 'sessionsOverride', 'max_sessions'],
+  ]) {
+    if (vm.policy[flag] === true && Number.isInteger(vm.policy[field])) continue
+    vm.policy[field] = global[key]
+    vm.policy[flag] = false
+  }
 }
 
 function slotLabel(id) {

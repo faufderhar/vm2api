@@ -1036,7 +1036,8 @@ export function createHandleProtocol(deps) {
       routing: getRouting(),
     }
     // Pool identity comes from inbound metadata.user_id (or an explicit device_id),
-    // read before outbound cleaning. API key never scopes it.
+    // read before outbound cleaning. The managed key id is applied when the
+    // sticky and seat keys are built, so one key cannot occupy another's slot.
     const inboundIdentity = resolveInboundIdentity({ inbound, body: ctx.body, headers: req.headers })
     const stickyDeviceId = inboundIdentity.deviceId
     logBag.inbound_device_id = sessionIdForLog(stickyDeviceId)
@@ -1059,10 +1060,16 @@ export function createHandleProtocol(deps) {
     // One-shot test calls (sub2api account test, new-api channel test) keep their
     // sticky identity but never hold a session seat the main conversation needs.
     const seatless = isProbe || isShortProbeRequest(inbound)
-    // Seat = inbound device (R1/R2); the API key never scopes it.
+    // Seat = inbound device. A managed key scopes it; the operator key does not.
     const seatKey = seatless
       ? null
-      : resolveSeatIdentity({ inbound, body: ctx.body, headers: req.headers, clientIp: clientIp(req) }).key
+      : resolveSeatIdentity({
+          inbound,
+          body: ctx.body,
+          headers: req.headers,
+          clientIp: clientIp(req),
+          apiKeyId: req.apiKeyRecord?.id ?? '',
+        }).key
     const sessionKeys = stickyRouter?.sessionPoolKeys
       ? stickyRouter.sessionPoolKeys(req, inbound, {
           sessionId: inboundIdentity.sessionId,
@@ -1075,7 +1082,7 @@ export function createHandleProtocol(deps) {
         }
     const stickyKey = sessionKeys.stickyKey || null
     const stickyKeys = sessionKeys.stickyKeys || []
-    const deviceKey = stickyDeviceId ? stickyRouter?.canonicalDeviceKey?.(stickyDeviceId) || null : null
+    const deviceKey = stickyDeviceId ? stickyRouter?.canonicalDeviceKey?.(stickyDeviceId, req) || null : null
     const parentSession = explicitParentSessionId(inbound, req.headers)
     const familySession = parentSession || callerSession
     const familyTrusted =
@@ -1834,7 +1841,9 @@ export function createHandleProtocol(deps) {
       attachPricing(logBag, {
         managedKey,
         rateMultiplier: deps.groupsRepo.rateMultiplier(managedKey?.group_id ?? 1),
-        bill: !!managedKey,
+        // Same rule as the API-direct path: a hop that failed before producing
+        // tokens does not spend the key's request quota.
+        bill: !!(managedKey && (result?.ok || hasProducedUsage(logBag.usage))),
       })
     }
 
@@ -1866,15 +1875,6 @@ export function createHandleProtocol(deps) {
           res.write(buildAnthropicSseError(mapped.body?.error || {}))
         }
       }
-      rememberRefusal({
-        inbound,
-        body: ctx.body,
-        headers: req.headers,
-        result,
-        logBag,
-        requestId: logCtx.request_id,
-        ownerUserId: refusalOwnerFromReq(req),
-      })
       return res.end()
     }
 

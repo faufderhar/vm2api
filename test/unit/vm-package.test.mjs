@@ -336,3 +336,53 @@ test('admin export returns the SOCKS password', async (t) => {
   assert.equal(got.response.body.data.credential.export.accounts[0].credentials.access_token, 'sk-ant-oat01-PACKAGE')
   assert.equal(got.response.body.data.vm.id, 'vm-pkg')
 })
+
+function grokPackage(id, policy) {
+  return buildVmPackage({
+    vm: { id, name: 'grok', platform: 'xai', family: 'grok', kernel: 'ubuntu-24.04', policy },
+    grokAccounts: [{ id: 'acct', access_token: 'example-access', refresh_token: 'example-refresh' }],
+  })
+}
+
+test('a Grok package follows this host grok.quota except where it pins a knob', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-vm-pkg-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const pool = makePool(t)
+  const doc = grokPackage('vm-grok', {
+    maxConcurrency: 2,
+    concurrencyOverride: false,
+    maxRpm: 9,
+    rpmOverride: true,
+    maxSessions: 1,
+    sessionsOverride: true,
+  })
+  assert.equal(doc.vm.policy.maxSessions, 1)
+  // The panel hands its live routing (grok.quota) to the package import.
+  const response = {}
+  const handlePanel = createPanelHandler({
+    cfg: { paths: { project: root } },
+    proxyPool: pool,
+    routingConfig: { grok: { quota: { max_concurrency: 6, max_rpm: 0, max_sessions: 4 } } },
+    packageImportBringUp: false,
+    requireAuth(req) {
+      req.apiKeyKind = 'master'
+      req.panelRole = 'admin'
+      return true
+    },
+    json(_res, status, payload) {
+      response.status = status
+      response.body = payload
+      return true
+    },
+    readBody: async () => doc,
+  })
+  await handlePanel({ method: 'POST' }, {}, new URL('http://localhost/api/panel/vms/package'))
+  assert.equal(response.status, 201, response.body?.error?.message)
+  const saved = JSON.parse(fs.readFileSync(path.join(root, 'vms', 'vm-grok.json'), 'utf8'))
+  assert.equal(saved.policy.maxConcurrency, 6)
+  assert.equal(saved.policy.concurrencyOverride, false)
+  assert.equal(saved.policy.maxRpm, 9)
+  assert.equal(saved.policy.rpmOverride, true)
+  assert.equal(saved.policy.maxSessions, 1)
+  assert.equal(saved.policy.sessionsOverride, true)
+})

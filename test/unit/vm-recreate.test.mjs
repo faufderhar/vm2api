@@ -189,3 +189,51 @@ test('destroy missing container is a no-op', () => {
   assert.equal(r.ok, true)
   assert.equal(r.action, 'absent')
 })
+
+test('recreated record keeps scheduling pin flags so inherited slots keep following global', () => {
+  const grok = buildRecreatedVmRecord(
+    {
+      id: 'grok-1',
+      name: 'g1',
+      platform: 'xai',
+      family: 'grok',
+      kind: 'grok',
+      grok: {},
+      policy: {
+        maxConcurrency: 7,
+        concurrencyOverride: false,
+        maxRpm: 0,
+        rpmOverride: false,
+        maxSessions: 3,
+        sessionsOverride: true,
+        weight: 1,
+      },
+    },
+    null,
+    { mode: 'traits' },
+  )
+  assert.equal(grok.policy.concurrencyOverride, false)
+  assert.equal(grok.policy.rpmOverride, false)
+  assert.equal(grok.policy.maxSessions, 3)
+  assert.equal(grok.policy.sessionsOverride, true)
+
+  const claude = buildRecreatedVmRecord(
+    {
+      id: 'vm-2',
+      name: '02',
+      policy: { maxConcurrency: 20, concurrencyOverride: false, sessionSlots: 2, sessionSlotsOverride: true },
+    },
+    null,
+    { mode: 'traits' },
+  )
+  assert.equal(claude.policy.concurrencyOverride, false)
+  assert.equal(claude.policy.sessionSlots, 2)
+  assert.equal(claude.policy.sessionSlotsOverride, true)
+
+  // A legacy record without flags stays flag-less (no invented pin or unpin).
+  const legacy = buildRecreatedVmRecord({ id: 'vm-3', name: '03', policy: { maxConcurrency: 4 } }, null, {
+    mode: 'traits',
+  })
+  assert.equal('concurrencyOverride' in legacy.policy, false)
+  assert.equal('rpmOverride' in legacy.policy, false)
+})

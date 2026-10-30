@@ -370,7 +370,7 @@ test('resolveInboundIdentity reads explicit device_id from the raw inbound body'
 
 const LONG_TURN = 'please refactor the scheduler module and explain every single change you make'
 
-test('resolveSeatIdentity: device id first, then metadata session, never the API key', () => {
+test('resolveSeatIdentity: device id first, then metadata session, scoped per managed key', () => {
   const both = { metadata: { user_id: JSON.stringify({ device_id: 'dev-1', session_id: 'sess-1' }) } }
   const inbound = { ...both, messages: [{ role: 'user', content: LONG_TURN }] }
   assert.deepEqual(resolveSeatIdentity({ inbound, body: inbound }), { key: 'seat:dev:dev-1', source: 'device' })
@@ -389,9 +389,14 @@ test('resolveSeatIdentity: device id first, then metadata session, never the API
     key: 'seat:sess:sess-9',
     source: 'session',
   })
+  const scoped = resolveSeatIdentity({ inbound, body: inbound, apiKeyId: 'key-a' })
+  const otherScope = resolveSeatIdentity({ inbound, body: inbound, apiKeyId: 'key-b' })
+  assert.equal(scoped.key, 'kkey-a:seat:dev:dev-1')
+  assert.equal(otherScope.key, 'kkey-b:seat:dev:dev-1')
+  assert.notEqual(scoped.key, otherScope.key)
 })
 
-test('resolveSeatIdentity: same IP + UA + first turn hashes to one identity whatever the API key', () => {
+test('resolveSeatIdentity: same IP + UA + first turn is one identity per managed key, whatever the auth header', () => {
   const turn = (extra = []) => ({
     system: [{ type: 'text', text: 'You are a helpful assistant.' }],
     messages: [{ role: 'user', content: LONG_TURN }, ...extra],
@@ -406,6 +411,16 @@ test('resolveSeatIdentity: same IP + UA + first turn hashes to one identity what
     clientIp: '10.0.0.7',
   })
   assert.equal(otherKey.key, first.key)
+  const keyed = resolveSeatIdentity({ inbound: turn(), headers, clientIp: '10.0.0.7', apiKeyId: 'key-a' })
+  const otherKeyed = resolveSeatIdentity({
+    inbound: turn(),
+    headers,
+    clientIp: '10.0.0.7',
+    apiKeyId: 'key-b',
+  })
+  assert.match(keyed.key, /^kkey-a:seat:h:/)
+  assert.notEqual(keyed.key, otherKeyed.key)
+  assert.notEqual(keyed.key, first.key)
   const laterTurn = resolveSeatIdentity({
     inbound: turn([
       { role: 'assistant', content: 'done' },

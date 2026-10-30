@@ -109,3 +109,80 @@ test('a cancelled Claude hop bills produced usage and ingests account quota', as
     fs.rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('a failed Claude hop with no usage does not spend request quota', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-fail-bill-'))
+  const routingFile = path.join(root, 'routing.json')
+  fs.writeFileSync(routingFile, JSON.stringify({ compatibility: {} }))
+  const charges = []
+  let hops = 0
+  const response = {
+    headersSent: false,
+    on() {},
+    once() {},
+    off() {},
+    end() {},
+  }
+  const handler = createHandleProtocol({
+    json: (_res, status, body) => {
+      response.status = status
+      response.body = body
+      return body
+    },
+    writeSSEHeaders() {},
+    readBody: async () => ({ model: 'claude-haiku-4-5', messages: [{ role: 'user', content: 'hello' }] }),
+    requireAuth: () => true,
+    cfg: {
+      rewrite: { enabled: false },
+      intercept: { rules: [] },
+      distill: { enabled: false },
+      limits: { max_body_bytes: 1024 * 1024, upstream_timeout_ms: 2000, stream_idle_timeout_ms: 2000 },
+      paths: { data: root, project: root },
+    },
+    requestLog: { start: () => ({ request_id: 'fail-bill', mode: 'normal' }), finish() {} },
+    stickyRouter: { extractPoolKey: () => null, collectPoolKeys: () => [] },
+    accountQuota: { ingestHeaders() {} },
+    apiKeyStore: {
+      acquire: () => ({ ok: true }),
+      release() {},
+      recordUsage: () => charges.push('billed'),
+    },
+    apiScheduler: {},
+    apiEndpointStore: {},
+    stats: { errors: 0, requests: 0, by_route: {}, passthrough: 0, rewrite: 0, convert: 0 },
+    routingConfigPath: routingFile,
+    routingConfig: { compatibility: {}, failover: {} },
+    failoverRunner: {
+      async run() {
+        hops++
+        return {
+          ok: false,
+          status: 529,
+          accountId: 'account-1',
+          vmId: 'vm-01',
+          body: { error: { type: 'overloaded_error', code: 'pool_exhausted', message: 'pool exhausted' } },
+          headers: {},
+        }
+      },
+    },
+    groupsRepo: { rateMultiplier: () => 1 },
+  })
+  const req = {
+    method: 'POST',
+    url: '/v1/messages',
+    headers: { authorization: 'Bearer sk-vm-x', 'user-agent': 'test-client' },
+    apiKeyKind: 'managed',
+    apiKeyRecord: { id: 'key-1', group_id: 1 },
+    once() {},
+    off() {},
+  }
+  try {
+    await handler.handleProtocol(req, response, 'anthropic.messages', '/v1/messages')
+    // The hop ran and its failure reached the client; only then is "no charge" meaningful.
+    assert.equal(hops, 1)
+    assert.equal(response.status, 529)
+    assert.equal(charges.length, 0)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})

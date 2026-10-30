@@ -172,6 +172,37 @@ export function evaluateOpenAIQuotaGate(vm, policy = OPENAI_QUOTA_DEFAULTS, now 
   return first ? { ...first, until } : OPEN_GATE
 }
 
+/**
+ * Effective Grok slot caps. A Grok knob is pinned only by an explicit `<knob>Override: true`;
+ * a missing or false flag follows `routing.grok.quota`. This is the same rule
+ * applyRoutingGrokQuota uses when it pushes a global change, so the panel, the
+ * scheduler and the global save agree. Accepts a raw vm.json record or a
+ * listVms summary (flattened `max_*` / `max_*_override` fields).
+ */
+export function effectiveGrokPolicy(vm, globalPolicy = GROK_QUOTA_DEFAULTS) {
+  const global = normalizeGrokQuotaPolicy(globalPolicy)
+  const stored = vm?.policy && typeof vm.policy === 'object' ? vm.policy : null
+  const knob = (field, flag, flat, flatFlags) => {
+    const raw = stored ? stored[field] : vm?.[flat]
+    const own = stored ? stored[flag] : flatFlags.map((key) => vm?.[key]).find((value) => value != null)
+    return { raw, pinned: own === true && Number.isInteger(raw) && raw >= 0 }
+  }
+  const conc = knob('maxConcurrency', 'concurrencyOverride', 'max_concurrency', [
+    'max_concurrency_override',
+    'concurrency_override',
+  ])
+  const rpm = knob('maxRpm', 'rpmOverride', 'max_rpm', ['max_rpm_override', 'rpm_override'])
+  const sessions = knob('maxSessions', 'sessionsOverride', 'max_sessions', ['max_sessions_override'])
+  return {
+    max_concurrency: conc.pinned ? conc.raw || 2 : global.max_concurrency,
+    max_rpm: rpm.pinned ? rpm.raw : global.max_rpm,
+    max_sessions: sessions.pinned ? sessions.raw : global.max_sessions,
+    concurrency_override: conc.pinned,
+    rpm_override: rpm.pinned,
+    sessions_override: sessions.pinned,
+  }
+}
+
 export function effectiveOpenAIPolicy(vm, globalPolicy = OPENAI_QUOTA_DEFAULTS) {
   const policy = normalizeOpenAIQuotaPolicy(globalPolicy)
   return {

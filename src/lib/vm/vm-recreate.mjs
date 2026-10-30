@@ -13,6 +13,7 @@ import { writeSlotSeedFiles } from './slot-seed.mjs'
 import { manualScheduleLevelOf } from '../pool/credential-weight.mjs'
 import { activeHoursOf } from '../pool/active-hours.mjs'
 import { stampVmKind } from './vm-kind.mjs'
+import { SESSION_SLOT_MAX, SESSION_SLOT_MIN } from './slot-engine.mjs'
 import { materializeWrapCli } from './wrap-cli-runtime.mjs'
 import { listVms } from './vm-registry.mjs'
 import { slotHost } from './slot-host.mjs'
@@ -119,7 +120,12 @@ export function buildRecreatedVmRecord(prev, generated, { mode = 'traits' } = {}
     ? Math.max(0, Math.min(128, Number(policy.maxConcurrency)))
     : 20
   const maxRpm = Number.isFinite(Number(policy.maxRpm)) ? Math.max(0, Math.min(1e6, Number(policy.maxRpm))) : 0
-  const rpmOverride = policy.rpmOverride === true
+  // Keep the slot's pin flags exactly (true and false): a dropped flag next to a stored
+  // value reads as a pin to the old snapshot (Claude tier / Codex legacy rule), and a
+  // dropped `true` silently unpins the slot (Grok rule).
+  const flag = (key) => (typeof policy[key] === 'boolean' ? { [key]: policy[key] } : {})
+  const count = (key, min, max) =>
+    Number.isInteger(policy[key]) && policy[key] >= min && policy[key] <= max ? { [key]: policy[key] } : {}
   const weight = Number.isFinite(Number(policy.weight)) ? Math.max(1, Math.min(100, Number(policy.weight))) : 1
   const priority = manualScheduleLevelOf(prev)
   const activeHours = activeHoursOf({ policy })
@@ -142,8 +148,13 @@ export function buildRecreatedVmRecord(prev, generated, { mode = 'traits' } = {}
     proxy: prev.proxy || null,
     policy: {
       maxConcurrency,
+      ...flag('concurrencyOverride'),
       maxRpm,
-      ...(rpmOverride ? { rpmOverride: true } : {}),
+      ...flag('rpmOverride'),
+      ...count('maxSessions', 0, 256),
+      ...flag('sessionsOverride'),
+      ...count('sessionSlots', SESSION_SLOT_MIN, SESSION_SLOT_MAX),
+      ...flag('sessionSlotsOverride'),
       weight,
       ...(priority == null ? {} : { priority }),
       inflight: 0,
