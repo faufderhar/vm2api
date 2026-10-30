@@ -1,4 +1,4 @@
-# PR/main gate: Node + Go + pinned amd64 payload ELFs + web + native ARM64 deployment.
+# PR/main gate: Node + Go + Rust grok-kernel (test, clippy, cargo audit) + pinned amd64 payload ELFs + web + native ARM64 deployment.
 name: ci
 
 on:
@@ -118,6 +118,28 @@ jobs:
           for b in bin/kin-kernel bin/kin-codex-kernel bin/kin-oauth-auth share/wrap-cli/kin-kernel.bin share/wrap-cli/cli-node share/wrap-cli/cc-node share/crag/kin-kernel; do
             file "$b" | grep -q 'ELF 64-bit LSB .*x86-64'
           done
+
+  grok-kernel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: grok-kernel
+    steps:
+      - uses: actions/checkout@v7
+      - name: toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup default stable
+      - name: test
+        run: cargo test --locked
+      - name: clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+      # RustSec gate: any advisory (vulnerability or yanked crate) in Cargo.lock fails the build.
+      - name: cargo audit
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo audit --deny warnings
 
   web:
     runs-on: ubuntu-latest

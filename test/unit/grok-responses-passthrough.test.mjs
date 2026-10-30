@@ -199,6 +199,7 @@ test('a previous_response_id follow-up runs on the slot that produced that respo
   const first = await h.send(turn('first question'))
   assert.equal(first.res.status, 200)
   const home = h.envelopes[0].vmId
+  assert.ok(['vm-g1', 'vm-g2'].includes(home), 'the injected kernel sees which slot it serves')
   let previous = first.res.payload.id
   assert.equal(previous, `resp_1_${home}`)
   for (let i = 0; i < 6; i++) {

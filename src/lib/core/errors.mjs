@@ -66,6 +66,7 @@ export const ErrorCode = {
   API_KEY_DISABLED: 'api_key_disabled',
   API_KEY_EXPIRED: 'api_key_expired',
   API_KEY_QUOTA_EXHAUSTED: 'api_key_quota_exhausted',
+  API_KEY_QUOTA_INFLIGHT: 'api_key_quota_inflight',
   API_KEY_RATE_LIMIT: 'api_key_rate_limit',
   API_KEY_CONCURRENCY_LIMIT: 'api_key_concurrency_limit',
   KEY_GROUP_MISMATCH: 'key_group_mismatch',

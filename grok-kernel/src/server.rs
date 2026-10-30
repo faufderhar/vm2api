@@ -79,19 +79,20 @@ impl App {
         })
     }
     /// The current runtime, reloaded first when the config file changed. The file is
-    /// small and read on every call: an mtime check misses a same-size rewrite within
-    /// one timestamp tick. A file that does not parse or names a bad proxy keeps the
-    /// previous runtime.
-    pub fn runtime(&self) -> Arc<Runtime> {
+    /// small and read once per request: an mtime check misses a same-size rewrite within
+    /// one timestamp tick. The read runs on tokio's blocking pool, outside the lock, so a
+    /// slow disk never stalls a reactor thread or the other requests. A file that does
+    /// not parse or names a bad proxy keeps the previous runtime.
+    pub async fn runtime(&self) -> Arc<Runtime> {
+        let text = match self.config_path.as_ref() {
+            Some(path) => tokio::fs::read_to_string(path).await.ok(),
+            None => None,
+        };
         let mut current = self
             .current
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(text) = self
-            .config_path
-            .as_ref()
-            .and_then(|path| std::fs::read_to_string(path).ok())
-        {
+        if let Some(text) = text {
             if text != current.text {
                 let loaded = Config::parse(&text)
                     .and_then(|config| build_client(&config).map(|client| (config, client)));
@@ -174,18 +175,54 @@ pub fn build_client(config: &Config) -> Result<reqwest::Client, String> {
     }
     builder.build().map_err(|err| err.to_string())
 }
+/// Bind the socket where nobody else can reach it, then move it into place. Binding at
+/// the final path and chmodding afterwards left a window in which the socket had the
+/// umask's mode; inside a fresh 0700 directory that window is unreachable, and the
+/// rename publishes an already-0600 socket atomically (same directory, same filesystem).
+/// The staging path is only a few bytes longer than the final one; when it would not fit
+/// in `sun_path` the socket is bound in place and chmodded as before.
+pub fn bind_private(socket_path: &Path) -> Result<tokio::net::UnixListener, String> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    const SUN_PATH_MAX: usize = 107;
+    let chmod = |path: &Path| {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|err| format!("chmod socket: {err}"))
+    };
+    let parent = socket_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let tag = Uuid::new_v4().simple().to_string();
+    let staging = parent.join(format!(".b{}", &tag[..8]));
+    let staged = staging.join("s");
+    if staged.as_os_str().as_bytes().len() > SUN_PATH_MAX {
+        let _ = std::fs::remove_file(socket_path);
+        let listener =
+            tokio::net::UnixListener::bind(socket_path).map_err(|err| err.to_string())?;
+        chmod(socket_path)?;
+        return Ok(listener);
+    }
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&staging)
+        .map_err(|err| format!("bind staging dir: {err}"))?;
+    let result = (|| {
+        let listener = tokio::net::UnixListener::bind(&staged).map_err(|err| err.to_string())?;
+        chmod(&staged)?;
+        let _ = std::fs::remove_file(socket_path);
+        std::fs::rename(&staged, socket_path).map_err(|err| format!("publish socket: {err}"))?;
+        Ok(listener)
+    })();
+    let _ = std::fs::remove_dir_all(&staging);
+    result
+}
 pub async fn serve(app: Arc<App>) -> Result<(), String> {
     let socket_path = app.socket_path.clone();
     if let Some(parent) = socket_path.parent() {
         std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
-    let _ = std::fs::remove_file(&socket_path);
-    let listener = tokio::net::UnixListener::bind(&socket_path).map_err(|err| err.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600));
-    }
+    let listener = bind_private(&socket_path)?;
     let router = Router::new()
         .route("/internal/health", get(health))
         .route("/internal/forward", post(forward))
@@ -197,7 +234,7 @@ pub async fn serve(app: Arc<App>) -> Result<(), String> {
         .map_err(|err| err.to_string())
 }
 async fn health(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
-    if !token_ok(&app, &headers) {
+    if !token_ok(&*app.runtime().await, &headers) {
         return kernel_error(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
@@ -218,14 +255,16 @@ async fn forward(
     headers: HeaderMap,
     Json(envelope): Json<Envelope>,
 ) -> Response {
-    if !token_ok(&app, &headers) {
+    // One config read per request: the token check and the hop share this runtime.
+    let rt = app.runtime().await;
+    if !token_ok(&rt, &headers) {
         return kernel_error(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
             "internal token rejected",
         );
     }
-    match dispatch(&app, envelope).await {
+    match dispatch(&app, rt, envelope).await {
         Ok(response) => response,
         Err(failure) => kernel_error(failure.status, &failure.code, &failure.message),
     }
@@ -235,20 +274,24 @@ async fn oauth_route(
     headers: HeaderMap,
     Json(envelope): Json<OauthEnvelope>,
 ) -> Response {
-    if !token_ok(&app, &headers) {
+    let rt = app.runtime().await;
+    if !token_ok(&rt, &headers) {
         return kernel_error(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
             "internal token rejected",
         );
     }
-    match oauth_dispatch(&app, envelope).await {
+    match oauth_dispatch(&app, rt, envelope).await {
         Ok(body) => Json(body).into_response(),
         Err(failure) => kernel_error(failure.status, &failure.code, &failure.message),
     }
 }
-async fn oauth_dispatch(app: &App, envelope: OauthEnvelope) -> Result<Value, KernelFailure> {
-    let rt = app.runtime();
+async fn oauth_dispatch(
+    app: &App,
+    rt: Arc<Runtime>,
+    envelope: OauthEnvelope,
+) -> Result<Value, KernelFailure> {
     if !rt.config.dial_allowed() {
         return Err(failure_from_code("proxy_required".to_string()));
     }
@@ -336,9 +379,12 @@ fn failure_from_code(code: String) -> KernelFailure {
     };
     KernelFailure::new(status, code.to_string(), message)
 }
-async fn dispatch(app: &App, envelope: Envelope) -> Result<Response, KernelFailure> {
+async fn dispatch(
+    app: &App,
+    rt: Arc<Runtime>,
+    envelope: Envelope,
+) -> Result<Response, KernelFailure> {
     let _ = envelope.stream;
-    let rt = app.runtime();
     // No proxy and no local-route exception: refuse before building an upstream request.
     if !rt.config.dial_allowed() {
         return Err(KernelFailure::new(
@@ -554,8 +600,7 @@ fn copy_headers(source: &reqwest::header::HeaderMap) -> HeaderMap {
     }
     out
 }
-fn token_ok(app: &App, headers: &HeaderMap) -> bool {
-    let rt = app.runtime();
+fn token_ok(rt: &Runtime, headers: &HeaderMap) -> bool {
     let presented = headers
         .get("x-kin-internal-token")
         .and_then(|value| value.to_str().ok())
@@ -628,25 +673,28 @@ mod tests {
         })
         .to_string()
     }
-    #[test]
-    fn config_edits_reach_the_next_request() {
+    #[tokio::test]
+    async fn config_edits_reach_the_next_request() {
         let dir = std::env::temp_dir().join(format!("grok-kernel-reload-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("grok-kernel.json");
         std::fs::write(&path, config_text(&dir, "socks5h://10.0.0.1:1080")).unwrap();
         let app = App::watching(&path, PlatformInfo::current()).unwrap();
-        let first = app.runtime();
+        let first = app.runtime().await;
         assert_eq!(first.config.proxy_url, "socks5h://10.0.0.1:1080");
         // Same bytes written again: keep the client and its pooled connections.
         std::fs::write(&path, config_text(&dir, "socks5h://10.0.0.1:1080")).unwrap();
-        assert!(Arc::ptr_eq(&first, &app.runtime()));
+        assert!(Arc::ptr_eq(&first, &app.runtime().await));
         std::fs::write(&path, config_text(&dir, "socks5h://10.0.0.2:1080")).unwrap();
-        let second = app.runtime();
+        let second = app.runtime().await;
         assert_eq!(second.config.proxy_url, "socks5h://10.0.0.2:1080");
         // A request that started earlier still holds its own runtime.
         assert_eq!(first.config.proxy_url, "socks5h://10.0.0.1:1080");
         std::fs::write(&path, "{ not json").unwrap();
-        assert_eq!(app.runtime().config.proxy_url, "socks5h://10.0.0.2:1080");
+        assert_eq!(
+            app.runtime().await.config.proxy_url,
+            "socks5h://10.0.0.2:1080"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
     #[tokio::test]
@@ -660,7 +708,7 @@ mod tests {
         text["oauth"]["token_url"] = json!("https://invalid.example/token");
         std::fs::write(&path, text.to_string()).unwrap();
         let app = App::watching(&path, PlatformInfo::current()).unwrap();
-        let rt = app.runtime();
+        let rt = app.runtime().await;
         let fresh = oauth::now_ms() + 3_600_000;
         credentials::write_tokens(&rt.config.credentials_path, "t2", "rt", "", Some(fresh))
             .unwrap();
@@ -674,8 +722,8 @@ mod tests {
         assert_eq!(failure.status, StatusCode::SERVICE_UNAVAILABLE);
         let _ = std::fs::remove_dir_all(&dir);
     }
-    #[test]
-    fn a_pinned_platform_is_the_user_agent() {
+    #[tokio::test]
+    async fn a_pinned_platform_is_the_user_agent() {
         let dir = std::env::temp_dir().join(format!("grok-kernel-ua-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("grok-kernel.json");
@@ -690,7 +738,7 @@ mod tests {
         let app = App::watching(&path, host).unwrap();
         let envelope: Envelope =
             serde_json::from_str(r#"{"purpose":"inference","path":"/v1/responses"}"#).unwrap();
-        let headers = headers_for(&app, &app.runtime(), &envelope, "t");
+        let headers = headers_for(&app, &*app.runtime().await, &envelope, "t");
         assert_eq!(
             headers.get("user-agent"),
             Some("grok-shell/1.0.70 (macos; aarch64)")
@@ -698,7 +746,7 @@ mod tests {
         // Without a pin the kernel reports its own host.
         text.as_object_mut().unwrap().remove("platform");
         std::fs::write(&path, text.to_string()).unwrap();
-        let headers = headers_for(&app, &app.runtime(), &envelope, "t");
+        let headers = headers_for(&app, &*app.runtime().await, &envelope, "t");
         assert_eq!(
             headers.get("user-agent"),
             Some("grok-shell/1.0.70 (linux; x86_64)")
@@ -779,9 +827,50 @@ mod tests {
             turn_idx: String::new(),
             conv_group_id: String::new(),
         };
-        let failure = dispatch(&app, envelope)
+        let failure = dispatch(&app, app.runtime().await, envelope)
             .await
             .expect_err("direct dial must be refused");
         assert_eq!(failure.code, "proxy_required");
+    }
+    #[tokio::test]
+    async fn the_socket_is_published_already_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir =
+            std::env::temp_dir().join(format!("gkb-{}", &Uuid::new_v4().simple().to_string()[..8]));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let socket = dir.join("grok.sock");
+        // A stale file from a previous run is replaced.
+        std::fs::write(&socket, "stale").unwrap();
+        let listener = bind_private(&socket).unwrap();
+        let mode = std::fs::metadata(&socket).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        // Only the socket is left: the 0700 staging directory is gone.
+        let names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(names, vec!["grok.sock".to_string()]);
+        // The renamed socket still accepts connections.
+        let client = tokio::net::UnixStream::connect(&socket);
+        let (accepted, connected) = tokio::join!(listener.accept(), client);
+        assert!(accepted.is_ok() && connected.is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[tokio::test]
+    async fn one_runtime_serves_the_token_check() {
+        let dir = std::env::temp_dir().join(format!("grok-kernel-token-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("grok-kernel.json");
+        std::fs::write(&path, config_text(&dir, "socks5h://10.0.0.1:1080")).unwrap();
+        let app = App::watching(&path, PlatformInfo::current()).unwrap();
+        let rt = app.runtime().await;
+        let mut headers = HeaderMap::new();
+        assert!(!token_ok(&rt, &headers));
+        headers.insert("x-kin-internal-token", HeaderValue::from_static("secret"));
+        assert!(token_ok(&rt, &headers));
+        headers.insert("x-kin-internal-token", HeaderValue::from_static("secre"));
+        assert!(!token_ok(&rt, &headers));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

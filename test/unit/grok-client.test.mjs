@@ -36,10 +36,7 @@ test('inference headers identify as the current Grok CLI and carry the outbound 
   assert.equal(headers['x-grok-conv-id'], 'sess-1')
   assert.equal(headers['x-grok-req-id'], 'req-1')
   assert.equal(headers['x-grok-agent-id'], '0f8fad5b-d9cb-469f-a165-70867728950e')
-  assert.equal(
-    headers['x-grok-conv-group-id'],
-    grokConvGroupId('0f8fad5b-d9cb-469f-a165-70867728950e', 'sess-1'),
-  )
+  assert.equal(headers['x-grok-conv-group-id'], grokConvGroupId('0f8fad5b-d9cb-469f-a165-70867728950e', 'sess-1'))
   for (const name of ['x-grok-client-surface', 'x-grok-experiments', 'x-userid', 'x-email']) {
     assert.equal(headers[name], undefined, name)
   }

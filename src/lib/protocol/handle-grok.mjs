@@ -177,7 +177,9 @@ function parseJson(text) {
  * Never throws for upstream/transport failures.
  */
 export async function grokUpstreamCall({ projectRoot, vmId, envelope, stream, signal, idleMs, onLine, ops = {} }) {
-  const forward = ops.callGrokKernel || ((request) => callGrokKernel({ projectRoot, vmId, ...request }))
+  // An injected kernel (tests) gets the same slot identity the real client does.
+  const call = ops.callGrokKernel || callGrokKernel
+  const forward = (request) => call({ projectRoot, vmId, ...request })
   const startedAt = Date.now()
   const idle = new AbortController()
   const onParentAbort = () => idle.abort()
@@ -339,6 +341,30 @@ function createUsageTracker(shape) {
       return body?.usage || body?.response?.usage || usage
     },
   }
+}
+
+/** True when a usage object reports any metered token (an all-zero object is not usage). */
+export function hasUsageTokens(usage) {
+  if (!usage || typeof usage !== 'object') return false
+  for (const value of Object.values(usage)) {
+    if (typeof value === 'number' ? value > 0 : value && typeof value === 'object' && hasUsageTokens(value)) return true
+  }
+  return false
+}
+
+/** Field-wise sum of two usage objects (nested token details included); either may be null. */
+export function addUsage(a, b) {
+  if (!a || typeof a !== 'object') return b && typeof b === 'object' ? b : null
+  if (!b || typeof b !== 'object') return a
+  const out = { ...a }
+  for (const [key, value] of Object.entries(b)) {
+    const prev = out[key]
+    if (typeof value === 'number' && typeof prev === 'number') out[key] = prev + value
+    else if (value && typeof value === 'object' && !Array.isArray(value) && prev && typeof prev === 'object')
+      out[key] = addUsage(prev, value)
+    else if (value != null) out[key] = value
+  }
+  return out
 }
 
 /** A chat chunk that only carries usage (choices: []) we asked for ourselves. */
@@ -750,7 +776,9 @@ export async function handleGrokProtocol({
     Number.isFinite(sameRetryDelay) && sameRetryDelay >= 0 ? Math.min(10_000, sameRetryDelay) : 100
   logBag.attempt_count = 0
   let last = null
-  let lastProduced = null
+  // Usage xAI metered on every hop so far: a hop that failed after producing tokens and was
+  // switched away from still cost them, so the request is billed for the sum.
+  let spent = null
   let hops = 0
   let attempts = 0
   let switches = 0
@@ -932,6 +960,9 @@ export async function handleGrokProtocol({
           logBag.attempt_count = hops
           logBag.grok_same_account_retried = sameAccountRetries
           await new Promise((resolve) => setTimeout(resolve, sameRetryDelayMs))
+          // The retried attempt's metered usage is part of this request's bill.
+          const retriedUsage = usage.take(result?.body)
+          if (hasUsageTokens(retriedUsage)) spent = addUsage(spent, retriedUsage)
           hopEmitted = false
           attemptStarted = Date.now()
           result = await runHop()
@@ -944,11 +975,12 @@ export async function handleGrokProtocol({
         ingestGrokHop(projectRoot, vm, result)
         last = result
         const produced = usage.take(result?.body)
-        if (produced) lastProduced = produced
+        const total = addUsage(spent, hasUsageTokens(produced) ? produced : null) || produced || spent
+        spent = total
         if (result?.ok) {
           bindSticky(outboundSessionId)
           bindProducedResponse(usage.responseId(result?.body))
-          logUsage(logBag, produced, shape)
+          logUsage(logBag, total, shape)
           grokRuntime.reportAttempt(vm.id, 'succeeded', result.ttftMs ?? null)
           logBag.final_state = 'verified'
           // What xAI says served the turn; a silent reroute or downgrade shows here.
@@ -978,7 +1010,7 @@ export async function handleGrokProtocol({
           logBag.error_code = result?.body?.error?.code || 'grok_upstream'
           logBag.upstream_status = result?.status || 0
           logBag.final_state = 'incomplete'
-          logUsage(logBag, produced, shape)
+          logUsage(logBag, total, shape)
           return res.end()
         }
         if (isGrokFailoverError(result)) {
@@ -1005,7 +1037,7 @@ export async function handleGrokProtocol({
   stats.errors++
   logBag.error_code = last?.body?.error?.code || 'grok_upstream'
   logBag.upstream_status = last?.status || 0
-  if (!logBag.usage && lastProduced) logUsage(logBag, lastProduced, shape)
+  if (!logBag.usage && spent) logUsage(logBag, spent, shape)
   // The caller's own key was accepted. A 401 here is a slot credential; SDKs would read it as theirs.
   if (Number(last?.status) === 401) {
     return json(res, 503, {

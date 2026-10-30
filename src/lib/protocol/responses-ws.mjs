@@ -570,6 +570,26 @@ export function createResponsesWsHandler({
       } catch {}
     }
 
+    // The handshake authenticated once; every turn is a new request. Re-run the same gate so a
+    // key that was disabled, deleted, expired or used up since then stops at its next turn, and
+    // the turn is admitted against the key's current counters rather than the upgrade snapshot.
+    const reauthorizeTurn = () => {
+      if (typeof requireAuth !== 'function') return null
+      const res = createProtocolRes()
+      let body = ''
+      res.on('chunk', (text) => {
+        body += text
+      })
+      let ok = false
+      try {
+        ok = requireAuth(upgradeReq, res) === true
+      } catch {
+        ok = false
+      }
+      if (ok) return null
+      return { status: res.statusCode || 401, body }
+    }
+
     const pump = async () => {
       if (busy) return
       busy = true
@@ -621,6 +641,19 @@ export function createResponsesWsHandler({
                 message: 'generate=false warmup requires upstream WebSocket',
               }),
             )
+            continue
+          }
+          const denied = reauthorizeTurn()
+          if (denied) {
+            sendFrame(ws, httpErrorToFrame(denied.status, denied.body))
+            // Revoked or disabled credentials end the connection; a quota or rate refusal may clear.
+            if (denied.status === 401 || denied.status === 403) {
+              closed = true
+              try {
+                ws.close(1008, 'credentials_rejected')
+              } catch {}
+              break
+            }
             continue
           }
           let hopBody = { ...decoded.body, stream: true }

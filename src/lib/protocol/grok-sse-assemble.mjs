@@ -81,7 +81,9 @@ export function grokStreamFailure(protocol, lines = []) {
     const event = parseSseDataLine(lines[i])
     if (!event) continue
     if (event.type === 'response.failed') {
-      return event.response?.error || { type: 'api_error', code: 'upstream_failed', message: 'upstream response failed' }
+      return (
+        event.response?.error || { type: 'api_error', code: 'upstream_failed', message: 'upstream response failed' }
+      )
     }
     if (event.type === 'error' || (protocol === 'openai.chat' && event.error && !event.choices)) {
       const error = event.error && typeof event.error === 'object' ? event.error : event

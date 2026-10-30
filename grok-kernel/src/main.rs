@@ -28,7 +28,7 @@ async fn main() {
             eprintln!("kin-grok-kernel: {err}");
             std::process::exit(1);
         });
-    let socket_path = app.runtime().config.socket_path.clone();
+    let socket_path = app.runtime().await.config.socket_path.clone();
     let app = Arc::new(app);
     tokio::select! {
         result = serve(app) => {
