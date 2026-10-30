@@ -79,6 +79,20 @@ function persistedPepper(dataDir) {
   return pepper
 }
 
+/**
+ * 429 for a key whose remaining quota or spend window is already reserved by its own in-flight
+ * requests. Retryable: a request that fails is not billed and gives its share back.
+ */
+function quotaInflight(detail) {
+  return {
+    ok: false,
+    code: 'api_key_quota_inflight',
+    message: 'API key quota is reserved by in-flight requests; retry after they finish',
+    status: 429,
+    detail,
+  }
+}
+
 function clampInt(n, min, max, fallback) {
   const v = Number(n)
   if (!Number.isFinite(v)) return fallback
@@ -180,6 +194,10 @@ export class ApiKeyStore {
     this.userInflight = new Map() // user id → sum of that user's key inflight
     this.keyUsers = new Map() // key id → Map(user id → inflight taken under that owner)
     this.rpmBuckets = new Map() // id → number[] timestamps ms
+    // id → smoothed billed cost of one request. Requests in flight reserve this much of the USD
+    // quota and spend windows, so a burst of concurrent admissions cannot all pass a check made
+    // before any of them is billed. In memory: a failed request releases its share on release().
+    this.costEstimates = new Map()
     this.users = new UsersRepo(this.db)
     // null = unknown. Once no plaintext row is left, a wrong key no longer scans the table.
     this.legacyPlaintext = null
@@ -406,6 +424,7 @@ export class ApiKeyStore {
     this._releaseAllOwners(id)
     this.inflight.delete(id)
     this.rpmBuckets.delete(id)
+    this.costEstimates.delete(id)
     return true
   }
 
@@ -486,6 +505,19 @@ export class ApiKeyStore {
         detail: { quota: rec.quota, quota_used: rec.quota_used },
       }
     }
+    // Admission reservation: requests already in flight will be billed, so they count now.
+    const pending = this.inflight.get(rec.id) || 0
+    const reserved = pending * (this.costEstimates.get(rec.id) || 0)
+    if (pending > 0 && rec.quota_requests > 0 && (rec.quota_requests_used ?? 0) + pending >= rec.quota_requests) {
+      return quotaInflight({
+        quota_requests: rec.quota_requests,
+        quota_used: rec.quota_requests_used,
+        inflight: pending,
+      })
+    }
+    if (reserved > 0 && (rec.quota ?? 0) > 0 && (rec.quota_used ?? 0) + reserved >= rec.quota) {
+      return quotaInflight({ quota: rec.quota, quota_used: rec.quota_used, reserved, inflight: pending })
+    }
     // sub2api rate windows: limit > 0 and the current window is still open
     for (const [limitKey, usageKey, startKey, ms] of [
       ['rate_limit_5h', 'usage_5h', 'window_5h_start', 5 * 3600_000],
@@ -504,6 +536,10 @@ export class ApiKeyStore {
           status: 429,
           detail: { limit, used: Number(rec[usageKey]) || 0 },
         }
+      }
+      // A closed window resets on the next charge, so only an open one carries the reservation.
+      if (windowOpen && reserved > 0 && (Number(rec[usageKey]) || 0) + reserved >= limit) {
+        return quotaInflight({ limit, used: Number(rec[usageKey]) || 0, reserved, inflight: pending })
       }
     }
     if (rec.rpm > 0) {
@@ -604,6 +640,10 @@ export class ApiKeyStore {
     // key quota/windows track actual (group-rated) spend, sub2api-style
     const rate = Number.isFinite(Number(rateMultiplier)) ? Number(rateMultiplier) : 1
     const cost = billed * rate
+    if (id && Number.isFinite(cost) && cost > 0) {
+      const prev = this.costEstimates.get(id)
+      this.costEstimates.set(id, prev ? prev * 0.7 + cost * 0.3 : cost)
+    }
     // null: the key is gone or soft-deleted, nothing was charged
     return this.repo.recordUsage(id, {
       tokens_in: Number(normalized.input_tokens) || Number(normalized.tokens_in) || 0,
