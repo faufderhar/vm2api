@@ -177,7 +177,9 @@ function parseJson(text) {
  * Never throws for upstream/transport failures.
  */
 export async function grokUpstreamCall({ projectRoot, vmId, envelope, stream, signal, idleMs, onLine, ops = {} }) {
-  const forward = ops.callGrokKernel || ((request) => callGrokKernel({ projectRoot, vmId, ...request }))
+  // An injected kernel (tests) gets the same slot identity the real client does.
+  const call = ops.callGrokKernel || callGrokKernel
+  const forward = (request) => call({ projectRoot, vmId, ...request })
   const startedAt = Date.now()
   const idle = new AbortController()
   const onParentAbort = () => idle.abort()

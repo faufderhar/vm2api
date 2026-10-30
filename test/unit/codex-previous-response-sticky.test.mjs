@@ -143,3 +143,51 @@ test('protocol: every previous_response_id follow-up runs on the slot that produ
     previous = `resp_${n}_${home}`
   }
 })
+
+test('protocol: a follow-up whose slot is gone gets 409 response_not_portable, not another slot', async (t) => {
+  const root = project(t, ['vm-a', 'vm-b'])
+  const sticky = fakeSticky()
+  const hops = []
+  const send = (input, previous) => {
+    let out = null
+    return handleCodexProtocol({
+      req: { headers: {}, apiKeyKind: 'managed', apiKeyRecord: { id: 'key1', group_id: 1, group_type: 'all' } },
+      res: { headersSent: false, write() {}, end() {}, setHeader() {} },
+      protocol: 'openai.responses',
+      ctx: {
+        body: { model: 'gpt-5.4', input, stream: false, ...(previous ? { previous_response_id: previous } : {}) },
+      },
+      inbound: { stream: false },
+      logBag: {},
+      stats: { errors: 0, requests: 0, by_route: {} },
+      json: (_res, status, payload) => {
+        out = { status, payload }
+        return out
+      },
+      writeSSEHeaders() {},
+      routing: {},
+      projectRoot: root,
+      stickyRouter: sticky,
+      ops: {
+        writeCodexKernelConfig() {},
+        ensureCodexKernel: async () => ({ ok: true }),
+        streamCodexKernel: async ({ exec }) => {
+          hops.push(exec.vmId)
+          return {
+            ok: true,
+            status: 200,
+            terminalState: 'verified',
+            body: { id: `resp_${exec.vmId}`, object: 'response' },
+          }
+        },
+      },
+    }).then(() => out)
+  }
+  assert.equal((await send('first')).status, 200)
+  const home = hops[0]
+  fs.rmSync(path.join(root, 'vms', `${home}.json`))
+  const next = await send('follow-up', `resp_${home}`)
+  assert.equal(next.status, 409)
+  assert.equal(next.payload.error.code, 'response_not_portable')
+  assert.equal(hops.length, 1, 'no hop ran on the other slot')
+})
