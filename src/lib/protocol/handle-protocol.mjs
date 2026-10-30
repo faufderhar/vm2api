@@ -274,7 +274,9 @@ export function createHandleProtocol(deps) {
       // any hop, an upstream error or a client cancel with nothing to show is not.
       const answered =
         res.headersSent && res.statusCode < 400 && !logBag.error_code && logBag.final_state !== 'cancelled'
-      if (answered || logBag.usage || logBag.image_usage) chargeManagedKey(managedKey, logBag, protocol)
+      // An all-zero usage object on a failed request is not usage (same rule as the Claude path).
+      if (answered || hasProducedUsage(logBag.usage) || logBag.image_usage)
+        chargeManagedKey(managedKey, logBag, protocol)
     }
   }
 
