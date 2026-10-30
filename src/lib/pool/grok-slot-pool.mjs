@@ -12,7 +12,7 @@ import { grokRuntime } from './openai-account-runtime.mjs'
 import { modelMatchesAllowlist } from './slot-model-gate.mjs'
 import { proxyBlockedReason } from '../vm/proxy-policy.mjs'
 import { activeHoursOf, evaluateActiveHours } from './active-hours.mjs'
-import { effectiveOpenAIPolicy, normalizeGrokQuotaPolicy } from './openai-quota-policy.mjs'
+import { effectiveGrokPolicy, normalizeGrokQuotaPolicy } from './openai-quota-policy.mjs'
 
 const HARD_UNAVAILABLE = new Set(['dead', 'error', 'disabled'])
 const DEFAULT_PARK_MS = 30_000
@@ -119,7 +119,7 @@ export function grokAccountStatus(vm, now = Date.now()) {
 
 export function grokAccountCandidate(vm, now = Date.now(), signals = null, policy = null) {
   const runtime = signals || grokRuntime.signals(vm?.id, now)
-  const effective = effectiveOpenAIPolicy(vm, normalizeGrokQuotaPolicy(policy))
+  const effective = effectiveGrokPolicy(vm, normalizeGrokQuotaPolicy(policy))
   return {
     id: vm.id,
     weight: Number(vm?.policy?.weight ?? vm?.weight ?? 1) || 1,
@@ -187,7 +187,7 @@ function withModelAllowed(picked, byId, model) {
 
 /** Distinct conversation windows on a Grok slot. 0 = off. */
 export function grokMaxSessions(vm, policy = null) {
-  const n = effectiveOpenAIPolicy(vm, normalizeGrokQuotaPolicy(policy)).max_sessions
+  const n = effectiveGrokPolicy(vm, normalizeGrokQuotaPolicy(policy)).max_sessions
   return n > 0 ? Math.round(n) : 0
 }
 
