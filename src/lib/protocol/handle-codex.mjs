@@ -4,6 +4,7 @@
 import path from 'node:path'
 import { getVm, listVms, persistCodexUsage, syncCodexQuotaSchedule } from '../vm/vm-registry.mjs'
 import { isValidVmId } from '../vm/vm-file.mjs'
+import { scopeStickyKey } from '../pool/sticky-router.mjs'
 import { isCodexProtocolAllowed, isCodexVm, normalizeCodexRouting } from './codex-route.mjs'
 import { keyAllowsVm, keyScopeFromRequest, vmPoolDenial } from '../admin/key-scope.mjs'
 import { ownerScopeFromRequest, vmMatchesOwnerScope } from '../admin/resource-owner.mjs'
@@ -210,6 +211,34 @@ function pinnedVmId(req) {
   return isValidVmId(pinVmRaw) ? pinVmRaw : null
 }
 
+const CODEX_RESPONSE_ID_MAX = 200
+
+/**
+ * Sticky key for one stored Codex response, same design as grokResponseStickyKey: a follow-up
+ * that sends only `previous_response_id` and its new input has no stable conversation key (the
+ * first-user fingerprint changes every turn), so the slot that produced the response is
+ * remembered under its id, isolated per caller key and scoped to the openai platform.
+ */
+export function codexResponseStickyKey(stickyRouter, req, responseId) {
+  const id = typeof responseId === 'string' ? responseId.trim() : ''
+  if (!id || id.length > CODEX_RESPONSE_ID_MAX) return null
+  const raw = `resp:${id}`
+  const isolated = typeof stickyRouter?.isolateKey === 'function' ? stickyRouter.isolateKey(raw, req) : raw
+  return scopeStickyKey(isolated, 'openai')
+}
+
+/** Id of the Responses object one SSE data line names (`response.created` / `response.completed`). */
+export function responseIdFromSseLine(line) {
+  if (typeof line !== 'string' || !line.startsWith('data:') || !line.includes('"response.')) return null
+  try {
+    const ev = JSON.parse(line.slice(5).trim())
+    const id = ev?.response?.id
+    return String(ev?.type || '').startsWith('response.') && typeof id === 'string' && id.trim() ? id.trim() : null
+  } catch {
+    return null
+  }
+}
+
 /**
  * Current OpenAI candidates, re-read on every admission. A busy home keeps
  * its pin; only a home that left the pool for good releases the session.
@@ -257,9 +286,17 @@ export function pickCodexCandidates(
       policy: routingPolicy,
     })
   }
-  const stickyKeys = stickyRouter?.collectPoolKeys?.(req, body || {}, { platform: 'openai' }) || []
-  const sessionKey = stickyRouter?.extractPoolKey?.(req, body || {}, { platform: 'openai' }) || stickyKeys[0] || null
+  let stickyKeys = stickyRouter?.collectPoolKeys?.(req, body || {}, { platform: 'openai' }) || []
+  let sessionKey = stickyRouter?.extractPoolKey?.(req, body || {}, { platform: 'openai' }) || stickyKeys[0] || null
   let bound = sessionKey ? stickyRouter?.resolve?.(sessionKey) : null
+  // The slot that produced previous_response_id is authoritative: the stored response lives there.
+  const responseKey = codexResponseStickyKey(stickyRouter, req, body?.previous_response_id)
+  const byResponse = responseKey ? stickyRouter?.resolve?.(responseKey) : null
+  if (byResponse?.vmId && byResponse.vmId !== bound?.vmId) {
+    sessionKey = responseKey
+    stickyKeys = [responseKey, ...stickyKeys.filter((key) => key !== responseKey)]
+    bound = byResponse
+  }
   const vms = listVms(projectRoot, { codex: { quota: routingPolicy } }).filter(
     (vm) => vmMatchesOwnerScope(vm, owner) && keyAllowsVm(scope, vm),
   )
@@ -293,7 +330,9 @@ export function pickCodexCandidates(
       sessions?.drop?.(bound.vmId, sessionKey)
     } catch {}
   }
-  if (continuesResponse && (boundLeft || ordered.error === 'candidates_exhausted')) {
+  // The holding slot deleted or no longer visible to this key counts as gone, too.
+  const boundMissing = continuesResponse && !vms.some((vm) => vm.id === bound.vmId)
+  if (continuesResponse && (boundLeft || boundMissing || ordered.error === 'candidates_exhausted')) {
     return { error: 'response_not_portable', ids: [], sessionKey, stickyKeys, boundVmId: bound.vmId }
   }
   return { ...ordered, sessionKey, stickyKeys }
@@ -767,6 +806,15 @@ export async function handleCodexProtocol({
         if (sessionId) payload.sessionId = sessionId
         for (const key of stickyKeys) stickyRouter.bind(key, payload)
       }
+      // Remember which slot holds this response, so a previous_response_id follow-up lands here.
+      let producedResponseId = null
+      const bindProducedResponse = (body) => {
+        if (protocol !== 'openai.responses' || !stickyRouter?.bind) return
+        const fromBody = body?.response?.id ?? (body?.object === 'response' ? body?.id : null)
+        const id = producedResponseId || (typeof fromBody === 'string' ? fromBody : null)
+        const key = codexResponseStickyKey(stickyRouter, req, id)
+        if (key) stickyRouter.bind(key, { accountId: vm.id, vmId: vm.id })
+      }
       const leaveSticky = () => {
         if (!ownsPin || !picked.sessionKey) return
         try {
@@ -899,6 +947,8 @@ export async function handleCodexProtocol({
               if (tier) responseServiceTier = tier
               const servedModel = modelFromSseLine(line)
               if (servedModel) responseModel = servedModel
+              const producedId = responseIdFromSseLine(line)
+              if (producedId) producedResponseId = producedId
               const seen = usageFromSseLine(line)
               if (seen) streamedUsage = preferUsage(streamedUsage, seen)
               const imageGen = imageGenUsageFromSseLine(line)
@@ -951,6 +1001,7 @@ export async function handleCodexProtocol({
           logBag.codex_same_account_retried = sameAccountRetries
           await new Promise((resolve) => setTimeout(resolve, sameRetryDelayMs))
           hopEmitted = false
+          producedResponseId = null
           result = await runHop()
         }
         // The log and total duration share ingress time; pool scoring keeps hop TTFT.
@@ -1001,6 +1052,7 @@ export async function handleCodexProtocol({
         if (delivered) {
           attemptKind = 'succeeded'
           bindSticky(outboundSessionId)
+          bindProducedResponse(result?.body)
           noteCodexUsage(logBag, usage, { serviceTier, imageUsage })
           reportOpenAIAttempt(vm.id, 'succeeded', result.ttftMs ?? null)
           logBag.final_state = result?.ok ? result.terminalState || 'verified' : 'verified'
