@@ -4046,6 +4046,7 @@ export function createPanelHandler(ctx) {
           targetId: id,
           owner: { role: panelIdentity(req).role, userId: req.panelUserId },
           proxyPool,
+          grokQuota: ctx.routingConfig?.grok?.quota,
         })
         if (!result.ok) return json(res, result.status, { ok: false, error: result.error })
         await fillTimezoneFromExit(id)
@@ -4094,6 +4095,7 @@ export function createPanelHandler(ctx) {
           owner: { role: ident.role, userId: req.panelUserId },
           proxyPool,
           occupied: historic,
+          grokQuota: ctx.routingConfig?.grok?.quota,
         })
         if (!result.ok) return json(res, result.status, { ok: false, error: result.error })
         await fillTimezoneFromExit(result.vm.id)
