@@ -17,6 +17,7 @@ import { activeHoursOf, parseActiveHoursInput } from '../pool/active-hours.mjs'
 import { parseVmQuotaOverride } from '../pool/vm-quota-override.mjs'
 import { defaultSeedPolicy, standardSeedPolicy } from '../protocol/seed-policy.mjs'
 import {
+  SLOT_LOCALES,
   applyGeneratedFingerprint,
   takenFingerprintKeys,
   writeGuestMachineIdFile,
@@ -403,7 +404,7 @@ export function parseVmPackage(doc) {
         kernel: OS_CATALOG[vm.kernel] ? vm.kernel : DEFAULT_KERNEL,
         timezone,
         timezone_source: source || (timezone ? 'manual' : 'auto'),
-        locale: cleanText(vm.locale, 64) || STANDARD_LOCALE,
+        locale: SLOT_LOCALES.includes(cleanText(vm.locale, 64)) ? cleanText(vm.locale, 64) : STANDARD_LOCALE,
         region: cleanText(vm.region, 64) || null,
         note: cleanText(vm.note, 240),
         persona_preset: persona,

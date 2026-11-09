@@ -581,3 +581,70 @@ test('every OAuth route waits for the async proxy check before dialling', async 
   assert.equal(out.status, 400, JSON.stringify(out.body))
   assert.equal(out.body.error.message, 'proxy refused')
 })
+
+test('a tenant cannot pick the key value, so no string can be tested for use', async (t) => {
+  const { root, store } = keyFixture(t)
+  const before = store.list().length
+  for (const body of [
+    { name: 'x', key: 'sk-vm-chosen-value-0001' },
+    { name: 'x', custom_key: 'sk-vm-chosen-value-0002' },
+  ]) {
+    const out = await makeHandler(root, TENANT, body, { apiKeyStore: store }).call('POST', '/api/panel/api-keys')
+    assert.equal(out.status, 403, JSON.stringify(out.body))
+    assert.equal(out.body.error.code, 'key_custom_forbidden')
+  }
+  assert.equal(store.list().length, before)
+  const admin = await makeHandler(
+    root,
+    ADMIN,
+    { name: 'x', key: 'sk-vm-chosen-value-0003' },
+    { apiKeyStore: store },
+  ).call('POST', '/api/panel/api-keys')
+  assert.equal(admin.status, 201, JSON.stringify(admin.body))
+})
+
+test('vm ids that leave the vms directory are not found', async (t) => {
+  const root = makeProject(t)
+  fs.writeFileSync(path.join(root, 'outside.json'), JSON.stringify({ id: 'outside' }))
+  const imported = await makeHandler(root, ADMIN, { vm_id: '../outside', mode: 'access_token', raw: 'x' }).call(
+    'POST',
+    '/api/panel/vms/import',
+  )
+  assert.equal(imported.status, 404, JSON.stringify(imported.body))
+
+  let refreshed = 0
+  const refresh = await makeHandler(
+    root,
+    ADMIN,
+    { vm_id: '../outside' },
+    {
+      refreshWorkerCredentialForVm: async () => {
+        refreshed += 1
+        return { ok: true }
+      },
+    },
+  ).call('POST', '/admin/vm/oauth/refresh')
+  assert.equal(refresh.status, 404, JSON.stringify(refresh.body))
+  assert.equal(refreshed, 0)
+})
+
+test('an /admin request spends one auth check', async (t) => {
+  const root = makeProject(t)
+  let checks = 0
+  const handlePanel = createPanelHandler({
+    cfg: { paths: { project: root } },
+    routingConfig: {},
+    stickyRouter: { stats: () => ({}) },
+    poolScheduler: { snapshot: () => ({}) },
+    runtimeRepo: { list: () => [] },
+    requireAuth(req) {
+      checks += 1
+      Object.assign(req, ADMIN)
+      return true
+    },
+    json: () => true,
+    readBody: async () => ({}),
+  })
+  await handlePanel({ method: 'GET', headers: {} }, {}, new URL('http://localhost/admin/routing'))
+  assert.equal(checks, 1)
+})

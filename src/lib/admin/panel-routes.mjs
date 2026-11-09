@@ -238,7 +238,12 @@ import { diagnoseSlotServices, powerOnSlot, recoverSlot } from '../vm/slot-recov
 import { commitVmPackage, exportVmPackage, parseVmPackage } from '../vm/vm-package.mjs'
 import { preflightNode } from '../cluster/placement.mjs'
 import { probeLocalKvm } from '../vm/kvm-host.mjs'
-import { normalizeVmConfig, resolveMachineSpec, validateVmConfigPatch } from '../vm/machine-spec.mjs'
+import {
+  machineOverCeiling,
+  normalizeVmConfig,
+  resolveMachineSpec,
+  validateVmConfigPatch,
+} from '../vm/machine-spec.mjs'
 import { raiseDockerSlotMemory } from '../vm/docker-slot-memory.mjs'
 import { RUNTIME_KVM } from '../vm/runtime-kind.mjs'
 import { hostProxyUrlForVm, slotHost } from '../vm/slot-host.mjs'
@@ -734,7 +739,14 @@ export function createPanelHandler(ctx) {
   const readBody = (...args) => ctx.readBody(...args)
   const readRawBody = (...args) => (ctx.readRawBody || defaultReadRawBody)(...args)
   const refreshCluster = ctx.refreshClusterSlotPayloads || refreshClusterSlotPayloads
-  const requireAuth = (...args) => ctx.requireAuth(...args)
+  // /admin/* authenticates at the prefix and again in each route: one rate-limit token per request.
+  const authenticated = new WeakSet()
+  const requireAuth = (req, res) => {
+    if (authenticated.has(req)) return true
+    const ok = ctx.requireAuth(req, res)
+    if (ok) authenticated.add(req)
+    return ok
+  }
   const cfg = ctx.cfg
   const routingConfigPath = ctx.routingConfigPath
   // After a successful slot start: one background guest-identity collect if the slot never had one.
@@ -1805,6 +1817,13 @@ export function createPanelHandler(ctx) {
           return json(res, 403, {
             ok: false,
             error: { code: 'key_category_forbidden', message: '只有管理员可以创建 API 直连密钥' },
+          })
+        }
+        // A chosen value would answer "is this key already in use?" for any string a tenant tries.
+        if (ident.role !== 'admin' && (body?.key || body?.custom_key)) {
+          return json(res, 403, {
+            ok: false,
+            error: { code: 'key_custom_forbidden', message: '只有管理员可以指定密钥内容' },
           })
         }
         const input = normalizePanelApiKeyInput(body, req)
@@ -3790,21 +3809,24 @@ export function createPanelHandler(ctx) {
         if (!fs.existsSync(vmPath)) {
           return json(res, 404, { ok: false, error: { message: 'vm not found' } })
         }
-        let vm = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
-        const generated = assignComputerFingerprint(cfg.paths.project, vm, {
-          taken: takenFingerprintKeys(listVms(cfg.paths.project), { exceptId: id }),
+        return await withVmLock(vmPath, async () => {
+          if (!fs.existsSync(vmPath)) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
+          let vm = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
+          const generated = assignComputerFingerprint(cfg.paths.project, vm, {
+            taken: takenFingerprintKeys(listVms(cfg.paths.project), { exceptId: id }),
+          })
+          vm.timezone = generated.timezone
+          vm.locale = generated.locale
+          vm.fingerprint = applyGeneratedFingerprint({}, generated)
+          vm.updated_at = generated.reset_at
+          atomicWriteJson(vmPath, vm, { mode: 0o600 })
+          writeGuestMachineIdFile(cfg.paths.project, id, generated.guest_machine_id)
+          applyOfficialFingerprintToVm(vmPath, path.join(cfg.paths.project, 'vms', id, 'cli-home'))
+          try {
+            vm = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
+          } catch {}
+          return json(res, 200, panel.ok({ id, fingerprint: vm.fingerprint }))
         })
-        vm.timezone = generated.timezone
-        vm.locale = generated.locale
-        vm.fingerprint = applyGeneratedFingerprint({}, generated)
-        vm.updated_at = generated.reset_at
-        atomicWriteJson(vmPath, vm, { mode: 0o600 })
-        writeGuestMachineIdFile(cfg.paths.project, id, generated.guest_machine_id)
-        applyOfficialFingerprintToVm(vmPath, path.join(cfg.paths.project, 'vms', id, 'cli-home'))
-        try {
-          vm = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
-        } catch {}
-        return json(res, 200, panel.ok({ id, fingerprint: vm.fingerprint }))
       }
       if (req.method === 'POST' && /^\/api\/panel\/vms\/[^/]+\/reconcile-fingerprint$/.test(p)) {
         const id = p.split('/')[4]
@@ -3875,27 +3897,13 @@ export function createPanelHandler(ctx) {
         const id = p.split('/')[4]
         const vmPath = path.join(cfg.paths.project, 'vms', `${id}.json`)
         if (!fs.existsSync(vmPath)) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
-        const vm = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
-        if (isGrokVm(vm)) {
+        if (isGrokVm(JSON.parse(fs.readFileSync(vmPath, 'utf8')))) {
           return json(res, 409, {
             ok: false,
             error: { code: 'grok_no_seed_policy', message: 'Grok 槽没有 Claude 种子策略，CLI 信息只读' },
           })
         }
         const body = await readBody(req, 256 * 1024)
-        const telemetryWasOff = !isTelemetryEnabled(vm.seed_policy || {})
-        const merged = { ...(vm.seed_policy || {}), ...(body.seed_policy || {}) }
-        for (const k of ['telemetry_disabled', 'reject_client_settings', 'reject_client_metadata_identity']) {
-          if (body[k] !== undefined) merged[k] = !!body[k]
-        }
-        if (body.theme !== undefined) merged.theme = body.theme
-        if (body.extra_env !== undefined) merged.extra_env = body.extra_env
-        if (body.settings_json_override !== undefined) merged.settings_json_override = body.settings_json_override
-        if (body.claude_setting !== undefined) merged.claude_setting = body.claude_setting
-        if (body['claude.setting'] !== undefined) merged.claude_setting = body['claude.setting']
-        const next = defaultSeedPolicy(merged)
-        if (body.settings_json_override !== undefined) next.settings_json_override = body.settings_json_override
-        if (body.extra_env !== undefined) next.extra_env = body.extra_env || {}
         const followProxyTz = body?.timezone_follow_proxy === true || body?.timezoneFollowProxy === true
         const hasTimezone = body && Object.prototype.hasOwnProperty.call(body, 'timezone')
         const hasLocale = body && Object.prototype.hasOwnProperty.call(body, 'locale')
@@ -3910,6 +3918,8 @@ export function createPanelHandler(ctx) {
           }
           nextLocale = requestedLocale
         }
+        // Set when the proxy reports a zone the slot does not take as its pin.
+        let probedTimezone = null
         if (hasTimezone) {
           const zone = validTimezone(body.timezone)
           if (!zone) {
@@ -3925,7 +3935,6 @@ export function createPanelHandler(ctx) {
           }
           const pinned = persistVmTimezone(cfg.paths.project, id, zone, { source: 'manual' })
           if (!pinned) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
-          Object.assign(vm, pinned)
         } else if (followProxyTz) {
           const synced = await syncVmTimezoneFromProxy(cfg.paths.project, proxyPool, id, { force: true })
           if (!synced.ok) {
@@ -3938,19 +3947,38 @@ export function createPanelHandler(ctx) {
               },
             })
           }
-          if (synced.applied) {
-            const fresh = getVm(cfg.paths.project, id)
-            if (fresh) Object.assign(vm, fresh)
-          } else if (synced.timezone) {
-            vm.timezone = synced.timezone
+          if (!synced.applied && synced.timezone) probedTimezone = synced.timezone
+        }
+        // Read after the waits above and write without yielding: a credential import that
+        // landed meanwhile is kept, and one in progress finishes first.
+        const committed = await withVmLock(vmPath, async () => {
+          if (!fs.existsSync(vmPath)) return null
+          const vm = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
+          const telemetryWasOff = !isTelemetryEnabled(vm.seed_policy || {})
+          const merged = { ...(vm.seed_policy || {}), ...(body.seed_policy || {}) }
+          for (const k of ['telemetry_disabled', 'reject_client_settings', 'reject_client_metadata_identity']) {
+            if (body[k] !== undefined) merged[k] = !!body[k]
+          }
+          if (body.theme !== undefined) merged.theme = body.theme
+          if (body.extra_env !== undefined) merged.extra_env = body.extra_env
+          if (body.settings_json_override !== undefined) merged.settings_json_override = body.settings_json_override
+          if (body.claude_setting !== undefined) merged.claude_setting = body.claude_setting
+          if (body['claude.setting'] !== undefined) merged.claude_setting = body['claude.setting']
+          const next = defaultSeedPolicy(merged)
+          if (body.settings_json_override !== undefined) next.settings_json_override = body.settings_json_override
+          if (body.extra_env !== undefined) next.extra_env = body.extra_env || {}
+          if (probedTimezone) {
+            vm.timezone = probedTimezone
             vm.timezone_source = 'proxy_geo'
           }
-        }
-        if (nextLocale) vm.locale = nextLocale
-        vm.seed_policy = next
-        vm.updated_at = new Date().toISOString()
-        atomicWriteJson(vmPath, vm, { mode: 0o600 })
-        const written = writeSlotSeedFiles(cfg.paths.project, vm, next)
+          if (nextLocale) vm.locale = nextLocale
+          vm.seed_policy = next
+          vm.updated_at = new Date().toISOString()
+          atomicWriteJson(vmPath, vm, { mode: 0o600 })
+          return { vm, next, telemetryWasOff, written: writeSlotSeedFiles(cfg.paths.project, vm, next) }
+        })
+        if (!committed) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
+        const { vm, next, telemetryWasOff, written } = committed
         let service = null
         if (
           vm.status === 'running' &&
@@ -4200,17 +4228,18 @@ export function createPanelHandler(ctx) {
           return json(res, 409, { ok: false, error: { message: 'vm id exists' } })
         }
         const ident = panelIdentity(req)
-        if (ident.role === 'user') {
+        const overVmQuota = (slots) => {
+          if (ident.role !== 'user') return false
           const ownerId = normalizeOwnerId(req.panelUserId)
           const quota = clampVmCreateQuota(panelUsers.getById(ownerId)?.vm_create_quota, 0)
-          const used = countUserCreatedVms(existing, ownerId)
-          if (!ownerId || quota <= 0 || used >= quota) {
-            return json(res, 403, {
-              ok: false,
-              error: { code: 'vm_create_quota_exceeded', message: '自建虚拟机数量已达上限' },
-            })
-          }
+          return !ownerId || quota <= 0 || countUserCreatedVms(slots, ownerId) >= quota
         }
+        const refuseVmQuota = () =>
+          json(res, 403, {
+            ok: false,
+            error: { code: 'vm_create_quota_exceeded', message: '自建虚拟机数量已达上限' },
+          })
+        if (overVmQuota(existing)) return refuseVmQuota()
         const startNow = body.start !== false && body.status !== 'stopped'
         const wantKernel = body.kernel && OS_CATALOG[body.kernel] ? body.kernel : kernelForIndex(idx)
         const nodeId = body.node_id ? String(body.node_id) : null
@@ -4244,6 +4273,17 @@ export function createPanelHandler(ctx) {
             })
           }
           throw error
+        }
+        const overCeiling = ident.role === 'user' ? machineOverCeiling(machine, runtime, vmDefaults) : null
+        if (overCeiling) {
+          return json(res, 403, {
+            ok: false,
+            error: {
+              code: 'machine_over_ceiling',
+              message: '所选规格超过管理员设定的默认规格，请调低或联系管理员',
+              param: overCeiling,
+            },
+          })
         }
         if (nodeId) {
           if (ident.role !== 'admin') {
@@ -4326,6 +4366,12 @@ export function createPanelHandler(ctx) {
             })
           }
         }
+        // The probes above yield, so a concurrent create may have taken this id or the last
+        // quota slot. Nothing from here to the write below yields.
+        if (fs.existsSync(vmPath)) {
+          return json(res, 409, { ok: false, error: { message: 'vm id exists' } })
+        }
+        if (overVmQuota(listVms(cfg.paths.project))) return refuseVmQuota()
         const requestedTimezone = validTimezone(body.timezone)
         const requestedLocale = body.locale == null || body.locale === '' ? STANDARD_LOCALE : String(body.locale)
         if (!SLOT_LOCALES.includes(requestedLocale)) {
@@ -4359,7 +4405,7 @@ export function createPanelHandler(ctx) {
         const vm = {
           id,
           name: body.name || padVm(idx),
-          status: startNow ? 'running' : body.status || 'stopped',
+          status: startNow ? 'running' : 'stopped',
           kernel: wantKernel,
           timezone: requestedTimezone || null,
           // Only an explicit zone is a pin. An empty zone stays unset so the
@@ -4376,7 +4422,7 @@ export function createPanelHandler(ctx) {
             rpmOverride: false,
             maxSessions: 0,
             sessionsOverride: false,
-            weight: Math.max(1, Math.min(100, Number(body.weight ?? 1))),
+            weight: Number.isFinite(Number(body.weight)) ? Math.max(1, Math.min(100, Number(body.weight))) : 1,
             inflight: 0,
           },
           claude: {},
@@ -4624,14 +4670,20 @@ export function createPanelHandler(ctx) {
         const id = p.split('/')[4]
         const vmPath = path.join(cfg.paths.project, 'vms', `${id}.json`)
         if (!fs.existsSync(vmPath)) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
-        const vm = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
-        const halt = await stopSlot(vm)
+        const stopping = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
+        const halt = await stopSlot(stopping)
         if (!halt.ok) return json(res, 500, { ok: false, error: { message: halt.error || 'runtime stop failed' } })
-        vm.status = 'stopped'
-        vm.schedulable = false
-        vm.schedule_disabled_reason = 'stopped'
-        vm.updated_at = new Date().toISOString()
-        atomicWriteJson(vmPath, vm, { mode: 0o600 })
+        // Patched from a fresh read: the stop can outlast a credential import.
+        const vm =
+          (await withVmLock(vmPath, async () =>
+            patchVmRecord(cfg.paths.project, id, {
+              status: 'stopped',
+              schedulable: false,
+              schedule_disabled_reason: 'stopped',
+              // stopSlot records the halted container on the object it was given.
+              ...(stopping.runtime ? { runtime: stopping.runtime } : {}),
+            }),
+          )) || stopping
         return json(
           res,
           200,
@@ -4658,8 +4710,8 @@ export function createPanelHandler(ctx) {
           if (!vmId) {
             return json(res, 400, { ok: false, error: { message: 'vm_id required (先创建虚拟机)' } })
           }
-          const vmPath = path.join(cfg.paths.project, 'vms', `${vmId}.json`)
-          if (!fs.existsSync(vmPath) || userMissesVmId(req, cfg.paths.project, vmId)) {
+          const vmPath = path.join(cfg.paths.project, 'vms', `${isValidVmId(vmId) ? vmId : ''}.json`)
+          if (!isValidVmId(vmId) || !fs.existsSync(vmPath) || userMissesVmId(req, cfg.paths.project, vmId)) {
             return json(res, 404, { ok: false, error: { message: 'vm not found, 请先创建种子虚拟机' } })
           }
           const existing = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
@@ -6588,7 +6640,7 @@ export function createPanelHandler(ctx) {
       const body = await readBody(req, 4096).catch(() => ({}))
       const id = String(body.vm_id || getActiveVmId(cfg.paths.project) || '').trim()
       const vmPath = path.join(cfg.paths.project, 'vms', `${id}.json`)
-      if (!id || !fs.existsSync(vmPath)) {
+      if (!isValidVmId(id) || !fs.existsSync(vmPath)) {
         return json(res, 404, { ok: false, error: { code: 'vm_not_found', message: 'VM not found' } })
       }
       const data = await refreshWorkerCredentialForVm({

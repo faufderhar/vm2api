@@ -512,3 +512,25 @@ test('redactSecrets masks JWTs, opaque refresh tokens and sensitive-key values (
   assert.ok(!text.includes('eyJzdWIi'))
   assert.ok(!text.includes('rt_EXAMPLE'))
 })
+
+test('logging out with an unknown token does not rewrite the session file', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-logout-'))
+  const previous = process.env.KIN_DATA_DIR
+  process.env.KIN_DATA_DIR = dir
+  try {
+    const security = await import(`../../src/lib/core/security.mjs?logout=${Date.now()}`)
+    const token = security.createPanelSession('ada', { role: 'admin' })
+    const file = path.join(dir, 'panel-sessions.json')
+    const written = fs.statSync(file).ino
+    security.revokePanelSession('kin-panel-made-up')
+    assert.equal(fs.statSync(file).ino, written)
+    assert.ok(security.verifyPanelSession(token))
+    security.revokePanelSession(token)
+    assert.notEqual(fs.statSync(file).ino, written)
+    assert.equal(security.verifyPanelSession(token), null)
+  } finally {
+    if (previous == null) delete process.env.KIN_DATA_DIR
+    else process.env.KIN_DATA_DIR = previous
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})

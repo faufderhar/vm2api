@@ -386,3 +386,15 @@ test('a Grok package follows this host grok.quota except where it pins a knob', 
   assert.equal(saved.policy.maxSessions, 1)
   assert.equal(saved.policy.sessionsOverride, true)
 })
+
+test('a package locale outside the slot list falls back to the standard one', () => {
+  for (const [locale, expected] of [
+    ['zh_CN.UTF-8', 'zh_CN.UTF-8'],
+    ['not a locale; rm -rf', 'en_US.UTF-8'],
+    ['', 'en_US.UTF-8'],
+  ]) {
+    const doc = claudePackage('vm-locale')
+    doc.vm.locale = locale
+    assert.equal(parseVmPackage(doc).value.vm.locale, expected)
+  }
+})
