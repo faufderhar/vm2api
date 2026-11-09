@@ -20,6 +20,7 @@ import {
   stripCodexIdentity,
 } from './codex-convert.mjs'
 import { extractOpenaiUsage, openaiAnthropicUsageFromExtract, disjointOpenaiUsage } from './openai-usage.mjs'
+import { createCancelOutputMeter } from './cancel-usage.mjs'
 import { callGrokKernel, grokKernelEnvelope } from '../transport/grok-kernel-client.mjs'
 import { ensureGrokKernel, trackGrokKernel, writeGrokKernelConfig } from '../transport/grok-kernel-supervisor.mjs'
 import { hostProxyUrlForVm } from '../vm/slot-host.mjs'
@@ -879,6 +880,7 @@ export async function handleGrokProtocol({
         logBag.final_account_id = accountId
         logBag.attempt_count = hops
         const usage = createUsageTracker(shape)
+        const cancelOutput = createCancelOutputMeter()
         const nameSseEvent = createResponsesSseEventNamer()
         const anthropicSse = outbound.convert ? createAnthropicSseState() : null
         const chunks = []
@@ -886,6 +888,7 @@ export async function handleGrokProtocol({
         const onLine = async (line) => {
           hopEmitted = true
           usage.see(line)
+          cancelOutput.observeLine(line)
           if (!stream) {
             chunks.push(line)
             return
@@ -1010,7 +1013,7 @@ export async function handleGrokProtocol({
           logBag.error_code = result?.body?.error?.code || 'grok_upstream'
           logBag.upstream_status = result?.status || 0
           logBag.final_state = 'incomplete'
-          logUsage(logBag, total, shape)
+          logUsage(logBag, gone.signal?.aborted ? cancelOutput.fill(total) : total, shape)
           return res.end()
         }
         if (isGrokFailoverError(result)) {

@@ -163,6 +163,7 @@ export function publicKeyView(rec, { reveal = false } = {}) {
     usage_7d: rec.usage_7d ?? 0,
     rpm: rec.rpm,
     expires_at: rec.expires_at,
+    limits_managed: !!rec.limits_managed,
     created_at: rec.created_at,
     updated_at: rec.updated_at,
     last_used_at: rec.last_used_at,
@@ -175,21 +176,46 @@ export function publicKeyView(rec, { reveal = false } = {}) {
   }
 }
 
+const LIMIT_FIELDS = [
+  'max_concurrency',
+  'quota_requests',
+  'quota',
+  'rate_limit_5h',
+  'rate_limit_1d',
+  'rate_limit_7d',
+  'rpm',
+]
+
+/** Whether `patch` changes a limit on `rec`. A form resending today's values changes nothing. */
+export function limitsChangedBy(rec, patch = {}) {
+  if (patch.reset_quota === true) return true
+  if (LIMIT_FIELDS.some((field) => patch[field] != null && Number(patch[field]) !== Number(rec[field] ?? 0))) {
+    return true
+  }
+  if (patch.expires_at === undefined) return false
+  const instant = (value) => (value ? Date.parse(value) : null)
+  return instant(patch.expires_at) !== instant(rec.expires_at)
+}
+
 export class ApiKeyStore {
   constructor({ dataDir, db, hashSecret } = {}) {
     this.db = resolveStoreDb({ db, dataDir })
     this.repo = new ApiKeysRepo(this.db)
     this.legacyCutoff = legacyPepperCutoff(dataDir)
+    // Earlier versions keyed the HMAC on these, so rotating the master key voided every managed
+    // key. They now only verify old rows on their way to the data dir's own pepper.
+    const inherited = [
+      process.env.VM2API_DB_SECRET,
+      process.env.KIN_DB_SECRET,
+      process.env.VM2API_API_KEY,
+      process.env.KIN_API_KEY,
+    ].filter(Boolean)
+    const explicit = hashSecret || process.env.VM2API_API_KEY_HASH_SECRET || process.env.KIN_API_KEY_HASH_SECRET
     this.hashSecret = String(
-      hashSecret ||
-        process.env.VM2API_API_KEY_HASH_SECRET ||
-        process.env.KIN_API_KEY_HASH_SECRET ||
-        process.env.VM2API_DB_SECRET ||
-        process.env.KIN_DB_SECRET ||
-        process.env.VM2API_API_KEY ||
-        process.env.KIN_API_KEY ||
-        persistedPepper(dataDir),
+      explicit || (dataDir ? persistedPepper(dataDir) : inherited[0] || persistedPepper(dataDir)),
     )
+    this.inheritedHashSecrets = inherited.filter((secret) => secret !== this.hashSecret)
+    this._rehashRecoverableKeys()
     this.inflight = new Map() // id → count
     this.userInflight = new Map() // user id → sum of that user's key inflight
     this.keyUsers = new Map() // key id → Map(user id → inflight taken under that owner)
@@ -249,6 +275,15 @@ export class ApiKeyStore {
     if (!token) return { ok: false, reason: 'missing' }
     const hash = this._hash(token)
     let indexed = this.repo.getByHash(hash)
+    // A hash-only row cannot be moved at startup; its first use moves it.
+    for (const secret of indexed ? [] : this.inheritedHashSecrets) {
+      const inherited = this.repo.getByHash(this._hashWith(token, secret))
+      if (!inherited) continue
+      inherited.key_hash = hash
+      if (String(inherited.key || '').startsWith(HASH_MARKER)) inherited.key = HASH_MARKER + hash
+      indexed = this.repo.update(inherited)
+      break
+    }
     if (!indexed && this.hashSecret !== LEGACY_HASH_PEPPER) {
       const legacy = this.repo.getByHash(this._hashWith(token, LEGACY_HASH_PEPPER))
       if (legacy && createdAtMs(legacy) < this.legacyCutoff) {
@@ -314,6 +349,7 @@ export class ApiKeyStore {
       rate_limit_7d: Math.max(0, Number(input.rate_limit_7d) || 0),
       user_id: input.user_id ?? null,
       group_id: input.group_id ?? 1,
+      limits_managed: input.limits_managed ? 1 : 0,
       rpm: clampInt(input.rpm, 0, 1e6, 0),
       expires_at: input.expires_at ? new Date(input.expires_at).toISOString() : null,
       created_at: nowIso(),
@@ -378,6 +414,7 @@ export class ApiKeyStore {
     ) {
       rec.status = 'active'
     }
+    if (patch.limits_managed === true) rec.limits_managed = 1
     if (patch.category != null) {
       rec.category = String(patch.category).toLowerCase() === 'api' ? 'api' : 'oauth'
     }
@@ -665,6 +702,22 @@ export class ApiKeyStore {
 
   _hash(token) {
     return this._hashWith(token, this.hashSecret)
+  }
+
+  /** Keys that keep their plaintext follow the current secret at startup, used or not. */
+  _rehashRecoverableKeys() {
+    for (const rec of this.repo.list()) {
+      // A plaintext row must still reach authenticate(), which encrypts it on first use.
+      if (!String(rec.key || '').startsWith(HASH_MARKER)) continue
+      const plain = plainApiKey(rec)
+      // A database key that no longer decrypts this row must not overwrite its hash.
+      if (!plain || (rec.key_prefix && !plain.startsWith(rec.key_prefix))) continue
+      const hash = this._hash(plain)
+      if (rec.key_hash === hash) continue
+      rec.key_hash = hash
+      rec.key = HASH_MARKER + hash
+      this.repo.update(rec)
+    }
   }
 
   _hashWith(token, secret) {

@@ -14,9 +14,9 @@ function makeCreateHandler(project, body, proxyPool, accountQuota, extra = {}) {
     ...(accountQuota ? { accountQuota } : {}),
     ...(extra.routingConfig ? { routingConfig: extra.routingConfig } : {}),
     ...(extra.probeLocalKvm ? { probeLocalKvm: extra.probeLocalKvm } : {}),
+    ...(extra.panelUsers ? { panelUsers: extra.panelUsers } : {}),
     requireAuth(req) {
-      req.apiKeyKind = 'master'
-      req.panelRole = 'admin'
+      Object.assign(req, extra.who || { apiKeyKind: 'master', panelRole: 'admin' })
       return true
     },
     json(_res, status, payload) {
@@ -441,3 +441,143 @@ test('GET /vms/create-options is available to a tenant user', async () => {
   assert.equal(response.body.data.vm.default_runtime, 'kvm')
   assert.deepEqual(response.body.data.kvm, { ok: true, accel: 'tcg', error: null })
 })
+
+const CREATE_URL = new URL('http://localhost/api/panel/vms/create')
+const TENANT = { panelUser: 'tenant', apiKeyKind: 'session', panelRole: 'user', panelUserId: 'u-1' }
+const quotaOf = (n) => ({ getById: () => ({ vm_create_quota: n }) })
+
+function withRoot(prefix, run) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+  return Promise.resolve(run(root)).finally(() => fs.rmSync(root, { recursive: true, force: true }))
+}
+
+test('create records stopped when told not to start, whatever status was sent', () =>
+  withRoot('kin-create-status-', async (root) => {
+    const { handlePanel, response } = makeCreateHandler(root, {
+      start: false,
+      status: 'running',
+      auto_allocate_proxy: false,
+    })
+    await handlePanel({ method: 'POST' }, {}, CREATE_URL)
+    assert.equal(response.status, 200, JSON.stringify(response.body))
+    const saved = JSON.parse(fs.readFileSync(path.join(root, 'vms', `${response.body.data.vm.id}.json`), 'utf8'))
+    assert.equal(saved.status, 'stopped')
+  }))
+
+test('create falls back to weight 1 for a value that is not a number', () =>
+  withRoot('kin-create-weight-', async (root) => {
+    const { handlePanel, response } = makeCreateHandler(root, {
+      start: false,
+      weight: 'heavy',
+      auto_allocate_proxy: false,
+    })
+    await handlePanel({ method: 'POST' }, {}, CREATE_URL)
+    assert.equal(response.status, 200, JSON.stringify(response.body))
+    const saved = JSON.parse(fs.readFileSync(path.join(root, 'vms', `${response.body.data.vm.id}.json`), 'utf8'))
+    assert.equal(saved.policy.weight, 1)
+  }))
+
+test('a tenant slot cannot go past the operator default spec', () =>
+  withRoot('kin-create-ceiling-', async (root) => {
+    const routingConfig = { vm: { memory: '1g', vcpus: 2, disk_gb: 20, default_runtime: 'docker' } }
+    const extra = { routingConfig, who: TENANT, panelUsers: quotaOf(5) }
+    for (const [body, param] of [
+      [{ machine: { memory: '4g' } }, 'memory'],
+      [{ machine: { docker_cpus: 8 } }, 'docker_cpus'],
+      [{ runtime_type: 'kvm', machine: { memory: '1g' } }, 'runtime_type'],
+    ]) {
+      const { handlePanel, response } = makeCreateHandler(
+        root,
+        { start: false, auto_allocate_proxy: false, ...body },
+        undefined,
+        undefined,
+        extra,
+      )
+      await handlePanel({ method: 'POST' }, {}, CREATE_URL)
+      assert.equal(response.status, 403, JSON.stringify(response.body))
+      assert.equal(response.body.error.code, 'machine_over_ceiling')
+      assert.equal(response.body.error.param, param)
+    }
+    const within = makeCreateHandler(
+      root,
+      { start: false, auto_allocate_proxy: false, machine: { memory: '512m' } },
+      undefined,
+      undefined,
+      extra,
+    )
+    await within.handlePanel({ method: 'POST' }, {}, CREATE_URL)
+    assert.equal(within.response.status, 200, JSON.stringify(within.response.body))
+
+    const admin = makeCreateHandler(
+      root,
+      { start: false, auto_allocate_proxy: false, machine: { memory: '16g' } },
+      undefined,
+      undefined,
+      { routingConfig },
+    )
+    await admin.handlePanel({ method: 'POST' }, {}, CREATE_URL)
+    assert.equal(admin.response.status, 200, JSON.stringify(admin.response.body))
+  }))
+
+function heldProbe() {
+  let open
+  const gate = new Promise((resolve) => {
+    open = resolve
+  })
+  return {
+    open,
+    probeLocalKvm: async () => {
+      await gate
+      return { ok: true, accel: 'tcg', error: null }
+    },
+  }
+}
+
+test('concurrent KVM creates cannot pass a tenant quota', () =>
+  withRoot('kin-create-race-', async (root) => {
+    const probe = heldProbe()
+    const extra = {
+      routingConfig: { vm: { memory: '1g', default_runtime: 'kvm', allow_tcg: true } },
+      who: TENANT,
+      panelUsers: quotaOf(1),
+      probeLocalKvm: probe.probeLocalKvm,
+    }
+    const make = (id) =>
+      makeCreateHandler(
+        root,
+        { id, runtime_type: 'kvm', start: false, auto_allocate_proxy: false, machine: { memory: '512m' } },
+        undefined,
+        undefined,
+        extra,
+      )
+    const first = make('vm-a')
+    const second = make('vm-b')
+    const running = [first, second].map((h) => h.handlePanel({ method: 'POST' }, {}, CREATE_URL))
+    await new Promise((resolve) => setImmediate(resolve))
+    probe.open()
+    await Promise.all(running)
+    assert.deepEqual([first.response.status, second.response.status].sort(), [200, 403])
+    assert.equal(fs.readdirSync(path.join(root, 'vms')).filter((name) => name.endsWith('.json')).length, 1)
+  }))
+
+test('concurrent creates of one id do not overwrite each other', () =>
+  withRoot('kin-create-id-race-', async (root) => {
+    const probe = heldProbe()
+    const make = (name) =>
+      makeCreateHandler(
+        root,
+        { id: 'vm-same', name, runtime_type: 'kvm', start: false, auto_allocate_proxy: false },
+        undefined,
+        undefined,
+        { probeLocalKvm: probe.probeLocalKvm },
+      )
+    const first = make('first')
+    const second = make('second')
+    const running = [first, second].map((h) => h.handlePanel({ method: 'POST' }, {}, CREATE_URL))
+    await new Promise((resolve) => setImmediate(resolve))
+    probe.open()
+    await Promise.all(running)
+    assert.deepEqual([first.response.status, second.response.status].sort(), [200, 409])
+    const saved = JSON.parse(fs.readFileSync(path.join(root, 'vms', 'vm-same.json'), 'utf8'))
+    assert.equal(saved.name, first.response.status === 200 ? 'first' : 'second')
+  }))

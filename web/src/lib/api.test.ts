@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, normalizePanelError, panelFetch } from './api'
+import { api, ApiError, normalizePanelError, panelFetch } from './api'
 import {
   hasSession,
   onPanelSessionExpired,
   sessionToken,
   setSession,
 } from './session'
+import { setStepUpPrompt } from './step-up'
 
 function installBrowser() {
   const values = new Map<string, string>()
@@ -103,5 +104,80 @@ describe('panelFetch 401', () => {
     expect(res.status).toBe(401)
     expect(hasSession()).toBe(true)
     expect(expired).not.toHaveBeenCalled()
+  })
+})
+
+describe('step-up refusal', () => {
+  const refusal = (code: string) =>
+    new Response(
+      JSON.stringify({ ok: false, error: { code, message: '要密码' } }),
+      {
+        status: 401,
+      }
+    )
+
+  beforeEach(() => {
+    installBrowser()
+    setSession('admin')
+  })
+
+  afterEach(() => {
+    setStepUpPrompt(null)
+    vi.unstubAllGlobals()
+  })
+
+  it('keeps the session on a step-up 401', async () => {
+    const expired = vi.fn()
+    onPanelSessionExpired(expired)
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => refusal('step_up_failed'))
+    )
+    const res = await panelFetch('/api/panel/backups/b1/restore', {
+      method: 'POST',
+    })
+    expect(res.status).toBe(401)
+    expect(hasSession()).toBe(true)
+    expect(expired).not.toHaveBeenCalled()
+  })
+
+  it('retries the request once the password is confirmed', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(refusal('step_up_required'))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true, data: { done: 1 } }))
+      )
+    vi.stubGlobal('fetch', fetchMock)
+    const ask = vi.fn(async () => true)
+    setStepUpPrompt(ask)
+    await expect(
+      api('/api/panel/users', { method: 'POST', body: '{}' })
+    ).resolves.toEqual({ done: 1 })
+    expect(ask).toHaveBeenCalledTimes(1)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('surfaces the refusal when the prompt is cancelled', async () => {
+    const fetchMock = vi.fn(async () => refusal('step_up_required'))
+    vi.stubGlobal('fetch', fetchMock)
+    setStepUpPrompt(async () => false)
+    await expect(api('/api/panel/users')).rejects.toMatchObject({
+      code: 'step_up_required',
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('leaves the prompt to callers that opt out', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => refusal('step_up_required'))
+    )
+    const ask = vi.fn(async () => true)
+    setStepUpPrompt(ask)
+    await expect(api('/api/panel/x', { stepUp: false })).rejects.toMatchObject({
+      code: 'step_up_required',
+    })
+    expect(ask).not.toHaveBeenCalled()
   })
 })

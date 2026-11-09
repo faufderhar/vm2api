@@ -1201,9 +1201,20 @@ export function createHandleProtocol(deps) {
         return json(res, 403, errorResult.body)
       }
       const managedKey = req.apiKeyRecord || null
+      const clientAbort = bindClientAbort(req, res)
+      const clientStream = isClientStream(inbound, req.headers)
+      const requestedDelivery = String(
+        req.headers['x-kin-delivery'] || getRouting()?.failover?.delivery_mode || 'realtime',
+      )
+      // Worker hop stays realtime unless the caller asked for verified.
+      // stream:false only changes the client response shape (assembled JSON).
+      const deliveryMode = requestedDelivery === 'verified' ? 'verified' : 'realtime'
+      logBag.via = 'api-kernel'
+      // Last before the try: its finally is the only release of this inflight count.
       if (managedKey) {
         const gate = apiKeyStore.acquire(managedKey)
         if (!gate.ok) {
+          clientAbort.settle()
           stats.errors++
           return json(
             res,
@@ -1218,15 +1229,6 @@ export function createHandleProtocol(deps) {
           )
         }
       }
-      const clientAbort = bindClientAbort(req, res)
-      const clientStream = isClientStream(inbound, req.headers)
-      const requestedDelivery = String(
-        req.headers['x-kin-delivery'] || getRouting()?.failover?.delivery_mode || 'realtime',
-      )
-      // Worker hop stays realtime unless the caller asked for verified.
-      // stream:false only changes the client response shape (assembled JSON).
-      const deliveryMode = requestedDelivery === 'verified' ? 'verified' : 'realtime'
-      logBag.via = 'api-kernel'
       let result
       try {
         result = await runApiInference({
@@ -1325,23 +1327,6 @@ export function createHandleProtocol(deps) {
     const queueKeepaliveDelay = queueKeepaliveDelayMs(getRouting(), cfg.limits?.queue_keepalive_delay_ms)
     const streamIdleTimeoutMs = resolveStreamIdleTimeoutMs(getRouting(), cfg)
     const managedKey = req.apiKeyRecord || null
-    if (managedKey) {
-      const gate = apiKeyStore.acquire(managedKey)
-      if (!gate.ok) {
-        stats.errors++
-        return json(
-          res,
-          gate.status,
-          makeError({
-            type: gate.status === 429 ? ErrorType.RATE_LIMIT : ErrorType.PERMISSION,
-            code: gate.code,
-            message: gate.message,
-            status: gate.status,
-            details: gate.detail || undefined,
-          }).body,
-        )
-      }
-    }
 
     const clientAbort = bindClientAbort(req, res)
 
@@ -1368,7 +1353,6 @@ export function createHandleProtocol(deps) {
             },
           })
         : null
-    anthropicKeepalive?.armAfter(queueKeepaliveDelay)
     const upstreamStream = true
     const requestedDelivery = String(
       req.headers['x-kin-delivery'] || getRouting()?.failover?.delivery_mode || 'realtime',
@@ -1400,8 +1384,28 @@ export function createHandleProtocol(deps) {
       if (logCtx.capture_outbound) logBag.outbound_body = envelope?.body ?? null
       logBag.outbound_headers = envelope?.headers ? redactHeaders(envelope.headers) : null
     }
+    // Last before the try: its finally is the only release of this inflight count.
+    if (managedKey) {
+      const gate = apiKeyStore.acquire(managedKey)
+      if (!gate.ok) {
+        clientAbort.settle()
+        stats.errors++
+        return json(
+          res,
+          gate.status,
+          makeError({
+            type: gate.status === 429 ? ErrorType.RATE_LIMIT : ErrorType.PERMISSION,
+            code: gate.code,
+            message: gate.message,
+            status: gate.status,
+            details: gate.detail || undefined,
+          }).body,
+        )
+      }
+    }
     let result
     try {
+      anthropicKeepalive?.armAfter(queueKeepaliveDelay)
       result = await getFailoverRunner().run({
         requestId: logCtx.request_id,
         canonicalBody,

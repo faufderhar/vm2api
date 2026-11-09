@@ -722,7 +722,11 @@ export class ProxyPool extends EventEmitter {
     // Credentials can select distinct proxies at the same endpoint. Encode a
     // tuple so colons inside credentials cannot collide with field separators.
     const proxyKey = (p) => JSON.stringify([p.host, p.port, p.username || '', p.password || ''])
-    const existing = new Set(this.state.proxies.map(proxyKey))
+    // Per owner: a pool-wide check would tell a tenant which proxies another tenant holds.
+    const owner = normalizeOwnerId(extra.ownerUserId || extra.owner_user_id)
+    const existing = new Set(
+      this.state.proxies.filter((p) => normalizeOwnerId(p.owner_user_id) === owner).map(proxyKey),
+    )
     for (const parsed of records) {
       if (parsed?.host && String(parsed.host).trim().toLowerCase() === 'local') {
         skipped.push({

@@ -26,6 +26,7 @@ import {
   CODEX_DEFAULT_PARK_MS,
 } from './codex-usage.mjs'
 import { extractOpenaiUsage, openaiAnthropicUsageFromExtract, disjointOpenaiUsage } from './openai-usage.mjs'
+import { createCancelOutputMeter } from './cancel-usage.mjs'
 import { streamCodexKernel } from '../transport/codex-kernel-client.mjs'
 import {
   codexKernelRequestOptions,
@@ -913,6 +914,7 @@ export async function handleCodexProtocol({
         let responseModel = null
         let streamedUsage = null
         let streamedImageUsage = null
+        const cancelOutput = createCancelOutputMeter()
         let conversionError = null
         const attemptStartedAt = Date.now()
         const sessionOptions = {
@@ -970,6 +972,7 @@ export async function handleCodexProtocol({
               if (servedModel) responseModel = servedModel
               const producedId = responseIdFromSseLine(line)
               if (producedId) producedResponseId = producedId
+              cancelOutput.observeLine(line)
               const seen = usageFromSseLine(line)
               if (seen) streamedUsage = preferUsage(streamedUsage, seen)
               const imageGen = imageGenUsageFromSseLine(line)
@@ -1048,7 +1051,7 @@ export async function handleCodexProtocol({
         const imageUsage =
           result.body?.tool_usage?.image_gen || result.body?.response?.tool_usage?.image_gen || streamedImageUsage
         if (isClientCancelledResult(result) || gone.signal?.aborted) {
-          noteCodexUsage(logBag, usage, { serviceTier, imageUsage })
+          noteCodexUsage(logBag, cancelOutput.fill(usage), { serviceTier, imageUsage })
           logBag.final_state = 'cancelled'
           logBag.upstream_status = result?.status ?? 499
           logBag.upstream_model =

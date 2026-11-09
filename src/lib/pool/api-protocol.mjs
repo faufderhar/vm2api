@@ -2,6 +2,7 @@ import { officialMessagesBody } from '../protocol/anthropic-messages.mjs'
 import { StringDecoder } from 'node:string_decoder'
 import { prepareClassifierBody } from '../protocol/request-purpose.mjs'
 import { consumeClaudeSSEData } from '../protocol/convert.mjs'
+import { createCancelOutputMeter } from '../protocol/cancel-usage.mjs'
 import {
   clientCancelledResult,
   isClientCancelledCode,
@@ -69,6 +70,7 @@ function mergeUsagePatch(current, patch) {
 function noteClaudeLineUsage(line, state) {
   const event = consumeClaudeSSEData(line, state)
   if (!event) return state.usage || null
+  state.cancelOutput.observe(event)
   if (event.type === 'message_start') state.usage = mergeUsagePatch(state.usage, event.message?.usage)
   else if (event.type === 'message_delta') state.usage = mergeUsagePatch(state.usage, event.usage)
   return state.usage || null
@@ -90,12 +92,23 @@ function writeCommittedStreamError(res, protocol, error) {
   } catch {}
 }
 
-function apiStreamInterruptResult({ resultBase, error, signal, committed, usage, ttftMs, sawStop, res, protocol }) {
+function apiStreamInterruptResult({
+  resultBase,
+  error,
+  signal,
+  committed,
+  usage,
+  ttftMs,
+  sawStop,
+  res,
+  protocol,
+  cancelOutput,
+}) {
   const aborted = !!signal?.aborted || isClientCancelledCode(error?.code, error?.message)
   if (aborted) {
     return clientCancelledResult({
       ...resultBase,
-      usage: usage || null,
+      usage: cancelOutput.fill(usage) || null,
       committed: !!committed,
       ttftMs: ttftMs ?? null,
       sawMessageStop: !!sawStop,
@@ -377,7 +390,7 @@ export async function runApiInference({
   }
 
   const classifierSseState = { dataBuf: '' }
-  const claudeUsageState = { dataBuf: '', usage: null }
+  const claudeUsageState = { dataBuf: '', usage: null, cancelOutput: createCancelOutputMeter() }
   let classifierError = null
   let classifierStopped = false
   let streamError = null
@@ -487,6 +500,7 @@ export async function runApiInference({
         sawStop: false,
         res,
         protocol,
+        cancelOutput: claudeUsageState.cancelOutput,
       })
     }
     if (!sawMessageStop) {
@@ -563,6 +577,7 @@ export async function runApiInference({
       sawStop,
       res,
       protocol,
+      cancelOutput: claudeUsageState.cancelOutput,
     })
   }
 
@@ -597,6 +612,7 @@ async function runOpenAIResponsesUpstream({
   let sawTerminal = false
   let ttftMs = null
   let streamedUsage = null
+  const cancelOutput = createCancelOutputMeter()
   let terminalFailure = null
   const pendingLines = []
   const started = Date.now()
@@ -637,6 +653,7 @@ async function runOpenAIResponsesUpstream({
       const event = openAIResponsesSseEvent(raw)
       const failure = openAIResponsesFailure(event)
       if (failure) terminalFailure = failure
+      cancelOutput.observe(event)
       const seen = usageFromSseLine(raw)
       if (seen) streamedUsage = seen
       const startsOutput = isOpenAIResponsesCommitEvent(event)
@@ -672,6 +689,7 @@ async function runOpenAIResponsesUpstream({
       sawStop: false,
       res,
       protocol,
+      cancelOutput,
     })
   }
 

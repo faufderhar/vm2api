@@ -387,8 +387,9 @@ export function verifyPanelSession(token) {
 
 export function revokePanelSession(token) {
   if (!token) return
-  panelSessions.delete(panelSessionKey(token))
-  saveSessions()
+  reloadSessionsIfChanged()
+  // Logout needs no session, so a made-up token must not cost a write of the session file.
+  if (panelSessions.delete(panelSessionKey(token))) saveSessions()
 }
 
 /** Recent password check for shell, restore, and starting an upgrade. Not a shorter session. */

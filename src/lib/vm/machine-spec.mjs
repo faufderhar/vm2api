@@ -249,6 +249,20 @@ export function slotDockerCpus(vm) {
   return value
 }
 
+/**
+ * The field where a tenant's slot goes past the operator's default spec, or null.
+ * The defaults double as the ceiling, so one setting on the specs page moves both.
+ */
+export function machineOverCeiling(machine, runtime, config) {
+  const ceiling = normalizeVmConfig(config)
+  if (runtime === 'kvm' && ceiling.default_runtime !== 'kvm') return 'runtime_type'
+  if (Object.hasOwn(machine, 'docker_cpus')) return 'docker_cpus'
+  if (VM_MEMORY_OPTIONS.indexOf(machine.memory) > VM_MEMORY_OPTIONS.indexOf(ceiling.memory)) return 'memory'
+  if (machine.vcpus > ceiling.vcpus) return 'vcpus'
+  if (machine.disk_gb > ceiling.disk_gb) return 'disk_gb'
+  return null
+}
+
 export function resolveMachineSpec({ config, overrides, runtime } = {}) {
   const base = normalizeVmConfig(config)
   if (overrides != null && !isPlainObject(overrides)) {

@@ -44,6 +44,15 @@ KVM 槽需要宿主 `/dev/kvm` 可读写（控制面在容器内时，用一次 
 curl -sSL https://raw.githubusercontent.com/dofastted/vm2api/main/deploy/install.sh | sudo bash
 ```
 
+上面的命令直接执行 `main` 分支上的脚本，不做校验。生产环境建议从 Release 下载固定版本，核对 sha256 后再运行（`vX.Y.Z` 换成要安装的版本，只有带这两个附件的 Release 才能这样装）：
+
+```bash
+TAG=vX.Y.Z
+BASE=https://github.com/dofastted/vm2api/releases/download/$TAG
+curl -fsSL -O "$BASE/install.sh" -O "$BASE/install.sh.sha256"
+sha256sum -c install.sh.sha256 && sudo bash install.sh --version "$TAG"
+```
+
 脚本只下载 `docker-compose.yml` / `.env.example` / `VERSION`（不 clone 仓库），补全 `.env`（`chmod 600`），然后 `docker compose pull && up -d`。`.env` 缺失、`VM2API_ADMIN_PASSWORD` 为空、或仍是旧的 `123456` 时，写入随机管理台密码（账号 `admin`，已有其他密码不覆盖）。空的 `VM2API_API_KEY` / `VM2API_DB_SECRET` 会生成随机值。登录：`http://<ip>:8787/cc#/login`。以后：
 
 ```bash

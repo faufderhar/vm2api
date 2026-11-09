@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { ApiError, api, panelFetch } from '@/lib/api'
+import { ApiError, api, panelFetchWithStepUp } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -37,7 +37,7 @@ export function BackupPane() {
   const items = list.data?.items || []
 
   async function download(id: string) {
-    const res = await panelFetch(
+    const res = await panelFetchWithStepUp(
       `/api/panel/backups/${encodeURIComponent(id)}/download`
     )
     if (!res.ok) throw new ApiError('下载失败', res.status)

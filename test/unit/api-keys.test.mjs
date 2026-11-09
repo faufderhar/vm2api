@@ -387,3 +387,102 @@ test('group_type all is the default and a platform group keeps its VM list', () 
   store.update(open.id, { status: 'disabled' })
   assert.equal(store.getById(open.id).group_type, 'all')
 })
+
+function withEnv(values, run) {
+  const names = [
+    'VM2API_DB_SECRET',
+    'KIN_DB_SECRET',
+    'VM2API_API_KEY',
+    'KIN_API_KEY',
+    'VM2API_API_KEY_HASH_SECRET',
+    'KIN_API_KEY_HASH_SECRET',
+  ]
+  const saved = Object.fromEntries(names.map((name) => [name, process.env[name]]))
+  for (const name of names) delete process.env[name]
+  Object.assign(process.env, values)
+  try {
+    return run()
+  } finally {
+    for (const name of names) {
+      if (saved[name] === undefined) delete process.env[name]
+      else process.env[name] = saved[name]
+    }
+  }
+}
+
+function oldKeyHash(store, secret, id, plain) {
+  const row = store.getById(id)
+  const hash = store._hashWith(plain, secret)
+  row.key_hash = hash
+  row.key = `hmac:${hash}`
+  store.repo.update(row)
+}
+
+test('rotating the master key leaves managed keys working', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-keys-'))
+  const rec = withEnv({ VM2API_API_KEY: 'master-one' }, () => new ApiKeyStore({ dataDir: dir }).create({ name: 'a' }))
+  withEnv({ VM2API_API_KEY: 'master-two' }, () => {
+    assert.equal(new ApiKeyStore({ dataDir: dir }).authenticate(rec.key).ok, true)
+  })
+})
+
+test('a key hashed under the master key moves to the pepper at startup', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-keys-'))
+  withEnv({ VM2API_API_KEY: 'master-one' }, () => {
+    const first = new ApiKeyStore({ dataDir: dir })
+    const rec = first.create({ name: 'old' })
+    oldKeyHash(first, 'master-one', rec.id, rec.key)
+    assert.equal(first.getById(rec.id).key_hash, first._hashWith(rec.key, 'master-one'))
+    const upgraded = new ApiKeyStore({ dataDir: dir })
+    assert.equal(upgraded.getById(rec.id).key_hash, upgraded._hash(rec.key))
+    // Then the master key can go without taking this key along.
+    withEnv({ VM2API_API_KEY: 'master-two' }, () => {
+      assert.equal(new ApiKeyStore({ dataDir: dir }).authenticate(rec.key).ok, true)
+    })
+  })
+})
+
+test('a hash-only key under the master key moves on first use', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-keys-'))
+  withEnv({ VM2API_API_KEY: 'master-one' }, () => {
+    const store = new ApiKeyStore({ dataDir: dir })
+    const rec = store.create({ name: 'hash-only' })
+    oldKeyHash(store, 'master-one', rec.id, rec.key)
+    const row = store.getById(rec.id)
+    row.key_secret = null
+    store.repo.update(row)
+
+    const again = new ApiKeyStore({ dataDir: dir })
+    assert.equal(again.getById(rec.id).key_hash, again._hashWith(rec.key, 'master-one'), 'no plaintext to move it with')
+    assert.equal(again.authenticate(rec.key).ok, true)
+    assert.equal(again.getById(rec.id).key_hash, again._hash(rec.key))
+  })
+})
+
+test('a row whose plaintext cannot be read keeps its hash', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-keys-'))
+  const store = new ApiKeyStore({ dataDir: dir })
+  const rec = store.create({ name: 'undecryptable' })
+  const row = store.getById(rec.id)
+  row.key_secret = 'enc:v1:not:really:cipher'
+  store.repo.update(row)
+  const hash = row.key_hash
+  assert.equal(new ApiKeyStore({ dataDir: dir }).getById(rec.id).key_hash, hash)
+})
+
+test('a plaintext row survives a restart and is still encrypted on first use', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-keys-'))
+  const first = new ApiKeyStore({ dataDir: dir })
+  const rec = first.create({ name: 'plaintext' })
+  const row = first.getById(rec.id)
+  row.key = rec.key
+  row.key_hash = 'legacy-unhashed'
+  row.key_secret = null
+  first.repo.update(row)
+
+  const again = new ApiKeyStore({ dataDir: dir })
+  assert.equal(again.getById(rec.id).key, rec.key, 'startup leaves it for authenticate')
+  assert.equal(again.authenticate(rec.key).ok, true)
+  assert.match(again.getById(rec.id).key, /^hmac:/)
+  assert.ok(again.getById(rec.id).key_secret)
+})

@@ -15,6 +15,7 @@ import { useAuthStore } from '@/stores/auth-store'
 import { ApiError } from '@/lib/api'
 import { handleServerError } from '@/lib/handle-server-error'
 import { onPanelSessionExpired } from '@/lib/session'
+import { StepUpDialog } from '@/components/step-up-dialog'
 import { DirectionProvider } from './context/direction-provider'
 import { FontProvider } from './context/font-provider'
 import { ThemeProvider } from './context/theme-provider'
@@ -74,6 +75,7 @@ if (!rootElement.innerHTML) {
           <FontProvider>
             <DirectionProvider>
               <RouterProvider router={router} />
+              <StepUpDialog />
             </DirectionProvider>
           </FontProvider>
         </ThemeProvider>

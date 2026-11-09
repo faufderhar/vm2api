@@ -27,3 +27,17 @@ test('M1: editing a proxy cannot move it onto loopback, private or metadata', as
     else process.env.VM2API_ALLOW_PRIVATE_PROXY = prev
   }
 })
+
+test('duplicate detection does not reach across owners', async () => {
+  const fs = await import('node:fs')
+  const os = await import('node:os')
+  const path = await import('node:path')
+  const { ProxyPool } = await import('../../src/lib/vm/proxy-pool.mjs')
+  const pool = new ProxyPool({ dataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'kin-px-owner-')) })
+  pool.stopScheduler()
+  const reasons = (result) => (result.skip_details || []).map((row) => row.reason)
+  assert.deepEqual(reasons(pool.importLines('8.8.8.8:1080', { ownerUserId: 'u-1' })), [])
+  assert.deepEqual(reasons(pool.importLines('8.8.8.8:1080', { ownerUserId: 'u-2' })), [])
+  assert.deepEqual(reasons(pool.importLines('8.8.8.8:1080', { ownerUserId: 'u-2' })), ['duplicate'])
+  assert.equal(pool.state.proxies.length, 2)
+})
