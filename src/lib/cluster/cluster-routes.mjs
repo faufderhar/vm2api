@@ -129,6 +129,11 @@ export function createClusterRoutes({ manager, json, readBody, ok, stepUp, heart
     }
     if (sub === '/docker/containers' && m === 'POST') {
       const body = await readBody(req, MAX_BODY)
+      if (stepUp) {
+        // The body is a container spec: nothing in it is the operator's password.
+        const denied = await stepUp(req, res, {})
+        if (denied) return denied
+      }
       return json(res, 201, ok(await createAndStartContainer(manager.docker(id), body)))
     }
 

@@ -110,6 +110,7 @@ export const WsTerminal = forwardRef<
     api<{ ticket: string }>(ticketPath, {
       method: 'POST',
       body: Object.keys(body).length ? JSON.stringify(body) : undefined,
+      stepUp: false,
     })
       .then(({ ticket: issued }) => {
         if (cancelled) return

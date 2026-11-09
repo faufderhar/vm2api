@@ -17,6 +17,7 @@ import {
 import { isSlotProxyDesynced } from '../vm/vm-runtime.mjs'
 import { reloadSlotReady } from '../vm/slot-runtime.mjs'
 import { resolveImportProxy } from '../vm/proxy-resolve.mjs'
+import { resolvedProxyDial } from '../vm/proxy-policy.mjs'
 import { collectSlotIdentity } from '../vm/guest-identity.mjs'
 import { importWorkerCredential } from '../transport/go-worker-client.mjs'
 import { credentialModeFromOauth, canOfficialCc } from './credential-mode.mjs'
@@ -42,7 +43,7 @@ export function createImportCommit(ctx) {
     ctx.accountQuota.rebindToVm(uuid, vm.id, { email: vm.claude?.email || null })
   }
 
-  function requireSlotProxy(existing, body = {}) {
+  async function requireSlotProxy(existing, body = {}) {
     const resolved = resolveImportProxy({
       vm: existing,
       proxyPool: ctx.proxyPool,
@@ -57,6 +58,20 @@ export function createImportCommit(ctx) {
             ? '虚拟机 SOCKS5 不可用，请先更换或探测代理再转换凭证'
             : '虚拟机未绑定 SOCKS5，请先分配代理再转换凭证'
       return { ok: false, status: 400, message, resolved }
+    }
+    if (resolved.ok && body.proxy_url) {
+      // A pool proxy was checked when stored. This one is only a string so far, and a public
+      // looking name can resolve to loopback. Dial the address that was checked.
+      const dial = await resolvedProxyDial({ url: resolved.proxyUrl })
+      if (dial.blocked) {
+        return {
+          ok: false,
+          status: 400,
+          message: 'SOCKS5 地址不可用或指向内网，请换一个代理',
+          resolved: { ...resolved, ok: false, blocked: true, reason: dial.blocked },
+        }
+      }
+      if (dial.url) return { ok: true, proxyUrl: dial.url, resolved }
     }
     return { ok: true, proxyUrl: resolved.proxyUrl, resolved }
   }

@@ -486,3 +486,98 @@ test('tenant test-models: own slot lists models, foreign slot 404s, refresh neve
   assert.equal(admin.status, 200)
   assert.ok(dials > 0, 'admin refresh still goes live')
 })
+
+function managedKeyFixture(t) {
+  const { root, store } = keyFixture(t)
+  const key = store.create({
+    name: 'issued',
+    user_id: 'u-1',
+    group_id: 1,
+    quota_requests: 100,
+    rpm: 10,
+    expires_at: '2099-01-01T00:00:00.000Z',
+    limits_managed: true,
+  })
+  return { root, store, key }
+}
+
+test('tenant cannot raise the limits an admin set, or reset their usage', async (t) => {
+  const { root, store, key } = managedKeyFixture(t)
+  const url = `/api/panel/api-keys/${key.id}`
+  for (const body of [
+    { quota_requests: 0 },
+    { quota_usd: 500 },
+    { rate_limit_1d: 9000 },
+    { rpm: 1000 },
+    { max_concurrency: 128 },
+    { expires_at: null, name: 'kept-out' },
+    { reset_quota: true },
+  ]) {
+    const refused = await makeHandler(root, TENANT, body, { apiKeyStore: store }).call('PATCH', url)
+    assert.equal(refused.status, 403, JSON.stringify(body))
+    assert.equal(refused.body.error.code, 'key_limits_locked')
+  }
+  const reset = await makeHandler(root, TENANT, {}, { apiKeyStore: store }).call('POST', `${url}/reset-quota`)
+  assert.equal(reset.status, 403)
+  const saved = store.getById(key.id)
+  assert.equal(saved.quota_requests, 100)
+  assert.equal(saved.rpm, 10)
+  assert.equal(saved.name, 'issued')
+})
+
+test('tenant keeps renaming a managed key, and its own keys stay self-service', async (t) => {
+  const { root, store, key } = managedKeyFixture(t)
+  const renamed = await makeHandler(
+    root,
+    TENANT,
+    { name: 'renamed', rpm: 10, limits_managed: false },
+    { apiKeyStore: store },
+  ).call('PATCH', `/api/panel/api-keys/${key.id}`)
+  assert.equal(renamed.status, 200, JSON.stringify(renamed.body))
+  assert.equal(store.getById(key.id).name, 'renamed')
+  assert.equal(store.getById(key.id).limits_managed, 1, 'the request cannot clear the lock')
+
+  const own = store.create({ name: 'mine', user_id: 'u-1', group_id: 1, rpm: 10 })
+  const raised = await makeHandler(root, TENANT, { rpm: 500 }, { apiKeyStore: store }).call(
+    'PATCH',
+    `/api/panel/api-keys/${own.id}`,
+  )
+  assert.equal(raised.status, 200, JSON.stringify(raised.body))
+  assert.equal(store.getById(own.id).rpm, 500)
+})
+
+test('an admin setting a tenant key limits or issuing one locks them', async (t) => {
+  const { root, store, key } = keyFixture(t)
+  const edited = await makeHandler(root, ADMIN, { rpm: 30 }, { apiKeyStore: store }).call(
+    'PATCH',
+    `/api/panel/api-keys/${key.id}`,
+  )
+  assert.equal(edited.status, 200, JSON.stringify(edited.body))
+  assert.equal(store.getById(key.id).limits_managed, 1)
+  assert.equal(edited.body.item.limits_managed, true)
+
+  const issued = await makeHandler(root, ADMIN, { name: 'for-tenant', user_id: 'u-1' }, { apiKeyStore: store }).call(
+    'POST',
+    '/api/panel/api-keys',
+  )
+  assert.equal(issued.status, 201, JSON.stringify(issued.body))
+  assert.equal(store.getById(issued.body.item.id).limits_managed, 1)
+
+  const unowned = await makeHandler(root, ADMIN, { name: 'platform' }, { apiKeyStore: store }).call(
+    'POST',
+    '/api/panel/api-keys',
+  )
+  assert.equal(store.getById(unowned.body.item.id).limits_managed, 0)
+})
+
+test('every OAuth route waits for the async proxy check before dialling', async (t) => {
+  const root = makeProject(t)
+  codexVm(root, 'vm-mine', 'u-1')
+  const requireSlotProxy = async () => ({ ok: false, status: 400, message: 'proxy refused' })
+  const out = await makeHandler(root, TENANT, { proxy_url: 'socks5://name.example:1080' }, { requireSlotProxy }).call(
+    'POST',
+    '/api/panel/vms/vm-mine/oauth/generate-auth-url',
+  )
+  assert.equal(out.status, 400, JSON.stringify(out.body))
+  assert.equal(out.body.error.message, 'proxy refused')
+})

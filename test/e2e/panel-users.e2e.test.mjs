@@ -32,6 +32,11 @@ async function panel(gw, method, path, { cookie, body } = {}) {
   return { status: res.status, json, text }
 }
 
+async function confirmPassword(gw, cookie, password) {
+  const res = await panel(gw, 'POST', '/api/panel/step-up', { cookie, body: { password } })
+  assert.equal(res.status, 200, res.text)
+}
+
 for (const prefix of ['VM2API', 'KIN']) {
   test(`${prefix} default admin is listed and can rotate its password across restarts`, async () => {
     const env = {
@@ -58,6 +63,7 @@ for (const prefix of ['VM2API', 'KIN']) {
       assert.equal(before.status, 200)
       assert.equal(before.json.data.steps.find((step) => step.id === 'admin_password').done, true)
 
+      await confirmPassword(gw, admin.cookie, 'starter-admin-pass')
       const shortCreate = await panel(gw, 'POST', '/api/panel/users', {
         cookie: admin.cookie,
         body: { username: 'reader', password: '123456', role: 'user' },
@@ -110,6 +116,7 @@ test('admin can create users and change passwords', async () => {
     assert.equal(admin.status, 200, JSON.stringify(admin.json))
     assert.equal(admin.json.role, 'admin')
 
+    await confirmPassword(gw, admin.cookie, 'testpass')
     const created = await panel(gw, 'POST', '/api/panel/users', {
       cookie: admin.cookie,
       body: { username: 'reader', password: 'reader-pass', role: 'user' },
@@ -143,6 +150,61 @@ test('admin can create users and change passwords', async () => {
     })
     assert.equal(short.status, 400)
     assert.equal(short.json.error?.code, 'invalid_password')
+  } finally {
+    await gw.stop()
+  }
+})
+
+test('a session without the password cannot run step-up actions', async () => {
+  const gw = await startGateway()
+  try {
+    const backup = await api(gw, 'POST', '/api/panel/backups', { body: {} })
+    assert.ok(backup.status < 300, backup.text)
+    const backupId = backup.json.item?.id
+    assert.ok(backupId, backup.text)
+    const key = await api(gw, 'POST', '/api/panel/api-keys', { body: { name: 'made-after-backup' } })
+    assert.ok(key.status < 300, key.text)
+
+    const admin = await login(gw, 'admin', 'testpass')
+    const refused = await panel(gw, 'POST', `/api/panel/backups/${backupId}/restore`, {
+      cookie: admin.cookie,
+      body: { confirm: true },
+    })
+    assert.equal(refused.status, 401)
+    assert.equal(refused.json.error.code, 'step_up_required')
+    const wrong = await panel(gw, 'POST', `/api/panel/backups/${backupId}/restore`, {
+      cookie: admin.cookie,
+      body: { confirm: true, password: 'not-the-password' },
+    })
+    assert.equal(wrong.status, 401)
+    assert.equal(wrong.json.error.code, 'step_up_failed')
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    const keys = await api(gw, 'GET', '/api/panel/api-keys')
+    assert.match(keys.text, /made-after-backup/, 'a refused restore must not roll the database back')
+
+    const mint = { username: 'minted', password: 'minted-pass', role: 'admin' }
+    const noMint = await panel(gw, 'POST', '/api/panel/users', { cookie: admin.cookie, body: mint })
+    assert.equal(noMint.status, 401)
+    assert.equal((await login(gw, 'minted', 'minted-pass')).status, 401)
+
+    const list = await api(gw, 'GET', '/api/panel/users')
+    const self = list.json.data.items.find((user) => user.username === 'admin')
+    const noReset = await panel(gw, 'PATCH', `/api/panel/users/${self.id}`, {
+      cookie: admin.cookie,
+      body: { password: 'attacker-chosen' },
+    })
+    assert.equal(noReset.status, 401)
+    assert.equal((await login(gw, 'admin', 'testpass')).status, 200)
+
+    const download = await panel(gw, 'GET', `/api/panel/backups/${backupId}/download`, { cookie: admin.cookie })
+    assert.equal(download.status, 401)
+
+    // Fields that give the session no new password stay one click.
+    const quota = await panel(gw, 'PATCH', `/api/panel/users/${self.id}`, {
+      cookie: admin.cookie,
+      body: { vm_create_quota: 1, role: 'admin' },
+    })
+    assert.equal(quota.status, 200, quota.text)
   } finally {
     await gw.stop()
   }
@@ -186,6 +248,7 @@ test('admin changing own password keeps the current session', async () => {
   const gw = await startGateway()
   try {
     const admin = await login(gw, 'admin', 'testpass')
+    await confirmPassword(gw, admin.cookie, 'testpass')
     const list = await panel(gw, 'GET', '/api/panel/users', { cookie: admin.cookie })
     const self = (list.json.data?.items || []).find((u) => u.username === 'admin')
     assert.ok(self, JSON.stringify(list.json))
@@ -208,6 +271,7 @@ test('tenant user cannot list or modify panel users', async () => {
   const gw = await startGateway()
   try {
     const admin = await login(gw, 'admin', 'testpass')
+    await confirmPassword(gw, admin.cookie, 'testpass')
     const created = await panel(gw, 'POST', '/api/panel/users', {
       cookie: admin.cookie,
       body: { username: 'reader', password: 'reader-pass', role: 'user' },
@@ -236,6 +300,7 @@ test('proxy DNS URLs remain admin-only in list and config responses', async () =
   const gw = await startGateway()
   try {
     const admin = await login(gw, 'admin', 'testpass')
+    await confirmPassword(gw, admin.cookie, 'testpass')
     assert.equal(admin.status, 200)
     const primary = 'https://dns.example.com/private/dns-query?token=private-doh-token'
     const updated = await panel(gw, 'PUT', '/api/panel/proxies/config', {
@@ -283,6 +348,7 @@ test('super can toggle schedule but cannot import or delete VMs', async () => {
   const gw = await startGateway()
   try {
     const admin = await login(gw, 'admin', 'testpass')
+    await confirmPassword(gw, admin.cookie, 'testpass')
     await panel(gw, 'POST', '/api/panel/users', {
       cookie: admin.cookie,
       body: { username: 'ops', password: 'super-pass', role: 'super' },

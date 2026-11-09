@@ -11,6 +11,7 @@ test('credential/clear drops the account and keeps the slot（清凭证留槽位
     const vmPath = path.join(gw.project, 'vms', 'vm-sim-01.json')
     const seeded = [
       path.join(slotDir, 'codex-credentials.json'),
+      path.join(slotDir, 'grok-credentials.json'),
       path.join(slotDir, 'cli-home', '.claude', 'credentials.json'),
     ]
     for (const file of seeded) {
@@ -18,6 +19,7 @@ test('credential/clear drops the account and keeps the slot（清凭证留槽位
       fs.writeFileSync(file, JSON.stringify({ access_token: 'stale-seed-token' }))
     }
     const before = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
+    fs.writeFileSync(vmPath, JSON.stringify({ ...before, grok: { email: 'x@example.com', has_access: true } }))
     assert.equal(before.claude.access_token, 'sk-ant-oat01-FAKE-SEED')
     assert.equal(before.schedulable, true)
 
@@ -43,6 +45,7 @@ test('credential/clear drops the account and keeps the slot（清凭证留槽位
     assert.equal(after.email, null)
     assert.equal(after.account_uuid, null)
     assert.deepEqual(after.claude, {})
+    assert.deepEqual(after.grok, {})
 
     assert.equal(res.json.data.vm.id, 'vm-sim-01')
     assert.equal(res.json.data.vm.email, null)

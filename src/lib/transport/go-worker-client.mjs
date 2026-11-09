@@ -27,6 +27,7 @@ import { isApiKeyMode } from '../oauth/credential-mode.mjs'
 import { runSlotOauth } from './slot-oauth.mjs'
 import { slotHost } from '../vm/slot-host.mjs'
 import { applyClaudeSSELineToMessage, createClaudeMessageAssembler } from '../protocol/convert.mjs'
+import { createCancelOutputMeter } from '../protocol/cancel-usage.mjs'
 import {
   clientCancelledResult,
   isClientCancelledResult,
@@ -758,6 +759,7 @@ export async function streamGoWorker({
   // still has to bill whatever message_start / message_delta already reported.
   let cancelUsage = null
   let cancelHeaders = null
+  const cancelOutput = createCancelOutputMeter()
   const requestId = randomUUID()
   const stopCancel = cancelOnAbort(exec, signal, requestId)
   try {
@@ -851,6 +853,7 @@ export async function streamGoWorker({
       if (event.type === 'error') lastError = event
       if (event.type === 'message_stop') sawMessageStop = true
       if (event.type === 'message_start') rememberThreadTurn(event.message?.id, prepared.thread)
+      cancelOutput.observe(event)
       const evUsage = usageFromSseEvent(event)
       if (evUsage) sseUsage = mergeUsage(sseUsage, evUsage)
       if (event.message?.model) sseModel = event.message.model
@@ -960,7 +963,7 @@ export async function streamGoWorker({
         ttftMs,
         firstTokenAt: ttftMs == null ? null : startedAt + ttftMs,
         committed,
-        usage: cancelUsage,
+        usage: cancelOutput.fill(cancelUsage),
         headers: cancelHeaders || {},
       })
     }

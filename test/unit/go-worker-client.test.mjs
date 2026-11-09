@@ -572,6 +572,51 @@ unixTest('streamGoWorker keeps usage already seen when the client aborts', async
   }
 })
 
+unixTest('streamGoWorker bills delivered text when the client aborts before message_delta', async () => {
+  let sawText = false
+  let dropStream = () => {}
+  const streamDropped = new Promise((resolve) => {
+    dropStream = resolve
+  })
+  const fx = await fixture(async (req, res) => {
+    if (req.url === '/internal/v1/cancel') {
+      res.setHeader('content-type', 'application/json')
+      res.end('{"ok":true,"cancelled":true}')
+      return
+    }
+    for await (const _chunk of req);
+    res.setHeader('content-type', 'text/event-stream')
+    res.write(
+      'data: {"type":"message_start","message":{"id":"msg_cut","type":"message","role":"assistant","model":"claude-haiku-4-5","content":[],"usage":{"input_tokens":20,"output_tokens":1}}}\n\n',
+    )
+    res.write(
+      `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"${'x'.repeat(4000)}"}}\n\n`,
+    )
+    await streamDropped
+    res.destroy()
+  })
+  try {
+    const controller = new AbortController()
+    const pending = streamGoWorker({
+      exec: fx.exec,
+      body: { model: 'claude-haiku-4-5', stream: true, messages: [{ role: 'user', content: 'hi' }] },
+      signal: controller.signal,
+      onEvent: (line) => {
+        if (String(line).includes('xxxx')) sawText = true
+      },
+    })
+    while (!sawText) await new Promise((resolve) => setTimeout(resolve, 5))
+    controller.abort()
+    dropStream()
+    const result = await pending
+    assert.equal(result.terminalState, 'cancelled')
+    assert.equal(result.usage.input_tokens, 20)
+    assert.equal(result.usage.output_tokens, 1000)
+  } finally {
+    await fx.close()
+  }
+})
+
 unixTest('streamGoWorker accepts message_stop with usage trailers', async () => {
   const fx = await fixture((req, res) => {
     assert.equal(req.headers.te, 'trailers')

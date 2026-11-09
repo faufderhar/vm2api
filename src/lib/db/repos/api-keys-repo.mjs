@@ -51,6 +51,7 @@ const COLUMNS = [
   'ip_whitelist',
   'ip_blacklist',
   'deleted_at',
+  'limits_managed',
 ]
 
 const WINDOWS = [
@@ -73,6 +74,7 @@ const NUMERIC_DEFAULT_0 = new Set([
   'usage_5h',
   'usage_1d',
   'usage_7d',
+  'limits_managed',
 ])
 
 function rowToRec(row) {

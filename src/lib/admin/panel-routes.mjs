@@ -38,7 +38,13 @@ import { RefusalGuardsRepo } from '../db/repos/refusal-guards-repo.mjs'
 import { RefusalDeviceBlocksRepo } from '../db/repos/refusal-device-blocks-repo.mjs'
 import { SettingsRepo } from '../db/repos/settings-repo.mjs'
 import { parseCodexImportPayload, upsertCodexAccount, readCodexAccounts } from '../vm/codex-slot.mjs'
-import { grokBagAfterLogin, grokLogAccountId, parseGrokCredentialInput, upsertGrokAccount } from '../vm/grok-slot.mjs'
+import {
+  grokBagAfterLogin,
+  grokCredentialPath,
+  grokLogAccountId,
+  parseGrokCredentialInput,
+  upsertGrokAccount,
+} from '../vm/grok-slot.mjs'
 import { grokRuntime } from '../pool/openai-account-runtime.mjs'
 import { generateAuthUrl, exchangeAuthCode, normalizeOauthFlavor } from '../oauth/oauth-auth-url.mjs'
 import { sessionKeyToOAuth, panelImportErrorPayload } from '../oauth/cookie-auth.mjs'
@@ -114,7 +120,7 @@ import { readCatalogSync, syncClaudeCatalog, syncGptCatalog } from './catalog-mo
 import { syncGrokCatalog } from './catalog-monitor.mjs'
 import { setPriceOverride, listPriceOverrides, syncModelsDev } from './price-catalog.mjs'
 import { buildPricing } from './pricing-view.mjs'
-import { publicKeyView } from './api-keys.mjs'
+import { limitsChangedBy, publicKeyView } from './api-keys.mjs'
 import { assertVmScope, normalizeKeyScope } from './key-scope.mjs'
 import {
   assertVmPoolExists,
@@ -308,11 +314,13 @@ import {
 } from '../db/repos/statistics-repo.mjs'
 
 const loginAttempts = createAttemptLimiter({ limit: 30, windowMs: 60_000 })
+const KEY_LIMITS_LOCKED = { code: 'key_limits_locked', message: '这把密钥的额度由管理员设定，请联系管理员调整' }
 
 /**
  * Shell, restore, and a real upgrade start need the current panel password.
  * A successful check lasts five minutes on this session. Loopback master skips it.
- * Returns a response when refused, otherwise null.
+ * Returns true once it has refused and answered the request, so the caller must stop.
+ * `json` returns nothing, so its result cannot be the signal. Returns null to proceed.
  */
 export async function authorizePanelStepUp(req, res, body, json) {
   if (masterMayAdminister(req)) return null
@@ -320,16 +328,17 @@ export async function authorizePanelStepUp(req, res, body, json) {
   if (panelStepUpFresh(token)) return null
   const username = String(req.panelUser || '')
   if (loginRateLimited(loginAttempts, req, username)) {
-    return json(res, 429, {
+    json(res, 429, {
       ok: false,
       error: { message: '登录太频繁，请稍后再试', type: 'rate_limit', code: 'rate_limit' },
     })
+    return true
   }
   const password = body?.password ?? body?.pass ?? body?.p ?? ''
   const authed = password ? await verifyPanelLogin(username, password) : null
   if (!authed || authed.username !== username) {
     if (password) recordLoginFailure(loginAttempts, req, username)
-    return json(res, 401, {
+    json(res, 401, {
       ok: false,
       error: {
         message: password ? '密码错误' : '需要再次输入当前密码',
@@ -337,9 +346,18 @@ export async function authorizePanelStepUp(req, res, body, json) {
         code: password ? 'step_up_failed' : 'step_up_required',
       },
     })
+    return true
   }
   markPanelStepUp(token)
   return null
+}
+
+/**
+ * Step-up for a route whose body cannot carry the current password: it is binary, or its
+ * `password` is the new one. The panel confirms through POST /api/panel/step-up, then retries.
+ */
+function requirePanelStepUp(req, res, json) {
+  return authorizePanelStepUp(req, res, {}, json)
 }
 
 function panelLoginCookie(req) {
@@ -982,6 +1000,8 @@ export function createPanelHandler(ctx) {
 
   function normalizePanelApiKeyInput(body = {}, req) {
     const normalized = { ...body }
+    // Set by the routes below from who is editing, never by the request.
+    delete normalized.limits_managed
     if (panelIdentity(req).role !== 'admin') {
       delete normalized.user_id
       delete normalized.group_id
@@ -1516,6 +1536,13 @@ export function createPanelHandler(ctx) {
         const payload = { ...me, version }
         return json(res, 200, { ok: true, ...payload, data: payload })
       }
+      // Any signed-in role confirms its own password here, then retries what was refused.
+      if (req.method === 'POST' && p === '/api/panel/step-up') {
+        const body = await readBody(req, 8192).catch(() => ({}))
+        const denied = await authorizePanelStepUp(req, res, body, json)
+        if (denied) return denied
+        return json(res, 200, panel.ok({ confirmed: true }))
+      }
       const gate = authorizePanelRoute(req.method, p, panelIdentity(req).role)
       if (!gate.ok) {
         return json(
@@ -1634,6 +1661,9 @@ export function createPanelHandler(ctx) {
       }
       if (req.method === 'POST' && p === '/api/panel/users') {
         const body = await readBody(req, 8192).catch(() => ({}))
+        // A stolen session must not mint an account whose password it then knows.
+        const denied = await requirePanelStepUp(req, res, json)
+        if (denied) return denied
         try {
           const rec = panelUsers.create({
             username: body.username || body.user,
@@ -1656,6 +1686,12 @@ export function createPanelHandler(ctx) {
         const body = await readBody(req, 8192).catch(() => ({}))
         try {
           const before = panelUsers.getById(id)
+          const setsPassword = body?.password != null && String(body.password) !== ''
+          const changesRole = !!before && body?.role != null && String(body.role) !== before.role
+          if (setsPassword || changesRole) {
+            const denied = await requirePanelStepUp(req, res, json)
+            if (denied) return denied
+          }
           const rec = panelUsers.update(id, body || {}, { actorId: req.panelUserId })
           if (!rec) return json(res, 404, { ok: false, error: { message: 'user not found' } })
           // Sessions cache the role from login time, so a role or enable change must log them out.
@@ -1796,6 +1832,7 @@ export function createPanelHandler(ctx) {
             group_type: scope.group_type,
             allowed_vms: scope.allowed_vms,
             vm_pool_id: scope.vm_pool_id,
+            limits_managed: ident.role === 'admin' && !!body?.user_id && body.user_id !== req.panelUserId,
             max_concurrency: body?.max_concurrency ?? defaultConc,
             default_concurrency: defaultConc,
             quota_requests: input.quota_requests,
@@ -1843,6 +1880,15 @@ export function createPanelHandler(ctx) {
         try {
           const input = normalizePanelApiKeyInput(body || {}, req)
           const currentRec = apiKeyStore.getById(id)
+          if (ident.role !== 'admin' && currentRec?.limits_managed && limitsChangedBy(currentRec, input)) {
+            return json(res, 403, { ok: false, error: KEY_LIMITS_LOCKED })
+          }
+          if (ident.role === 'admin' && currentRec) {
+            const owner = input.user_id ?? currentRec.user_id
+            if (owner && owner !== req.panelUserId && (input.user_id != null || limitsChangedBy(currentRec, input))) {
+              input.limits_managed = true
+            }
+          }
           const scopeInput = { group_type: body?.group_type, allowed_vms: body?.allowed_vms }
           if (ident.role === 'admin' && Object.prototype.hasOwnProperty.call(body || {}, 'vm_pool_id')) {
             scopeInput.vm_pool_id = body.vm_pool_id
@@ -1901,6 +1947,9 @@ export function createPanelHandler(ctx) {
       if (req.method === 'POST' && /^\/api\/panel\/api-keys\/[^/]+\/reset-quota$/.test(p)) {
         const id = p.split('/')[4]
         if (denyIfUserMissesKey(req, res, { apiKeyStore, json, keyId: id })) return true
+        if (panelIdentity(req).role !== 'admin' && apiKeyStore.getById(id)?.limits_managed) {
+          return json(res, 403, { ok: false, error: KEY_LIMITS_LOCKED })
+        }
         const rec = apiKeyStore.update(id, { reset_quota: true })
         if (!rec) return json(res, 404, { ok: false, error: { message: 'api key not found' } })
         return json(res, 200, { ok: true, item: publicKeyView(rec, { reveal: false }) })
@@ -2328,6 +2377,8 @@ export function createPanelHandler(ctx) {
         }
       }
       if (req.method === 'GET' && /^\/api\/panel\/backups\/[^/]+\/download$/.test(p)) {
+        const denied = await requirePanelStepUp(req, res, json)
+        if (denied) return denied
         const id = p.split('/')[4]
         const rec = backupService.get(id)
         if (!rec || !rec.file_path || !fs.existsSync(rec.file_path)) {
@@ -2535,6 +2586,8 @@ export function createPanelHandler(ctx) {
         )
       }
       if (req.method === 'POST' && p === '/api/panel/wrap-cli/crag-kernel') {
+        const denied = await requirePanelStepUp(req, res, json)
+        if (denied) return denied
         const raw = await readRawBody(req, 32 * 1024 * 1024)
         const written = replaceCragKernelBinary(cfg.paths.project, raw)
         if (!written.ok) {
@@ -2557,6 +2610,8 @@ export function createPanelHandler(ctx) {
         return json(res, 200, panel.ok(made))
       }
       if (req.method === 'POST' && p === '/api/panel/wrap-cli/kernel/release') {
+        const denied = await requirePanelStepUp(req, res, json)
+        if (denied) return denied
         const body = await readBody(req, 8 * 1024).catch(() => ({}))
         const downloaded = await downloadReleaseKernel({
           tag: body.tag,
@@ -2619,6 +2674,8 @@ export function createPanelHandler(ctx) {
       }
 
       if (req.method === 'POST' && p === '/api/panel/wrap-cli/kernel') {
+        const denied = await requirePanelStepUp(req, res, json)
+        if (denied) return denied
         let buf
         try {
           buf = await readRawBody(req, cfg.limits?.max_body_bytes || 32 * 1024 * 1024)
@@ -3662,6 +3719,7 @@ export function createPanelHandler(ctx) {
           const removed = []
           for (const file of [
             path.join(slotDir, 'codex-credentials.json'),
+            grokCredentialPath(cfg.paths.project, id),
             path.join(slotDir, 'cli-home', '.codex', 'auth.json'),
             path.join(slotDir, 'cli-home', '.claude', 'credentials.json'),
             path.join(slotDir, 'cli-home', '.claude', '.credentials.json'),
@@ -3681,6 +3739,7 @@ export function createPanelHandler(ctx) {
               record.expires_at = null
               record.codex = {}
               record.claude = {}
+              if (record.grok) record.grok = {}
               record.worker_credential = null
               record.refresh_status = null
               record.refresh_error = null
@@ -4032,6 +4091,8 @@ export function createPanelHandler(ctx) {
       }
 
       if (req.method === 'GET' && /^\/api\/panel\/vms\/[^/]+\/package$/.test(p)) {
+        const denied = await requirePanelStepUp(req, res, json)
+        if (denied) return denied
         const id = p.split('/')[4]
         const result = exportVmPackage(cfg.paths.project, id, proxyPool)
         if (!result.ok) return json(res, result.status || 404, { ok: false, error: result.error })
@@ -4624,7 +4685,7 @@ export function createPanelHandler(ctx) {
               })
             }
             if (!account.access_token && account.refresh_token) {
-              const slotProxy = requireSlotProxy(existing, body)
+              const slotProxy = await requireSlotProxy(existing, body)
               if (!slotProxy.ok) {
                 return json(res, slotProxy.status, {
                   ok: false,
@@ -4676,7 +4737,7 @@ export function createPanelHandler(ctx) {
             }
             const account = { ...parsed.account }
             if (!account.access_token && account.refresh_token) {
-              const slotProxy = requireSlotProxy(existing, body)
+              const slotProxy = await requireSlotProxy(existing, body)
               if (!slotProxy.ok) {
                 return json(res, slotProxy.status, {
                   ok: false,
@@ -4712,7 +4773,7 @@ export function createPanelHandler(ctx) {
             return json(res, 200, panel.ok(committed))
           }
 
-          const slotProxy = requireSlotProxy(existing, body)
+          const slotProxy = await requireSlotProxy(existing, body)
           const wantsApiKey =
             looksLikeConsoleApiKey(apiKeyRaw || sessionKey || accessToken) ||
             String(requestedType).toLowerCase() === 'apikey' ||
@@ -4823,7 +4884,7 @@ export function createPanelHandler(ctx) {
         const existing = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
         existing.id = existing.id || id
         const body = await readBody(req, 8 * 1024)
-        const slotProxy = requireSlotProxy(existing, body)
+        const slotProxy = await requireSlotProxy(existing, body)
         if (!slotProxy.ok) {
           return json(res, slotProxy.status, {
             ok: false,
@@ -4917,7 +4978,7 @@ export function createPanelHandler(ctx) {
           return json(res, 409, { ok: false, error: { code: 'not_grok', message: '只有 Grok 槽能用设备码登录' } })
         }
         const body = await readBody(req, 8 * 1024)
-        const slotProxy = requireSlotProxy(existing, body)
+        const slotProxy = await requireSlotProxy(existing, body)
         if (!slotProxy.ok) {
           return json(res, slotProxy.status, {
             ok: false,
@@ -5004,7 +5065,7 @@ export function createPanelHandler(ctx) {
         const existing = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
         existing.id = existing.id || id
         const body = await readBody(req, 16 * 1024)
-        const slotProxy = requireSlotProxy(existing, body)
+        const slotProxy = await requireSlotProxy(existing, body)
         if (!slotProxy.ok) {
           return json(res, slotProxy.status, {
             ok: false,
@@ -5141,6 +5202,8 @@ export function createPanelHandler(ctx) {
       }
 
       if (req.method === 'GET' && /^\/api\/panel\/vms\/[^/]+\/oauth\/credential$/.test(p)) {
+        const denied = await requirePanelStepUp(req, res, json)
+        if (denied) return denied
         const id = p.split('/')[4]
         const vm = getVm(cfg.paths.project, id)
         if (!vm) return json(res, 404, { ok: false, error: { code: 'vm_not_found', message: 'VM not found' } })

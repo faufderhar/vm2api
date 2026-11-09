@@ -34,6 +34,7 @@ function serverPanelHandlers(src) {
 const PANEL_ROUTE_SAMPLES = [
   ['POST', '/api/panel/login'],
   ['POST', '/api/panel/logout'],
+  ['POST', '/api/panel/step-up'],
   ['GET', '/api/panel/dashboard'],
   ['GET', '/api/panel/database/metrics'],
   ['GET', '/api/panel/version'],

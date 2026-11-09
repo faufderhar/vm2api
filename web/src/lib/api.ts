@@ -1,5 +1,6 @@
 import type { VmActiveHours, VmQuotaOverride } from '@/types/panel-vm'
 import { apiBase, expirePanelSession, hasSession } from '@/lib/session'
+import { askStepUp } from '@/lib/step-up'
 
 export type PanelErrorMetadata = {
   type?: string
@@ -108,6 +109,17 @@ function isPanelApiPath(path: string): boolean {
   return path.startsWith('/api/panel/') && path !== '/api/panel/login'
 }
 
+/** A step-up refusal is a 401 on a live session; '' for anything else. */
+async function stepUpRefusal(res: Response): Promise<string> {
+  if (res.status !== 401) return ''
+  const payload = await res
+    .clone()
+    .json()
+    .catch(() => null)
+  const code = String(asRecord(asRecord(payload)?.error)?.code || '')
+  return code === 'step_up_required' || code === 'step_up_failed' ? code : ''
+}
+
 export async function panelFetch(
   path: string,
   opts: RequestInit = {}
@@ -118,16 +130,38 @@ export async function panelFetch(
     credentials: 'include',
     headers: { ...authHeaders(), ...(opts.headers || {}) },
   })
-  if (res.status === 401 && isPanelApiPath(path)) expirePanelSession()
+  if (
+    res.status === 401 &&
+    isPanelApiPath(path) &&
+    !(await stepUpRefusal(res))
+  ) {
+    expirePanelSession()
+  }
   return res
+}
+
+/** panelFetch that asks for the current password once when the route needs it. */
+export async function panelFetchWithStepUp(
+  path: string,
+  opts: RequestInit = {}
+): Promise<Response> {
+  const res = await panelFetch(path, opts)
+  if ((await stepUpRefusal(res)) !== 'step_up_required') return res
+  if (!(await askStepUp())) return res
+  return panelFetch(path, opts)
+}
+
+export type ApiOptions = RequestInit & {
+  /** false: the caller shows its own password prompt on `step_up_required`. */
+  stepUp?: boolean
 }
 
 export async function api<T = unknown>(
   path: string,
-  opts: RequestInit = {}
+  { stepUp = true, ...opts }: ApiOptions = {}
 ): Promise<T> {
   if (!hasSession()) throw new ApiError('未登录', 401)
-  const res = await panelFetch(path, opts)
+  const res = await (stepUp ? panelFetchWithStepUp : panelFetch)(path, opts)
   const json = (await res.json().catch(() => ({}))) as Json
   if (res.status === 401) {
     throw apiErrorFrom(json, res.status, '登录已过期')
