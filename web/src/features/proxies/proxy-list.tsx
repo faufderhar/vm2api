@@ -10,6 +10,7 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import {
   Select,
@@ -79,6 +80,9 @@ export function ProxyList({
   dragVm,
   pending,
   actions,
+  selectedIds,
+  onToggleSelected,
+  onToggleSelectAll,
 }: {
   /** 已排序全集，用于筛选计数。 */
   all: VmProxySnap[]
@@ -105,6 +109,9 @@ export function ProxyList({
   dragVm: string
   pending: ProxyRowPending
   actions: ProxyRowActions
+  selectedIds: Set<string>
+  onToggleSelected: (id: string, selected: boolean) => void
+  onToggleSelectAll: (selected: boolean) => void
 }) {
   const searchRef = useRef<HTMLInputElement>(null)
   const healthFilter = !SEAT_FILTERS.some((f) => f.key === filter)
@@ -248,6 +255,21 @@ export function ProxyList({
               PROXY_ROW_GRID
             )}
           >
+            <div className='flex items-center'>
+              <Checkbox
+                checked={
+                  rows.length > 0 &&
+                  rows.every((r) => r.id && selectedIds.has(r.id))
+                    ? true
+                    : rows.some((r) => r.id && selectedIds.has(r.id))
+                      ? 'indeterminate'
+                      : false
+                }
+                onCheckedChange={(v) => onToggleSelectAll(v === true)}
+                aria-label='全选当前列表中的代理'
+                disabled={!rows.length}
+              />
+            </div>
             {COLUMNS.map((c) =>
               c.sort ? (
                 <SortHeader
@@ -281,7 +303,11 @@ export function ProxyList({
                 hover={hover}
                 dragVm={dragVm}
                 pending={pending}
-                actions={actions}
+                actions={{
+                  ...actions,
+                  selected: !!(p.id && selectedIds.has(p.id)),
+                  onSelectedChange: onToggleSelected,
+                }}
               />
             ))}
           </ul>

@@ -211,6 +211,7 @@ function userVmPathAllowed(method, path) {
 function userProxyPathAllowed(method, path) {
   if (path === '/api/panel/proxies' && (method === 'GET' || method === 'POST')) return true
   if (path === '/api/panel/proxies/import' && method === 'POST') return true
+  if (path === '/api/panel/proxies/batch-delete' && method === 'POST') return true
   if (path === '/api/panel/proxies/config') return method === 'GET'
   if (path === '/api/panel/proxies/probe') return false
   if (/^\/api\/panel\/proxies\/[^/]+$/.test(path))

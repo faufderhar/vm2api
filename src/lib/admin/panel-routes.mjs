@@ -143,6 +143,7 @@ import {
   countUserCreatedVms,
   filterVmsForPanel,
   normalizeOwnerId,
+  proxyOwnerId,
   vmOwnerId,
 } from './resource-owner.mjs'
 import { servePoolSeatStream } from './pool-seat-stream.mjs'
@@ -6362,22 +6363,103 @@ export function createPanelHandler(ctx) {
         }
         return json(res, 200, panel.ok(result.proxy))
       }
-      if (req.method === 'DELETE' && /^\/api\/panel\/proxies\/[^/]+$/.test(p)) {
-        const id = p.split('/').pop()
-        const snap = proxyPool.snapshot().proxies.find((proxy) => proxy.id === id)
-        const targets = snap?.bound_vm_ids?.length ? snap.bound_vm_ids : snap?.bound_vm_id ? [snap.bound_vm_id] : []
-        const result = proxyPool.remove(id)
-        if (!result.ok)
-          return json(res, 404, {
+      // Collection delete: must stay above /proxies/:id so "batch-delete" is not
+      // parsed as a proxy id. Body is the source of truth; empty/oversized lists 400.
+      if (req.method === 'POST' && p === '/api/panel/proxies/batch-delete') {
+        const body = await readBody(req, 64 * 1024).catch(() => ({}))
+        const ids = Array.isArray(body?.ids) ? body.ids : null
+        if (!ids)
+          return json(res, 400, {
             ok: false,
-            error: { type: 'not_found_error', code: result.error, message: result.error },
+            error: {
+              type: 'invalid_request_error',
+              code: 'invalid_ids',
+              message: 'ids must be an array of proxy ids',
+              param: 'ids',
+            },
           })
-        for (const unboundId of targets) {
+        if (ids.length === 0)
+          return json(res, 400, {
+            ok: false,
+            error: {
+              type: 'invalid_request_error',
+              code: 'empty_ids',
+              message: 'ids must not be empty',
+              param: 'ids',
+            },
+          })
+        if (ids.length > 200)
+          return json(res, 400, {
+            ok: false,
+            error: {
+              type: 'invalid_request_error',
+              code: 'too_many_ids',
+              message: 'at most 200 proxy ids per request',
+              param: 'ids',
+              details: { max: 200, count: ids.length },
+            },
+          })
+        const force = body?.force === true || body?.force === 1 || body?.force === '1'
+        const ident = panelIdentity(req)
+        // Tenants only delete rows they own; foreign ids become proxy_not_found.
+        const scoped =
+          ident.role === 'user'
+            ? ids.map((raw) => {
+                const id = String(raw || '').trim()
+                const row = (proxyPool.state?.proxies || []).find((proxy) => proxy.id === id)
+                if (!row || proxyOwnerId(row) !== normalizeOwnerId(req.panelUserId)) {
+                  return { skip: true, id, error: 'proxy_not_found' }
+                }
+                return { skip: false, id }
+              })
+            : ids.map((raw) => ({ skip: false, id: String(raw || '').trim() }))
+        const owned = scoped.filter((row) => !row.skip).map((row) => row.id)
+        const denied = scoped.filter((row) => row.skip).map((row) => ({ id: row.id, error: row.error }))
+        const result = proxyPool.removeMany(owned, { force })
+        result.failed = [...denied, ...result.failed]
+        result.ok = result.failed.length === 0
+        for (const removed of result.deleted) {
+          for (const unboundId of removed.bound_vm_ids || (removed.bound_vm_id ? [removed.bound_vm_id] : [])) {
+            bindVmProxy(cfg.paths.project, unboundId, null)
+            setVmSchedulable(cfg.paths.project, unboundId, false, 'proxy_required')
+          }
+          if (egressEnabled()) stopProxyEgress(cfg.paths.project, removed.id)
+        }
+        // Partial success is still 200: the panel shows deleted vs failed counts.
+        return json(res, 200, panel.ok(result))
+      }
+      if (req.method === 'DELETE' && /^\/api\/panel\/proxies\/[^/]+$/.test(p)) {
+        const id = decodeURIComponent(p.split('/')[4] || '')
+        const force = url.searchParams.get('force') === '1' || url.searchParams.get('force') === 'true'
+        const result = proxyPool.remove(id, { force })
+        if (!result.ok) {
+          if (result.error === 'proxy_in_use') {
+            return json(res, 409, {
+              ok: false,
+              error: {
+                type: 'invalid_request_error',
+                code: 'proxy_in_use',
+                message: `代理仍绑着 ${result.bound_count} 台槽位；确认解绑后请带 force=1 删除`,
+                details: { bound_vm_ids: result.bound_vm_ids, bound_count: result.bound_count },
+              },
+            })
+          }
+          const status = result.error === 'proxy_not_found' ? 404 : 400
+          return json(res, status, {
+            ok: false,
+            error: {
+              type: status === 404 ? 'not_found_error' : 'invalid_request_error',
+              code: result.error,
+              message: result.error,
+            },
+          })
+        }
+        for (const unboundId of result.unbound_vm_ids || []) {
           bindVmProxy(cfg.paths.project, unboundId, null)
           setVmSchedulable(cfg.paths.project, unboundId, false, 'proxy_required')
         }
         if (egressEnabled()) stopProxyEgress(cfg.paths.project, id)
-        return json(res, 200, panel.ok(result.removed))
+        return json(res, 200, panel.ok({ removed: result.removed, unbound_vm_ids: result.unbound_vm_ids || [] }))
       }
       // Auto-allocate proxy for a VM
       if (req.method === 'POST' && /^\/api\/panel\/vms\/[^/]+\/allocate-proxy$/.test(p)) {

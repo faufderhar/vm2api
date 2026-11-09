@@ -143,6 +143,8 @@ const PANEL_ROUTE_SAMPLES = [
   ['POST', '/api/panel/proxies/p1/disable'],
   ['POST', '/api/panel/proxies/p1/bind'],
   ['POST', '/api/panel/proxies/p1/unbind'],
+  ['DELETE', '/api/panel/proxies/p1'],
+  ['POST', '/api/panel/proxies/batch-delete'],
   ['POST', '/api/panel/model-policy/sync-codex'],
   ['GET', '/api/panel/users'],
   ['POST', '/api/panel/users'],

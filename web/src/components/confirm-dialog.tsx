@@ -1,6 +1,7 @@
 import { cn } from '@/lib/utils'
 import {
   AlertDialog,
+  AlertDialogAction,
   AlertDialogCancel,
   AlertDialogContent,
   AlertDialogDescription,
@@ -56,15 +57,36 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
           <AlertDialogCancel disabled={isLoading}>
             {cancelBtnText ?? 'Cancel'}
           </AlertDialogCancel>
-          <Button
-            type={form ? 'submit' : 'button'}
-            form={form}
-            onClick={handleConfirm}
-            variant={destructive ? 'destructive' : 'default'}
-            disabled={disabled || isLoading}
-          >
-            {confirmText ?? 'Continue'}
-          </Button>
+          {form ? (
+            <Button
+              type='submit'
+              form={form}
+              variant={destructive ? 'destructive' : 'default'}
+              disabled={disabled || isLoading}
+            >
+              {confirmText ?? 'Continue'}
+            </Button>
+          ) : (
+            <AlertDialogAction
+              onClick={(e) => {
+                // Keep the dialog from closing before the caller reads state;
+                // the caller clears `open` itself after the mutation settles.
+                if (isLoading || disabled) {
+                  e.preventDefault()
+                  return
+                }
+                handleConfirm?.()
+              }}
+              className={
+                destructive
+                  ? 'bg-destructive text-white hover:bg-destructive/90'
+                  : undefined
+              }
+              disabled={disabled || isLoading}
+            >
+              {confirmText ?? 'Continue'}
+            </AlertDialogAction>
+          )}
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

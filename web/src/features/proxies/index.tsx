@@ -2,7 +2,7 @@ import { useCallback, useDeferredValue, useMemo, useState } from 'react'
 import { useMutation, useMutationState, useQuery } from '@tanstack/react-query'
 import { VIEW_TITLES } from '@/config/nav'
 import type { VmProxySnap } from '@/types/panel-vm'
-import { Plus, Settings2 } from 'lucide-react'
+import { Plus, Settings2, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
@@ -36,6 +36,8 @@ import {
 } from './proxy-region'
 import { ProxyRegionRail } from './proxy-region-rail'
 import {
+  batchDeleteConfirmText,
+  batchDeleteOutcome,
   bindOutcome,
   deleteConfirmText,
   disableConfirmText,
@@ -123,6 +125,8 @@ export function ProxiesPage() {
     id: string
     vmId: string
   } | null>(null)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
+  const [batchOpen, setBatchOpen] = useState(false)
   const deferredQuery = useDeferredValue(query.trim().toLowerCase())
 
   const list = useMemo(() => px.data?.proxies || [], [px.data?.proxies])
@@ -174,6 +178,19 @@ export function ProxiesPage() {
   const regionText = region.country
     ? [regionLabel(region.country), region.city].filter(Boolean).join(' · ')
     : ''
+  // Drop selections whose rows left the pool (deleted elsewhere / filtered out of data).
+  const selectedInList = useMemo(() => {
+    const alive = new Set(list.map((p) => p.id).filter(Boolean) as string[])
+    return [...selectedIds].filter((id) => alive.has(id))
+  }, [list, selectedIds])
+  const selectedBoundSlots = useMemo(
+    () =>
+      selectedInList.reduce((n, id) => {
+        const row = list.find((p) => p.id === id)
+        return n + proxyBoundIds(row).length
+      }, 0),
+    [list, selectedInList]
+  )
   const deleting = list.find((p) => p.id === delId)
   const delBound = proxyBoundIds(deleting).length
   const disabling = list.find((p) => p.id === disableId)
@@ -208,13 +225,41 @@ export function ProxiesPage() {
     onError: (error: Error) => toast.error(error.message),
   })
   const remove = useMutation({
-    mutationFn: (id: string) =>
-      api(`/api/panel/proxies/${encodeURIComponent(id)}`, {
-        method: 'DELETE',
-      }),
-    onSuccess: async () => {
+    mutationFn: ({ id, force }: { id: string; force: boolean }) =>
+      api(
+        `/api/panel/proxies/${encodeURIComponent(id)}${force ? '?force=1' : ''}`,
+        {
+          method: 'DELETE',
+        }
+      ),
+    onSuccess: async (_data, vars) => {
       toast.success('已删除')
       setDelId('')
+      setSelectedIds((prev) => {
+        if (!prev.has(vars.id)) return prev
+        const next = new Set(prev)
+        next.delete(vars.id)
+        return next
+      })
+      await refresh()
+    },
+    onError: (error: Error) => toast.error(error.message),
+  })
+  const removeMany = useMutation({
+    mutationFn: ({ ids, force }: { ids: string[]; force: boolean }) =>
+      api<{
+        deleted?: { id?: string }[]
+        failed?: { id?: string; error?: string; bound_count?: number }[]
+        unbound_vm_ids?: string[]
+      }>('/api/panel/proxies/batch-delete', {
+        method: 'POST',
+        body: JSON.stringify({ ids, force }),
+      }),
+    onSuccess: async (data) => {
+      const out = batchDeleteOutcome(data)
+      toast[out.level](out.text)
+      setBatchOpen(false)
+      setSelectedIds(new Set())
       await refresh()
     },
     onError: (error: Error) => toast.error(error.message),
@@ -309,7 +354,10 @@ export function ProxiesPage() {
   const actions: ProxyRowActions = {
     onCopy: (id) => copyUri.mutate(id),
     onEdit: setEditId,
-    onDelete: setDelId,
+    onDelete: (id: string) => {
+      // Open after the dropdown releases focus so AlertDialog is not dismissed.
+      setDelId(id)
+    },
     onVmDragChange: setDragVm,
     ...(canManage
       ? {
@@ -365,6 +413,18 @@ export function ProxiesPage() {
       title={VIEW_TITLES.proxies}
       extra={
         <div className='flex flex-wrap items-center gap-2'>
+          {selectedInList.length ? (
+            <Button
+              variant='destructive'
+              size='sm'
+              onClick={() => setBatchOpen(true)}
+              disabled={removeMany.isPending || remove.isPending}
+              title={`删除选中的 ${selectedInList.length} 条代理`}
+            >
+              <Trash2 aria-hidden='true' />
+              删除 {selectedInList.length} 条
+            </Button>
+          ) : null}
           {canManage ? (
             <>
               <ProxyBulkActions empty={!list.length} />
@@ -483,6 +543,26 @@ export function ProxiesPage() {
                 binding: bind.isPending || unbind.isPending,
               }}
               actions={actions}
+              selectedIds={selectedIds}
+              onToggleSelected={(id, selected) => {
+                setSelectedIds((prev) => {
+                  const next = new Set(prev)
+                  if (selected) next.add(id)
+                  else next.delete(id)
+                  return next
+                })
+              }}
+              onToggleSelectAll={(selected) => {
+                setSelectedIds((prev) => {
+                  const next = new Set(prev)
+                  for (const row of rows) {
+                    if (!row.id) continue
+                    if (selected) next.add(row.id)
+                    else next.delete(row.id)
+                  }
+                  return next
+                })
+              }}
             />
           </div>
         </div>
@@ -529,7 +609,9 @@ export function ProxiesPage() {
       />
       <ConfirmDialog
         open={!!unbindTarget}
-        onOpenChange={() => setUnbindTarget(null)}
+        onOpenChange={(open) => {
+          if (!open) setUnbindTarget(null)
+        }}
         title='解绑代理'
         desc={`解绑后 ${
           vmById.get(unbindTarget?.vmId || '')?.name || unbindTarget?.vmId || ''
@@ -544,7 +626,9 @@ export function ProxiesPage() {
       />
       <ConfirmDialog
         open={!!delId}
-        onOpenChange={() => setDelId('')}
+        onOpenChange={(open) => {
+          if (!open) setDelId('')
+        }}
         title='删除代理'
         desc={deleteConfirmText(delBound)}
         confirmText='删除'
@@ -552,12 +636,36 @@ export function ProxiesPage() {
         destructive
         isLoading={remove.isPending}
         handleConfirm={() => {
-          if (delId) remove.mutate(delId)
+          const id = delId
+          if (!id || remove.isPending) return
+          remove.mutate({ id, force: delBound > 0 })
+        }}
+      />
+      <ConfirmDialog
+        open={batchOpen}
+        onOpenChange={(open) => {
+          if (!open) setBatchOpen(false)
+        }}
+        title='批量删除代理'
+        desc={batchDeleteConfirmText(selectedInList.length, selectedBoundSlots)}
+        confirmText={`删除 ${selectedInList.length} 条`}
+        cancelBtnText='取消'
+        destructive
+        disabled={!selectedInList.length}
+        isLoading={removeMany.isPending}
+        handleConfirm={() => {
+          if (!selectedInList.length || removeMany.isPending) return
+          removeMany.mutate({
+            ids: selectedInList,
+            force: selectedBoundSlots > 0,
+          })
         }}
       />
       <ConfirmDialog
         open={!!disableId}
-        onOpenChange={() => setDisableId('')}
+        onOpenChange={(open) => {
+          if (!open) setDisableId('')
+        }}
         title='禁用代理'
         desc={disableConfirmText(proxyBoundIds(disabling).length)}
         confirmText='禁用'

@@ -76,7 +76,7 @@ export function denyIfUserMissesKey(req, res, { apiKeyStore, json, keyId }) {
   return false
 }
 
-const PROXY_COLLECTION = new Set(['import', 'config', 'probe'])
+const PROXY_COLLECTION = new Set(['import', 'config', 'probe', 'geo', 'local', 'batch-delete'])
 
 export function denyIfUserMissesProxy(req, res, { proxyPool, json, path }) {
   const ident = panelIdentity(req)

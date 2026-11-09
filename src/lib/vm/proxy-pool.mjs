@@ -927,12 +927,57 @@ export class ProxyPool extends EventEmitter {
     return { ok: true, proxy: this.publicProxy(p) }
   }
 
-  remove(proxyId) {
-    const idx = this.state.proxies.findIndex((x) => x.id === proxyId)
+  /**
+   * Drop one proxy. Bound slots are not silently cleared: without `force` a
+   * proxy that still lists VMs returns `proxy_in_use` so the panel can confirm.
+   * With `force: true` the row is removed; the caller must unbind those VMs.
+   */
+  remove(proxyId, { force = false } = {}) {
+    const id = String(proxyId || '').trim()
+    if (!id) return { ok: false, error: 'invalid_proxy_id' }
+    const idx = this.state.proxies.findIndex((x) => x.id === id)
     if (idx < 0) return { ok: false, error: 'proxy_not_found' }
-    const [p] = this.state.proxies.splice(idx, 1)
+    const p = this.state.proxies[idx]
+    const bound = boundVmIdsOf(p)
+    if (bound.length && !force) {
+      return { ok: false, error: 'proxy_in_use', bound_vm_ids: bound.slice(), bound_count: bound.length }
+    }
+    this.state.proxies.splice(idx, 1)
     this.save()
-    return { ok: true, removed: this.publicProxy(p) }
+    return { ok: true, removed: this.publicProxy(p), unbound_vm_ids: bound.slice() }
+  }
+
+  /**
+   * Delete many ids. Each id is independent: missing and in-use rows land in
+   * `failed` without rolling back ones that already succeeded. Duplicates in
+   * `ids` are ignored after the first. `force` applies to every in-use row.
+   */
+  removeMany(ids = [], { force = false } = {}) {
+    const seen = new Set()
+    const deleted = []
+    const failed = []
+    const unbound = []
+    for (const raw of ids) {
+      const id = String(raw || '').trim()
+      if (!id) {
+        failed.push({ id: raw == null ? '' : String(raw), error: 'invalid_proxy_id' })
+        continue
+      }
+      if (seen.has(id)) continue
+      seen.add(id)
+      const result = this.remove(id, { force })
+      if (!result.ok) {
+        failed.push({
+          id,
+          error: result.error,
+          ...(result.bound_vm_ids ? { bound_vm_ids: result.bound_vm_ids, bound_count: result.bound_count } : {}),
+        })
+        continue
+      }
+      deleted.push(result.removed)
+      for (const vmId of result.unbound_vm_ids || []) unbound.push(vmId)
+    }
+    return { ok: failed.length === 0, deleted, failed, unbound_vm_ids: unbound }
   }
 
   /**
