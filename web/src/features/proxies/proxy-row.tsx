@@ -16,6 +16,7 @@ import {
 import { fmtAgo } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -60,6 +61,9 @@ export type ProxyRowActions = {
   onBind?: (id: string, vmId: string) => void
   onUnbind?: (id: string, vmId: string) => void
   onVmDragChange: (vmId: string) => void
+  /** 行首多选；不传就不显示复选框（只读视图）。 */
+  selected?: boolean
+  onSelectedChange?: (id: string, selected: boolean) => void
 }
 
 /** 各类进行中的请求落在哪一行，用于行内转圈而不是整表禁用。 */
@@ -77,7 +81,7 @@ export type ProxyRowPending = {
  * 两行的卡片排布，表头隐藏、改用工具条里的排序下拉。
  */
 export const PROXY_ROW_GRID =
-  '@3xl/plist:grid @3xl/plist:grid-cols-[minmax(0,1.5fr)_minmax(0,0.9fr)_68px_72px_88px_minmax(0,1.3fr)_auto] @3xl/plist:items-center @3xl/plist:gap-x-3'
+  '@3xl/plist:grid @3xl/plist:grid-cols-[28px_minmax(0,1.5fr)_minmax(0,0.9fr)_68px_72px_88px_minmax(0,1.3fr)_auto] @3xl/plist:items-center @3xl/plist:gap-x-3'
 
 /** 行内最多铺几片槽位，再多折成「+N」，展开后看全。 */
 const INLINE_CHIPS = 2
@@ -183,6 +187,23 @@ export function ProxyRow({
           PROXY_ROW_GRID
         )}
       >
+        {actions.onSelectedChange ? (
+          <div
+            className='flex shrink-0 items-center'
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+          >
+            <Checkbox
+              checked={!!actions.selected}
+              onCheckedChange={(v) =>
+                actions.onSelectedChange?.(id, v === true)
+              }
+              aria-label={`选择代理 ${name}`}
+            />
+          </div>
+        ) : (
+          <span className='hidden @3xl/plist:block' aria-hidden='true' />
+        )}
         <button
           type='button'
           aria-expanded={open}
@@ -414,7 +435,13 @@ function RowMenu({
           </>
         )}
         {onToggleEnabled ? (
-          <DropdownMenuItem onSelect={() => onToggleEnabled(proxy)}>
+          <DropdownMenuItem
+            onSelect={(e) => {
+              // Keep the menu from restoring focus over the confirm dialog.
+              e.preventDefault()
+              queueMicrotask(() => onToggleEnabled(proxy))
+            }}
+          >
             {proxy.enabled === false ? <Power /> : <PowerOff />}
             {proxy.enabled === false ? '启用' : '禁用'}
           </DropdownMenuItem>
@@ -422,7 +449,10 @@ function RowMenu({
         <DropdownMenuSeparator />
         <DropdownMenuItem
           variant='destructive'
-          onSelect={() => actions.onDelete(id)}
+          onSelect={(e) => {
+            e.preventDefault()
+            queueMicrotask(() => actions.onDelete(id))
+          }}
         >
           <Trash2 />
           删除

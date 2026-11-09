@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   bindOutcome,
+  batchDeleteConfirmText,
+  batchDeleteOutcome,
   deleteConfirmText,
   disableConfirmText,
   editOutcome,
@@ -52,5 +54,30 @@ describe('proxy action outcomes', () => {
   it('spells out that bound slots stop scheduling', () => {
     expect(disableConfirmText(3)).toContain('3 台槽位会全部停止调度')
     expect(deleteConfirmText(2)).toContain('2 台槽位会解绑并停止调度')
+  })
+
+  it('batch delete confirms the count and bound slots', () => {
+    expect(batchDeleteConfirmText(3, 0)).toContain('3 条')
+    expect(batchDeleteConfirmText(2, 5)).toContain('2 条')
+    expect(batchDeleteConfirmText(2, 5)).toContain('5 台')
+  })
+
+  it('batch delete outcome names deleted and failed counts', () => {
+    expect(
+      batchDeleteOutcome({ deleted: [{ id: 'a' }, { id: 'b' }], failed: [] })
+        .text
+    ).toContain('已删除 2')
+    expect(
+      batchDeleteOutcome({
+        deleted: [{ id: 'a' }],
+        failed: [{ id: 'b', error: 'proxy_in_use' }],
+      }).level
+    ).toBe('warning')
+    expect(
+      batchDeleteOutcome({
+        deleted: [],
+        failed: [{ id: 'b', error: 'proxy_in_use' }],
+      }).text
+    ).toContain('失败 1')
   })
 })

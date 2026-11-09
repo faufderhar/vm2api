@@ -83,3 +83,42 @@ export function deleteConfirmText(bound: number): string {
     ? `删除后，绑在这条代理上的 ${bound} 台槽位会解绑并停止调度，要重新绑定代理才能恢复。确认删除？`
     : '删除这条 SOCKS5？'
 }
+
+/** 批量删除确认文案：明示条数，并在有绑定时说明会解绑。 */
+export function batchDeleteConfirmText(
+  count: number,
+  boundSlots: number
+): string {
+  const n = Math.max(0, count)
+  const slots = Math.max(0, boundSlots)
+  if (!n) return '没有选中的代理。'
+  if (slots > 0) {
+    return `将删除 ${n} 条代理；其中仍绑着共 ${slots} 台槽位，删除后这些槽位会解绑并停止调度。确认删除？`
+  }
+  return `将删除选中的 ${n} 条代理。确认删除？`
+}
+
+export type BatchDeleteResult = {
+  deleted?: { id?: string }[]
+  failed?: { id?: string; error?: string; bound_count?: number }[]
+  unbound_vm_ids?: string[]
+}
+
+/** 批量删除结果提示：成功 / 部分失败都说清楚数量。 */
+export function batchDeleteOutcome(data: BatchDeleteResult): {
+  level: 'success' | 'warning' | 'error'
+  text: string
+} {
+  const deleted = data.deleted?.length || 0
+  const failed = data.failed || []
+  const failN = failed.length
+  if (!deleted && !failN) return { level: 'error', text: '没有删除任何代理' }
+  if (!failN) return { level: 'success', text: `已删除 ${deleted} 条代理` }
+  const inUse = failed.filter((f) => f.error === 'proxy_in_use').length
+  const detail = inUse ? `（${inUse} 条仍在使用中）` : ''
+  if (!deleted) return { level: 'error', text: `删除失败 ${failN} 条${detail}` }
+  return {
+    level: 'warning',
+    text: `已删除 ${deleted} 条，失败 ${failN} 条${detail}`,
+  }
+}
